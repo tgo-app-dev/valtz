@@ -84,7 +84,7 @@ enum SettingsPlace: Hashable, Sendable {
              String(localized: "Generations"),
              String(localized: "Timeline"), String(localized: "Assets"),
              String(localized: "Play"), String(localized: "Muted"),
-             String(localized: "Playhead"),
+             String(localized: "Playhead"), String(localized: "New Page"),
              String(localized: "Names"),
              String(localized: "Name generated assets"),
              String(localized: "Prompt Box"),
@@ -171,7 +171,11 @@ enum SettingsPlace: Hashable, Sendable {
              String(localized: "Fleet name"),
              String(localized: "Fleet Jobs"),
              String(localized: "Take Fleet Jobs"),
-             String(localized: "Only at Set Times")]
+             String(localized: "Only at Set Times"),
+             String(localized: "Thunderbolt"), String(localized: "RDMA"),
+             String(localized: "Paired With"),
+             String(localized: "Over RDMA"),
+             String(localized: "Share by GPU"), String(localized: "Unpair")]
         case .page(.storage):
             [String(localized: "Internal SSD"), String(localized: "Models"),
              String(localized: "Projects"), String(localized: "Cache"),
@@ -185,7 +189,8 @@ enum SettingsPlace: Hashable, Sendable {
         case .fleetOffload:
             [String(localized: "Offload"), FleetOffload.never.title,
              FleetOffload.localFirst.title, FleetOffload.fleetFirst.title,
-             FleetOffload.always.title, String(localized: "Tasks")]
+             FleetOffload.always.title, String(localized: "Tasks"),
+             String(localized: "Send Custom Weights With a Job")]
                 + FleetTaskLabel.all.map(\.title)
                 + [String(localized: "Models")]
                 + (model.fleet.map { FleetOffloadView.listed($0).map(\.name) }

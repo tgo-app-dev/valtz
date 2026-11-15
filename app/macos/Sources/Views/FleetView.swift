@@ -27,6 +27,7 @@ struct FleetView: View {
                 if c.joined {
                     fleetSection(f, c)
                     membersSection(f)
+                    thunderboltSection(f)
                 } else {
                     joinSection(f)
                     createSection
@@ -123,7 +124,13 @@ struct FleetView: View {
                     .foregroundStyle(.secondary)
             }
             ForEach(members) { m in
-                FleetMemberRow(member: m)
+                FleetMemberRow(
+                    member: m,
+                    cables: f.thunderbolt.links[m.id] ?? [],
+                    paired: f.pair?.member == m.id,
+                    canSplit: f.thunderbolt.splits) {
+                    model.pairFleet(f.pair?.member == m.id ? "" : m.id)
+                }
             }
         } header: {
             Text("Members")
@@ -132,6 +139,115 @@ struct FleetView: View {
             Text("By default a job this Mac cannot run, or cannot run now because it is busy, goes to a member that can and is free — generations and the helper's prompts alike. Offload Policies set it task by task.")
                 .foregroundStyle(.secondary)
         }
+    }
+
+    // MARK: Thunderbolt (DESIGN §11c)
+
+    /// This Mac's Thunderbolt ports, and the member it is paired with: a
+    /// MiniMax H3 clip that may be split runs half there, over the cable.
+    @ViewBuilder
+    private func thunderboltSection(_ f: FleetStatus) -> some View {
+        let tb = f.thunderbolt
+        if !tb.ports.isEmpty || f.pair != nil {
+            Section {
+                LabeledContent("Ports") {
+                    Text(portsLine(tb))
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.trailing)
+                }
+                .settingsMark(String(localized: "Thunderbolt"))
+                if !tb.bridge.isEmpty {
+                    LabeledContent("Thunderbolt Bridge") {
+                        Text(verbatim: "\(tb.bridgeAddress)")
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                LabeledContent("RDMA") {
+                    Text(tb.rdma ? String(localized: "Enabled")
+                                 : String(localized: "Not enabled"))
+                        .foregroundStyle(.secondary)
+                }
+                .settingsMark(String(localized: "RDMA"))
+                if let p = f.pair {
+                    pairRows(p)
+                }
+            } header: {
+                Text("Thunderbolt")
+                    .settingsMark(String(localized: "Thunderbolt"))
+            } footer: {
+                Text(tb.splits
+                     ? String(localized: "Pair this Mac with a member a Thunderbolt cable joins it to: a MiniMax H3 clip made without a LoRA or the Neural Engine (Favor’s Fine, or Custom) is then split between the two — each holds part of every block, their partial sums crossing the cable, RDMA where both Macs have it enabled (rdma_ctl, from recoveryOS). Other clips run as before.")
+                     : String(localized: "This Valtz cannot split a DiT: its vpipe has no tensor parallelism."))
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func pairRows(_ p: FleetPair) -> some View {
+        LabeledContent("Paired With") {
+            VStack(alignment: .trailing, spacing: 2) {
+                Text(verbatim: p.name)
+                Text(pairState(p))
+                    .font(.caption)
+                    .foregroundStyle(p.ready ? Color.secondary : Color.orange)
+                    .multilineTextAlignment(.trailing)
+            }
+        }
+        .settingsMark(String(localized: "Paired With"))
+        Toggle("Over RDMA", isOn: Binding(
+            get: { p.useRdma },
+            set: { model.setPair(rdma: $0) }))
+            .settingsMark(String(localized: "Over RDMA"))
+        Toggle("Share by GPU", isOn: Binding(
+            get: { p.autoShare },
+            set: { model.setPair(share: $0 ? 0 : max(0.05, p.share)) }))
+            .settingsMark(String(localized: "Share by GPU"))
+        if !p.autoShare {
+            LabeledContent("This Mac's Share") {
+                HStack {
+                    Slider(value: Binding(
+                        get: { p.setShare },
+                        set: { model.setPair(share: ($0 * 100).rounded() / 100) }),
+                           in: 0.05...0.95)
+                        .frame(width: 160)
+                    Text(verbatim: "\(Int((p.setShare * 100).rounded()))%")
+                        .monospacedDigit()
+                        .frame(width: 40, alignment: .trailing)
+                }
+            }
+        }
+        if p.heads.count == 2 {
+            LabeledContent("Heads") {
+                Text("This Mac \(String(p.heads[0])) · \(p.name) \(String(p.heads[1]))")
+                    .foregroundStyle(.secondary)
+            }
+        }
+        Button("Unpair") { model.pairFleet("") }
+            .settingsMark(String(localized: "Unpair"))
+    }
+
+    private func pairState(_ p: FleetPair) -> String {
+        if p.ready {
+            let over = p.rdma ? String(localized: "RDMA") : String(localized: "TCP")
+            return p.links == 1
+                ? String(localized: "Clips split over 1 cable, \(over)")
+                : String(localized: "Clips split over \(String(p.links)) cables, \(over)")
+        }
+        return p.why.isEmpty ? String(localized: "Not now") : p.why
+    }
+
+    /// "en1 (cable, RDMA) · en2 · en6".
+    private func portsLine(_ tb: FleetThunderbolt) -> String {
+        if tb.ports.isEmpty { return String(localized: "None") }
+        return tb.ports.map { p in
+            var notes: [String] = []
+            if p.active { notes.append(String(localized: "cable")) }
+            if !p.rdma.isEmpty { notes.append(String(localized: "RDMA")) }
+            if !p.address.isEmpty { notes.append(p.address) }
+            return notes.isEmpty ? p.name
+                : "\(p.name) (\(notes.joined(separator: ", ")))"
+        }.joined(separator: " · ")
     }
 
     // MARK: Joining, making
@@ -267,6 +383,12 @@ struct FleetView: View {
 /// runs.
 private struct FleetMemberRow: View {
     let member: FleetMember
+    /// The Thunderbolt cables to it (DESIGN §11c).
+    var cables: [FleetThunderbolt.Link] = []
+    var paired = false
+    /// This Mac may split a DiT.
+    var canSplit = false
+    var pair: () -> Void = {}
 
     var body: some View {
         HStack(alignment: .top, spacing: 10) {
@@ -292,10 +414,38 @@ private struct FleetMemberRow: View {
                             .lineLimit(2)
                     }
                 }
+                if !cables.isEmpty {
+                    Label(cableLine, systemImage: "bolt.horizontal")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
             }
             Spacer()
+            if paired {
+                Button("Unpair", action: pair)
+                    .controlSize(.small)
+            } else if !cables.isEmpty && canSplit && member.me?.splits == true {
+                Button("Pair", action: pair)
+                    .controlSize(.small)
+                    .help(String(localized: "Split MiniMax H3 clips with this Mac over the Thunderbolt cable"))
+            }
         }
         .padding(.vertical, 2)
+    }
+
+    /// "Thunderbolt · en1 ↔ en6 · RDMA · 0.4 ms".
+    private var cableLine: String {
+        let ports = cables.map { c in
+            c.localPort.isEmpty || c.remotePort.isEmpty
+                ? c.remoteAddress : "\(c.localPort) ↔ \(c.remotePort)"
+        }.joined(separator: ", ")
+        let rdma = cables.contains { $0.rdma }
+        let ms = cables.map(\.rttMs).min() ?? 0
+        let n = cables.count == 1 ? String(localized: "Thunderbolt")
+            : String(localized: "Thunderbolt × \(String(cables.count))")
+        return [n, ports, rdma ? String(localized: "RDMA") : nil,
+                String(format: "%.1f ms", ms)]
+            .compactMap { $0 }.joined(separator: " · ")
     }
 
     private var state: String {

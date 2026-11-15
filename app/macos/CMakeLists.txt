@@ -98,6 +98,7 @@ set(VALTZ_APP_SOURCES
   Sources/Views/AtlasPlayback.swift
   Sources/Views/DroppedMedia.swift
   Sources/Views/MemoryPopover.swift
+  Sources/Views/FleetPopover.swift
   Sources/Views/StatusBar.swift
   Sources/Views/MarkupBar.swift
   Sources/Views/PromptBar.swift

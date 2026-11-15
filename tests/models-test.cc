@@ -257,7 +257,7 @@ TEST(models, an_abliterated_helper_is_chosen_by_name_alone)
   HardwareInfo m32 = box(32);
   m32.gpu_working_set_bytes = std::uint64_t{24} << 30;
   CHECK(!fits_as_assistant(*fn, m32));
-  // The only helper installed, on tgo-m5-3's 256 GB: still never Auto's.
+  // The only helper installed, on a 256 GB Mac: still never Auto's.
   auto root = test::temp_dir("models-by-name");
   fake_install(root, *fn);
   ModelStore store({root});
@@ -727,6 +727,36 @@ TEST(models, a_subdir_is_its_own_install)
   CHECK(store.info(*fl).state == InstallState::Installed);
   CHECK(store.info(*ref).state != InstallState::Installed);
   CHECK(store.info(*fl).dir == root / fl->hf_path / "FL2VA");
+}
+
+// A one-file model whose file needs another beside it (catalog `beside`):
+// Pika H3 Flex's adapter without its manifest -- a copy made before a
+// member's copies brought sidecars -- ran as a plain LoRA, and a split
+// clip's ranks sampled apart (tiles, a garbled sound). Without it the
+// model is a download not finished, never installed.
+TEST(models, a_file_without_what_it_needs_beside_it_is_partial)
+{
+  auto c = Catalog::builtin();
+  REQUIRE_OK(c);
+  for (const char* id :
+       {"minimax-h3-pika-flex", "minimax-h3-ref2va-pika-flex"}) {
+    const auto* e = c->find(id);
+    REQUIRE(e != nullptr);
+    REQUIRE(e->beside.size() == 1);
+    CHECK(e->beside[0] == "manifest.json");
+    auto root = test::temp_dir("models-beside");
+    const auto f = root / e->hf_path / e->file;
+    std::filesystem::create_directories(f.parent_path());
+    std::ofstream(f) << "x";
+    {
+      ModelStore store({root});
+      CHECK(store.info(*e).state == InstallState::Partial);
+    }
+    std::ofstream(f.parent_path() / "manifest.json") << "{}";
+    ModelStore store({root});
+    CHECK(store.info(*e).state == InstallState::Installed);
+    CHECK(store.info(*e).path() == f);
+  }
 }
 
 // One folder, several single-file models: madebyollin's taehv holds the
@@ -2013,7 +2043,7 @@ TEST(models, p_h3_image_is_fl2va_under_its_adapter)
 
 // MiniMax-H3-Image (MiniMaxAI, DESIGN §4x): pictures and edits of up to
 // sixteen pictures on its own audio-less H3 DiT, 6 steps at every
-// preference, up to 6272 a side, conditioned by MiniMax-H3's text encoder
+// preference, up to 8192 a side, conditioned by MiniMax-H3's text encoder
 // -- which FL2VA, Ref2VA or the encoder's own download carries: ready
 // with ANY ONE of them (`requires_one_of`), the first here its encoder
 // (`encoder_from`, the encoder alone first). Custom offers its canvas
@@ -2031,7 +2061,7 @@ TEST(models, minimax_h3_image_conditions_on_any_h3_encoder)
   CHECK((m->requires_one_of ==
          std::vector<std::string>{"minimax-h3-fl2va", "minimax-h3-ref2va",
                                   "minimax-h3-text-encoder"}));
-  CHECK(max_edge(*m) == 6272);
+  CHECK(max_edge(*m) == 8192);
   const Json vp = jget(m->engine, "vpipe", Json::object());
   CHECK(jget<std::string>(vp, "shape", "") == "h3-image");
   CHECK(jget<std::string>(vp, "dit_from", "").empty());
@@ -2956,7 +2986,7 @@ TEST(models, a_helpers_context_is_its_own_as_memory_holds_it)
   CHECK(language_context(lm).tokens == 32768);
   CHECK(language_context(lm).kv_bytes == 28u * 2 * 8 * 128 * 2);
 
-  // All of it on tgo-m5-3's 256 GB; on 24 GB what a quarter of the memory
+  // All of it on a 256 GB Mac; on 24 GB what a quarter of the memory
   // the weights leave holds at the pool's peak; never under 32,768 (an
   // agent's head is ~15,000), never over the model's.
   constexpr std::uint64_t GB = 1ull << 30;
@@ -3329,4 +3359,45 @@ TEST(models, a_models_read_speed_follows_the_engines_reader)
   // memory, as written).
   r = measure_read_speed({dir / "config.json"}, opt);
   CHECK(r.engine == 0 && r.total > 0 && r.read + r.cached == r.total);
+}
+
+// RELAYVSR's arithmetic (vpipe 81891d62, DESIGN §4f): the int8 GEMMs and
+// their tier, SageAttention and its int8 P*V on an M5's matrix cores,
+// the Neural Engine's feed-forward; as Settings › Upscaling runs it --
+// int8 on an M5, at Accurate, and below 32 GB at Per Token (its
+// `small_memory` table: 4.3 GB of weights held, not 8.4) -- the person's
+// own tier kept either way.
+TEST(models, relayvsr_takes_its_arithmetic_and_holds_less_on_small_macs)
+{
+  auto c = Catalog::builtin();
+  REQUIRE_OK(c);
+  const ModelEntry& m = *c->find("relayvsr");
+  TuningContext big;
+  big.matrix_cores = true;
+  big.ram_gb = 64;
+  TuningContext small = big;
+  small.ram_gb = 16;
+  TuningContext m4;
+  m4.ram_gb = 16;
+  std::set<std::string> keys;
+  const Json offered = tuning_options(m, big, "balanced", false);
+  for (const auto& o : offered["options"]) {
+    keys.insert(jget<std::string>(o, "key", ""));
+  }
+  for (const char* k : {"i8_gemm", "i8_gemm_tier", "sage_attn", "sage_pv8",
+                        "ane_ffn"}) {
+    CHECK(keys.contains(k));
+  }
+  const Json b = resolve_tuning(m, big, "balanced", false);
+  CHECK(jget(b, "i8_gemm", false));
+  CHECK(jget<std::string>(b, "i8_gemm_tier", "") == "accurate");
+  CHECK(!jget(b, "sage_attn", true));
+  const Json s = resolve_tuning(m, small, "balanced", false);
+  CHECK(jget(s, "i8_gemm", false));
+  CHECK(jget<std::string>(s, "i8_gemm_tier", "") == "token");
+  const Json own = resolve_tuning(m, small, "balanced", false,
+                                  {{"i8_gemm_tier", "accurate"}});
+  CHECK(jget<std::string>(own, "i8_gemm_tier", "") == "accurate");
+  // Before M5: no int8, whatever the table says.
+  CHECK(!jget(resolve_tuning(m, m4, "balanced", false), "i8_gemm", true));
 }

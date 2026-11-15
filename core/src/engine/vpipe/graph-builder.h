@@ -355,6 +355,10 @@ struct BuiltGraph {
   // carry (DESIGN §4e). Empty: none written.
   std::filesystem::path latent;
   std::filesystem::path audio_latent;
+  // A rank of a split DiT that does not keep the clip (job param
+  // "denoise_only", DESIGN §11c): its video latent, written as the proof
+  // its denoise ran -- nothing decoded, no file made -- and deleted.
+  std::filesystem::path denoised;
   // A RefMod made (DESIGN §4s): each source's latent as H3's VAE made it,
   // saved for the engine to pool (or keep), stack and write into
   // `output` -- media::make_refmod.

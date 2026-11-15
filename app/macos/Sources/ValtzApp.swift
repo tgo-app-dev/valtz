@@ -1323,6 +1323,44 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// the engine's own figures -- and drawn to `file` (a popover is a
     /// window of its own: the capture does not hold it). The MEMORY hook,
     /// and TASKS' `memory:<s>` while a task runs.
+    /// The Fleet meter's popover opened, its figures printed and drawn
+    /// (the FLEET_POPOVER hook).
+    @MainActor
+    static func snapshotFleet(_ m: AppModel, seconds: Double,
+                              to file: String) async {
+        for _ in 0..<120 where m.monitor.load.fleet == nil {
+            try? await Task.sleep(for: .milliseconds(500))
+        }
+        m.fleetPopoverOpen = true
+        try? await Task.sleep(for: .seconds(seconds))
+        let f = m.monitor.load.fleet
+        func t(_ v: Double?) -> String {
+            v.map { String(format: "%.2f", $0) } ?? "-"
+        }
+        let members = (f?.members ?? []).map {
+            "\($0.name.replacingOccurrences(of: " ", with: "_"))"
+                + ($0.isSelf ? "*" : "") + "=\(t($0.gpu))+\(t($0.ane))"
+        }.joined(separator: ",")
+        var pair = "-"
+        if let p = f?.pair {
+            let how = p.rdma ? "rdma" : "tcp"
+            let cap: Double? = p.capacity.map { $0 / 1e9 }
+            let state = p.active ? "active" : "idle"
+            pair = "\(p.name):links\(p.links):\(how):out\(t(p.sent / 1e9))"
+            pair += "/in\(t(p.received / 1e9))/of\(t(cap))GBps:\(state)"
+        }
+        FileHandle.standardError.write(Data(
+            "snapshot: fleet-popover open=\(m.fleetPopoverOpen) fleet=\(t(f?.total))/\(t(f?.peak)) members=\(members.isEmpty ? "-" : members) pair=\(pair)\n".utf8))
+        let r = ImageRenderer(content: FleetPopover(model: m)
+            .background(Color(nsColor: .windowBackgroundColor)))
+        r.scale = 2
+        if let img = r.nsImage, let tiff = img.tiffRepresentation,
+           let rep = NSBitmapImageRep(data: tiff),
+           let png = rep.representation(using: .png, properties: [:]) {
+            try? png.write(to: URL(fileURLWithPath: file))
+        }
+    }
+
     @MainActor
     static func snapshotMemory(_ m: AppModel, seconds: Double,
                                to file: String) async {
@@ -3051,6 +3089,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                                           to: (path as NSString)
                                               .deletingPathExtension
                                               + "-memory.png")
+            }
+            // VALTZ_SNAPSHOT_FLEET_POPOVER=1|<s>: the Fleet meter's
+            // popover opened (as a click on it opens it) once a member
+            // is connected (60 s at most), read for s seconds (3), each
+            // member's TFLOP/s and the paired link printed, drawn to
+            // <snapshot>-fleet.png.
+            if let m = model, let spec = env["VALTZ_SNAPSHOT_FLEET_POPOVER"] {
+                await Self.snapshotFleet(m, seconds: Double(spec) ?? 3,
+                                         to: (path as NSString)
+                                             .deletingPathExtension
+                                             + "-fleet.png")
             }
             // The status bar's context menu, opened by a right-click
             // posted on the bar: its items printed (+ checked), then
@@ -6604,7 +6653,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // menu), "source:<name>" Download From -- each printing
         // `snapshot: models <step> row=state/source/bits/why bytes=
         // check=<notes> compress=<note> job=<phase> stopping= ask=
-        // source=<chosen> sources=<the row's: name, or name:path there>`.
+        // source=<chosen> sources=<the row's: name, or name:path there>
+        // fleet=<the members to copy it from: name:cables:Gb/s>`;
+        // "download:<id>@fleet:<member>" its Copy from <member>.
         if settings, let spec = env["VALTZ_SNAPSHOT_MODELS"],
            let m = model {
             try? await Task.sleep(for: .milliseconds(1200))
@@ -6795,7 +6846,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     s.path == r?.hfPath ? s.name : "\(s.name):\(s.path)"
                 }
                 line += "source=\(m.capabilityTree?.downloadSource ?? "-") "
-                line += "sources=\(from.isEmpty ? "-" : from.joined(separator: ","))\n"
+                line += "sources=\(from.isEmpty ? "-" : from.joined(separator: ",")) "
+                // The members it can be copied from (DESIGN §11d):
+                // name:cables:Gb/s, `-` none.
+                let copies = (r?.fleet ?? []).map {
+                    "\($0.name):\($0.cables):\($0.gbps)"
+                }
+                line += "fleet=\(copies.isEmpty ? "-" : copies.joined(separator: ","))\n"
                 FileHandle.standardError.write(Data(line.utf8))
             }
         }
@@ -7600,7 +7657,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 + "drawers=\(m.drawerWidths.sorted { $0.key < $1.key }.map { "\($0.key):\(Int($0.value))" }.joined(separator: ",")) "
                 + "headers=\(m.trayHeaders) headerScroll=\(m.trayScrollFrame.isNull ? "-" : "\(Int(m.trayScrollFrame.minX)),\(Int(m.trayScrollFrame.minY)),\(Int(m.trayScrollFrame.width))x\(Int(m.trayScrollFrame.height))") "
                 + "sizeShown=\(m.sizeChoice.map { "\($0)" } ?? "custom") "
-                + "custom=\(m.customSize != nil) orientation=\(m.shownOrientation.rawValue) "
+                + "custom=\(m.customSize != nil) customSize=\(m.customSize.map { "\($0.width)x\($0.height)" } ?? "-") typedMax=\(m.typedMaxEdge) orientation=\(m.shownOrientation.rawValue) "
                 + "ratioShown=\(m.showsAspectRatio) "
                 + "marked=\(m.promptMarked.replacingOccurrences(of: "\u{FFFC}", with: "[*]").replacingOccurrences(of: " ", with: "_")) "
                 + "languages=\(L10n.available.joined(separator: ",")) "
@@ -7623,7 +7680,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 + "viewed=\(m.viewedAsset.flatMap { id in m.asset(id: id)?.name.replacingOccurrences(of: " ", with: "_") } ?? "-") stageLift=\(String(format: "%.2f", m.stageLift)) "
                 + "pages=\(m.stagePages) page=\(m.stagePage + 1) layerPages=\(m.stagePicture.map { p in p.layerStack.map { l in "\(l.id.isEmpty ? "0" : l.id):\(p.pageSpan(of: l).map { "\($0.lowerBound + 1)-\($0.upperBound + 1)" } ?? "none")" }.joined(separator: ",") } ?? "-") keyed=\(m.keyedStage) keys=\(m.keyFrames(.place).map(String.init).joined(separator: ",")) "
                 + "memoryFailure=\(m.memoryFailure.map { f in "\(f.step):\(MemoryFailure.size(f.need)):\(f.gates.filter { !$0.ok }.map(\.name).joined(separator: "+")):parts=\(f.parts.map(\.name).joined(separator: "+")):plan=\(MemoryFailure.size(f.planPeak))" } ?? "-") "
-                + "suggests=\([m.suggestsShorterClip ? "length" : nil, m.suggestsSmallerSize ? "size" : nil, m.suggestsFewerReferences ? "refs" : nil].compactMap { $0 }.joined(separator: ",")) "
+                + "suggests=\([m.suggestsShorterClip ? "length" : nil, m.suggestsSmallerSize ? "size" : nil, m.suggestsFewerReferences ? "refs" : nil, m.suggestsReadingAQuarter ? "quarter" : nil].compactMap { $0 }.joined(separator: ",")) "
                 + "bypassed=\(m.bypassed.map { "\($0)" }.sorted()) "
                 + "statusBar=\(m.showsStatusBar) "
                 + "statusItems=\(Self.statusItems(m)) "

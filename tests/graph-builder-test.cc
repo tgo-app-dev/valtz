@@ -647,6 +647,109 @@ TEST(graph_builder, flashvsr_plus_restores_in_its_own_cadence)
   CHECK((*find_stage(g->spec, "decode"))["iports"].size() == 2);
 }
 
+// RelayVSR makes exactly four times what it reads: read at the clip's
+// own size by default, the 4x frames fitted down by lanczos (or at a
+// quarter of the size asked), one stage, no model-select, gated a
+// keyframe's span at a time.
+TEST(graph_builder, relayvsr_reads_its_own_size_and_makes_four_times)
+{
+  JobSpec job = job_for("relayvsr", kOpUpscaleVideo);
+  job.model.dir = "/m/kopper/RelayVSR";
+  job.params = {{"width", 1280}, {"height", 704}, {"count", 40},
+                {"first", 8}};
+  JobInput in;
+  in.role = "source";
+  in.path = "/tmp/clip.mp4";
+  in.info.type = media::MediaType::Video;
+  in.info.frame.width = 640;
+  in.info.frame.height = 352;
+  in.info.frame_rate = {24, 1};
+  in.info.frame_count = 56;
+  job.inputs.push_back(in);
+
+  // The default: 4x of 640 x 352 made, fitted down to the size asked.
+  auto g = vp::build_upscale_video(job);
+  REQUIRE_OK(g);
+  CHECK(find_stage(g->spec, "model-select") == nullptr);
+  CHECK(find_stage(g->spec, "generate") == nullptr);
+  CHECK(find_stage(g->spec, "fit-in") == nullptr);
+  const Json* up = find_stage(g->spec, "upscale");
+  REQUIRE(up);
+  CHECK(jget<std::string>(*up, "type", "") == "relayvsr-upscale");
+  CHECK(src_of(up, 0) == "read");
+  CHECK(jget<std::string>(config_of(up), "hf_dir", "") ==
+        "/m/kopper/RelayVSR");
+  CHECK(jget(config_of(up), "window", 0) == 16);
+  CHECK(jget(config_of(up), "seed", 0) == 42);   // the release's
+  // The 4x frames it makes, for vpipe's plan; no arithmetic, none sent.
+  CHECK(jget(config_of(up), "output_width", 0) == 2560);
+  CHECK(jget(config_of(up), "output_height", 0) == 1408);
+  CHECK(!config_of(up).contains("i8_gemm"));
+  CHECK(!config_of(up).contains("autotune"));
+  const Json* fit = find_stage(g->spec, "fit");
+  REQUIRE(fit);
+  CHECK(jget<std::string>(config_of(fit), "algorithm", "") == "lanczos");
+  CHECK(jget(config_of(fit), "width", 0) == 1280);
+  CHECK(jget(config_of(fit), "height", 0) == 704);
+  CHECK(src_of(find_stage(g->spec, "tap"), 0) == "fit");
+  CHECK(jget(config_of(find_stage(g->spec, "tap")), "max_frames", 0) ==
+        40);
+  REQUIRE(g->movie);
+  CHECK(g->movie->first == 8);
+  CHECK(g->movie->count == 40);
+  CHECK(g->movie->size.width == 640);
+  CHECK(g->movie->gate.tap == "tap");
+  CHECK(g->movie->gate.group == 15);
+  CHECK(g->movie->gate.lag == 16);
+  CHECK(g->width == 1280 && g->height == 704);
+
+  // A quarter of the size asked (Settings › Upscaling): read at 320 x
+  // 176, four times it the size asked, nothing fitted after; a window of
+  // 8 and a seed asked.
+  // Settings › Upscaling's arithmetic too, Reproducibility's untuned.
+  job.params["tuning"] = {{"read_at", "quarter"}, {"window", 8},
+                          {"i8_gemm", true}, {"i8_gemm_tier", "token"},
+                          {"sage_attn", true}, {"sage_pv8", true},
+                          {"ane_ffn", true}, {"ane_rows", 0.5},
+                          {"autotune", false}};
+  job.params["seed"] = 7;
+  auto q = vp::build_upscale_video(job);
+  REQUIRE_OK(q);
+  vp::untune_stages(job, q->spec);
+  const Json* fit_in = find_stage(q->spec, "fit-in");
+  const Json* qup = find_stage(q->spec, "upscale");
+  REQUIRE(fit_in && qup);
+  CHECK(jget(config_of(fit_in), "width", 0) == 320);
+  CHECK(jget(config_of(fit_in), "height", 0) == 176);
+  CHECK(src_of(qup, 0) == "fit-in");
+  CHECK(jget(config_of(qup), "window", 0) == 8);
+  CHECK(jget(config_of(qup), "seed", 0) == 7);
+  CHECK(jget(config_of(qup), "output_width", 0) == 1280);
+  CHECK(jget(config_of(qup), "output_height", 0) == 704);
+  CHECK(jget(config_of(qup), "i8_gemm", false));
+  CHECK(jget<std::string>(config_of(qup), "i8_gemm_tier", "") == "token");
+  CHECK(jget(config_of(qup), "sage_attn", false));
+  CHECK(jget(config_of(qup), "sage_pv8", false));
+  CHECK(jget(config_of(qup), "ane_ffn", false));
+  CHECK(jget(config_of(qup), "ane_rows", 0.0) == 0.5);
+  CHECK(!jget(config_of(qup), "autotune", true));
+  CHECK(!config_of(qup).contains("read_at"));
+  CHECK(find_stage(q->spec, "fit") == nullptr);
+  CHECK(q->movie->gate.group == 7);
+  CHECK(q->movie->gate.lag == 8);
+
+  // Past four times: read larger than the clip, at a quarter of the size
+  // asked, whatever Read At says.
+  job.params.erase("tuning");
+  job.params["width"] = 3200;
+  job.params["height"] = 1760;
+  auto big = vp::build_upscale_video(job);
+  REQUIRE_OK(big);
+  CHECK(jget(config_of(find_stage(big->spec, "fit-in")), "width", 0) ==
+        800);
+  CHECK(find_stage(big->spec, "fit") == nullptr);
+}
+
 // VOSR's restorer takes the same arithmetic, Sol among it, on its
 // generate stage -- the one step it was distilled for left to vpipe.
 TEST(graph_builder, a_picture_upscale_runs_as_tuned)
@@ -2947,6 +3050,175 @@ TEST(graph_builder, minimax_h3_clip_opens_on_a_picture)
 // prompt encoder too, on its first picture's port, as vpipe's
 // last-frame-to-video graph shows it. Never on a family that ends on
 // none.
+// One rank of a DiT split with another Mac (DESIGN §11c): the request's
+// share and the transport's params on generate-video, the plugin's
+// transport named; unsplit, nothing.
+TEST(graph_builder, a_split_dits_rank_names_its_transport)
+{
+  JobSpec j = job_for("minimax-h3-fl2va", kOpGenerateVideo);
+  j.params = {{"prompt", "a fox in snow"}, {"width", 640}, {"height", 352},
+              {"frames", 39}, {"steps", 8}};
+  auto plain = vp::build_video(j, std::nullopt, {});
+  REQUIRE_OK(plain);
+  const Json* pg = find_stage(plain->spec, "generate-video");
+  REQUIRE(pg);
+  CHECK(!config_of(pg).contains("tensor_parallel"));
+  j.params["tensor_parallel"] = {
+      {"rank", 1}, {"ranks", 2}, {"heads", {44, 56}},
+      {"ffn", {11264, 14336}},
+      {"params", {{"role", "connect"}, {"links", {"169.254.1.2:47300"}}}}};
+  auto g = vp::build_video(j, std::nullopt, {});
+  REQUIRE_OK(g);
+  const Json* gen = find_stage(g->spec, "generate-video");
+  REQUIRE(gen);
+  const Json tp = jget(config_of(gen), "tensor_parallel", Json());
+  CHECK(jget<std::string>(tp, "transport", "") == "valtz-tp");
+  CHECK(jget<int>(tp, "rank", -1) == 1);
+  CHECK(jget(tp, "heads", Json()) == Json({44, 56}));
+  CHECK(jget<std::string>(jget(tp, "params", Json()), "role", "") ==
+        "connect");
+  CHECK(find_stage(g->spec, "vae-decode") != nullptr);
+  // The member's rank, the clip made by the other: its denoise alone --
+  // the latent written, nothing decoded, no sound, no movie.
+  j.params["denoise_only"] = true;
+  auto d = vp::build_video(j, std::nullopt, {});
+  REQUIRE_OK(d);
+  const Json* saved = find_stage(d->spec, "denoised");
+  REQUIRE(saved);
+  CHECK(jget<std::string>(*saved, "type", "") == "save-tensor");
+  CHECK(!d->denoised.empty());
+  CHECK(d->video_part.empty() && d->audio_part.empty());
+  for (const char* gone : {"vae-decode", "save-video", "audio-vae-decode",
+                           "save-audio"}) {
+    CHECK(find_stage(d->spec, gone) == nullptr);
+  }
+  // The DECODE split too (a `decode_share`; DESIGN §11c): this Mac's
+  // vae-decode a share of it through the same transport, the member's
+  // denoise followed by its own share -- decoded, handed over, nothing
+  // written -- and generate-video told the bands' floor, not the share.
+  j.params.erase("denoise_only");
+  j.params["tensor_parallel"]["rank"] = 0;
+  j.params["tensor_parallel"]["decode_share"] = {0.0, 0.36};
+  j.params["tensor_parallel"]["min_band_rows"] = 2304;
+  auto s = vp::build_video(j, std::nullopt, {});
+  REQUIRE_OK(s);
+  const Json* sg = find_stage(s->spec, "generate-video");
+  REQUIRE(sg);
+  const Json stp = jget(config_of(sg), "tensor_parallel", Json());
+  CHECK(!stp.contains("decode_share"));
+  CHECK(jget<int>(stp, "min_band_rows", 0) == 2304);
+  const Json* sd = find_stage(s->spec, "vae-decode");
+  REQUIRE(sd);
+  const Json dtp = jget(config_of(sd), "tensor_parallel", Json());
+  CHECK(jget<std::string>(dtp, "transport", "") == "valtz-tp");
+  CHECK(jget(dtp, "decode_share", Json()) == Json({0.0, 0.36}));
+  CHECK(find_stage(s->spec, "save-video") != nullptr);
+  j.params["denoise_only"] = true;
+  j.params["tensor_parallel"]["rank"] = 1;
+  j.params["tensor_parallel"]["decode_share"] = {0.36, 1.0};
+  auto m = vp::build_video(j, std::nullopt, {});
+  REQUIRE_OK(m);
+  const Json* md = find_stage(m->spec, "vae-decode");
+  REQUIRE(md);
+  CHECK(jget(jget(config_of(md), "tensor_parallel", Json()),
+             "decode_share", Json()) == Json({0.36, 1.0}));
+  CHECK(find_stage(m->spec, "denoised") != nullptr);
+  for (const char* gone : {"save-video", "audio-vae-decode", "save-audio"}) {
+    CHECK(find_stage(m->spec, gone) == nullptr);
+  }
+}
+
+// A clip past 768P split (DESIGN §11c, §4q): the draft and its refine
+// each a rank -- both generate-videos carry the share, the draft's let go
+// once made, as H3's always is (the catalog's `unload_when_idle`: the
+// refine's share is another, cut under its own adapter); this Mac's rank
+// decodes the refine as ever, the member's writes the refine's latent
+// and decodes nothing.
+TEST(graph_builder, a_split_2k_clip_drafts_and_refines_on_both_ranks)
+{
+  JobSpec j = job_for("minimax-h3-fl2va", kOpGenerateVideo);
+  j.params = {{"prompt", "a lighthouse at dusk"}, {"width", 2560},
+              {"height", 1440}, {"frames", 39}, {"steps", 4},
+              {"seed", 7},
+              {"draft", {{"width", 1376}, {"height", 768}}},
+              {"regenerate", "open-h3-regenerate-2k"},
+              {"regenerate_tuning",
+               {{"i8_gemm", true}, {"i8_gemm_tier", "token"}}},
+              {"regenerate_spec", {{"steps", 3}}},
+              {"tensor_parallel",
+               {{"rank", 0}, {"ranks", 2}, {"heads", {0, 16}},
+                {"ffn", {0, 4096}},
+                {"params", {{"role", "connect"},
+                            {"links", {"169.254.1.2:47300"}}}}}}};
+  j.model.regenerate_lora = "/m/regen/lora/open_h3_regenerate_2k_lora.st";
+  j.model.latent_upscaler = "/m/regen/latent_upsampler/up.safetensors";
+  auto g = vp::build_video(j, std::nullopt, {});
+  REQUIRE_OK(g);
+  const Json* draft = find_stage(g->spec, "generate-video");
+  const Json* refine = find_stage(g->spec, "regenerate");
+  REQUIRE(draft);
+  REQUIRE(refine);
+  for (const Json* gen : {draft, refine}) {
+    const Json tp = jget(config_of(gen), "tensor_parallel", Json());
+    CHECK(jget<std::string>(tp, "transport", "") == "valtz-tp");
+    CHECK(jget(tp, "heads", Json()) == Json({0, 16}));
+  }
+  CHECK(jget<std::string>(config_of(draft), "unload_when_idle", "") ==
+        "always");
+  CHECK(find_stage(g->spec, "regenerate-decode") != nullptr);
+  // The member's rank: through the refine, its latent written.
+  j.params["denoise_only"] = true;
+  j.params["tensor_parallel"]["rank"] = 1;
+  auto d = vp::build_video(j, std::nullopt, {});
+  REQUIRE_OK(d);
+  const Json* saved = find_stage(d->spec, "denoised");
+  REQUIRE(saved);
+  CHECK(src_of(saved, 0) == "regenerate");
+  CHECK(find_stage(d->spec, "latent-upscale") != nullptr);
+  CHECK(jget(jget(config_of(find_stage(d->spec, "regenerate")),
+                  "tensor_parallel", Json()),
+             "rank", -1) == 1);
+  for (const char* gone : {"vae-decode", "regenerate-decode", "save-video",
+                           "audio-vae-decode", "save-audio",
+                           "draft-decode"}) {
+    CHECK(find_stage(d->spec, gone) == nullptr);
+  }
+  // A 2K draft is not kept warm (its refine needs the room); a plain
+  // clip's DiT is, by the Mac's rule (param keep_models).
+  j.params["keep_models"] = 600.0;
+  auto kd = vp::build_video(j, std::nullopt, {});
+  REQUIRE_OK(kd);
+  CHECK(!config_of(find_stage(kd->spec, "generate-video"))
+             .contains("keep_loaded"));
+  {
+    JobSpec p = job_for("minimax-h3-fl2va", kOpGenerateVideo);
+    p.params = {{"prompt", "a fox"}, {"width", 832}, {"height", 480},
+                {"frames", 39}, {"steps", 4}, {"keep_models", 600.0}};
+    auto pg = vp::build_video(p, std::nullopt, {});
+    REQUIRE_OK(pg);
+    CHECK(jget(config_of(find_stage(pg->spec, "generate-video")),
+               "keep_loaded", 0.0) == 600.0);
+    CHECK(jget(config_of(find_stage(pg->spec, "vae-decode")),
+               "keep_loaded", 0.0) == 600.0);
+  }
+  // The refine's decoder is kept, as any decoder is.
+  j.params.erase("denoise_only");
+  auto kr = vp::build_video(j, std::nullopt, {});
+  REQUIRE_OK(kr);
+  CHECK(jget(config_of(find_stage(kr->spec, "regenerate-decode")),
+             "keep_loaded", 0.0) == 600.0);
+  // Unsplit, neither carries one.
+  j.params.erase("keep_models");
+  j.params.erase("tensor_parallel");
+  j.params.erase("denoise_only");
+  auto u = vp::build_video(j, std::nullopt, {});
+  REQUIRE_OK(u);
+  CHECK(!config_of(find_stage(u->spec, "generate-video"))
+             .contains("tensor_parallel"));
+  CHECK(!config_of(find_stage(u->spec, "regenerate"))
+             .contains("tensor_parallel"));
+}
+
 TEST(graph_builder, minimax_h3_clip_ends_on_a_picture)
 {
   JobSpec j = job_for("minimax-h3-fl2va", kOpGenerateVideo);

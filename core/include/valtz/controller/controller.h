@@ -50,6 +50,8 @@
 #include "valtz/engine/engine.h"
 #include "valtz/ext/extension.h"
 #include "valtz/fleet/fleet.h"
+#include "valtz/fleet/model-share.h"
+#include "valtz/fleet/thunderbolt.h"
 #include "valtz/media/adjust.h"
 #include "valtz/media/beats.h"
 #include "valtz/media/bookmarks.h"
@@ -298,6 +300,12 @@ struct GenerateVideoRequest {
   // written beside it and kept with it in the project (its version's
   // outputs "latents"), for a continuation from them. Off: none.
   bool                 keep_latents = false;
+  // TENSOR PARALLEL (DESIGN §11c): this Mac one RANK of a DiT split with
+  // another -- {rank, ranks, heads: [first, end], ffn: [first, end],
+  // params: the transport's (role, links, interfaces, key, wait_ms)} --
+  // its share of the heads and feed-forward rows here, the partial sums
+  // exchanged through the plugin's valtz-tp. Null: not split.
+  Json                 tensor_parallel;
   // The result's soundtrack is the first sound reference's own, over the
   // clip's length -- a music video's song, as it is -- in place of the
   // one generated with the picture.
@@ -404,8 +412,10 @@ std::filesystem::path page_path(const std::filesystem::path& destination,
 // "memory" -- vpipe's numbers as they came (SessionIntf::reports): the
 // refusal part by part, each budget's need and room, the resource plan
 // by phase -- and "suggest": what to change, from the request -- a clip's
-// "length" (frames, seconds), the "resolution" (width, height), the
-// "references" (count) -- each present when the request had it.
+// "length" (frames, seconds), the "resolution" (width, height; not an
+// upscale's), the "references" (count), an upscale's "read_at" (model,
+// now, to: RelayVSR read at its clip's own size, quarter the way to
+// fit) -- each present when the request had it.
 Json out_of_memory_report(const Json& memory, const project::Recipe*);
 
 // A prompt to enhance, for the model it is meant for. A model whose
@@ -607,7 +617,8 @@ public:
   // them (Engine::machine_status / gpu_thermal): the status bar's.
   // machine_status carries the arithmetic achieved too -- this Mac's
   // (Engine::throughput) and, with a member connected, the fleet's
-  // ("fleet": fleet::Fleet::throughput). gpu_thermal blocks for
+  // ("fleet": fleet::Fleet::throughput) -- and, paired over Thunderbolt,
+  // the split's link ("pair": pair_traffic_). gpu_thermal blocks for
   // `window_ms`.
   Json machine_status();
   Json gpu_thermal(int window_ms = 600);
@@ -730,6 +741,11 @@ public:
   // it reads: call it off the main thread.
   Result<Json> measure_read_speed(const std::string& id,
                                   double seconds = 10.0) const;
+  // A split's link measured with no model (Engine::tp_bench): valtzctl
+  // tp-bench, the two Macs each running one rank. Blocks.
+  Result<Json> tp_bench(const Json& tp,
+                        const std::vector<std::size_t>& sizes,
+                        int rounds) const;
   // Settings > Storage: what Valtz keeps on the volume of its support
   // folder (the internal SSD), by category -- every model in the
   // models folder it manages, every project package (an open one's
@@ -1287,11 +1303,15 @@ public:
   // `at_end` (Settings › General › Generations' At the End): a CLIP put
   // on a timeline starts where its content ends -- measured as it lands,
   // so clips queued one after another go end to end -- not at `offset`:
-  // nothing under it, no gap before it.
+  // nothing under it, no gap before it. `new_page` (its New Page): a
+  // PICTURE put on a still gets a page of its own, added after the last
+  // -- what ran to the last page stops before it -- not a layer on the
+  // page shown.
   Result<std::pair<AssetId, std::string>> place_result(
       ProjectId, AssetId asset, std::optional<AssetId> onto,
       std::optional<std::string> at = std::nullopt, std::int64_t offset = 0,
-      std::optional<JobId> job = std::nullopt, bool at_end = false);
+      std::optional<JobId> job = std::nullopt, bool at_end = false,
+      bool new_page = false);
   // An asset INSTANTIATED in `onto` (what the stage works on; none: the
   // project's composition, made of it when there is none): a NEW LAYER
   // showing it -- in `at` when that layer is blank, else right above it;
@@ -1696,8 +1716,9 @@ public:
                                 const std::vector<std::filesystem::path>&
                                     images,
                                 int max_new_tokens = 512);
-  // Until the names the micro agent was asked for have landed (or not):
-  // valtzctl, whose process ends with its job. False past `timeout_ms`.
+  // Until the names the micro agent was asked for have landed (or not)
+  // and are written: valtzctl, whose process ends -- and saves -- with
+  // its job. False past `timeout_ms`.
   bool wait_micro(int timeout_ms);
   // Download a catalog model into the store's download root. A GATED
   // one (catalog `gated`: its publisher's license accepted on Hugging
@@ -1719,6 +1740,12 @@ public:
   // named, passed over for Hugging Face when it is only the one chosen.
   // Wherever it comes from, a model is the same files in the same folder:
   // a download paused on one source goes on from the other.
+  //
+  // "fleet:<member id>": COPIED from that member of the fleet (DESIGN
+  // §11d) -- its files over each Thunderbolt cable to it, several streams
+  // a cable (else its network address), into the folder a download goes
+  // to: a download in all else (paused, resumed, cancelled alike).
+  // Refused when the member is not connected or does not share it.
   Result<JobId> download_model(const std::string& model_id,
                                const std::string& hf_token = "",
                                const std::string& source = "");
@@ -2339,15 +2366,19 @@ private:
   friend class AgentHost;
   // ---- the fleet
   class FleetHost;
-  // Busy: a job of its engine queued or running here.
-  bool busy_here_() const;
+  // Busy: a job of its engine queued or running here (but `except`: the
+  // one being sent).
+  bool busy_here_(JobId except = {}) const;
   // The members that could take a job now, best first: idle, taking
   // jobs, running `op` with every model in `models` (a chat: an
   // assistant) -- when this Mac cannot run it (`here` false) or is
   // busy. None: here.
+  // `weights`: the bytes of the job's own weight files sent with it
+  // (DESIGN §11d) -- a member that takes them and has the disk.
   std::vector<Json> fleet_candidates_(const std::string& op,
                                       const std::vector<std::string>& models,
-                                      bool here) const;
+                                      bool here,
+                                      std::uint64_t weights = 0) const;
   // Where a job of `op` on `model` goes (fleet::Config::offload): its
   // policies apply while this Mac is in a fleet; out of one, local first.
   std::string offload_policy_(std::string_view op,
@@ -2360,11 +2391,130 @@ private:
                      std::optional<engine::JobSpec> local,
                      engine::JobSink sink);
   Json fleet_self_() const;
+  // The MODEL SHARE (DESIGN §11d): this Mac's file server while it is in
+  // a fleet (started, or let go, as the configuration follows), and what
+  // it serves of a model -- its own files, as installed here and shared;
+  // a compressed copy alone is not (its original is what a copy is).
+  void share_follow_();
+  // "job:<id>": a job's own weights, served while it runs.
+  Result<fleet::ShareList> share_list_(const std::string& model) const;
+  // A model's copy from a member: the plan -- its routes, its port --
+  // or why not.
+  Result<fleet::CopyPlan> copy_plan_(const models::ModelEntry&,
+                                     const std::string& member,
+                                     const std::filesystem::path& dest);
+  // Each model the connected members share, and from whom: {"member",
+  // "name", "thunderbolt", "cables", "gbps"} (the Capabilities row's
+  // Copy from …).
+  std::map<std::string, Json> fleet_copies_() const;
+  // ---- Thunderbolt between members (fleet/thunderbolt.h, DESIGN §11c)
+  // This Mac's Thunderbolt network, read again past a few seconds.
+  fleet::TbState tb_state_() const;
+  // The links to each connected member ("id"), as last probed -- probed
+  // again in the background when stale or a member's network changed,
+  // or now, on this thread (`now`: before a split). `fresh` (s): only a
+  // probe that recent, else none.
+  std::map<std::string, std::vector<fleet::TbLink>>
+  tb_links_(bool now, double fresh = 0);
+  void tb_refresh_();
+  void tb_probe_();
+  // The paired member as Settings shows it: {"member", "name",
+  // "connected", "links", "rdma", "heads": [here, there], "ready",
+  // "why" (a message's fields)}; null unpaired.
+  Json pair_outlook_();
+  // The paired member's link as the status bar's Fleet popover draws it:
+  // {"member", "name", "links", "rdma", "capacity_bytes_per_s" (each
+  // direction: the cables' speeds summed; absent where none is known),
+  // "sent_bytes_per_s", "received_bytes_per_s" (the split's partials,
+  // this Mac's out and the member's in, over the last second or more),
+  // "active" (a split's channel open)}; null with no pair.
+  Json pair_traffic_();
+  // A clip SPLIT with the paired member (DESIGN §11c): this Mac rank 0
+  // (listening on its end of each cable), the member rank 1 (connecting
+  // from its end), each its share of the heads and feed-forward rows.
+  struct SplitPlan {
+    std::string member;
+    std::string name;
+    Json        local;  // generate-video's tensor_parallel, here
+    Json        peer;   // ...there (its key made there)
+    int         links = 0;
+    bool        rdma = false;
+    // This Mac's own LoRAs go with the member's half (DESIGN §11d).
+    bool        own_weights = false;
+    // The member's half MAKES THE CLIP (pair_decode): it decodes, writes
+    // and sends it back; this Mac's rank denoises alone.
+    bool        peer_keeps = false;
+    // The DECODE split too (pair_decode auto, both Macs able): each Mac
+    // decodes its share of the clip's chunks and the member hands its
+    // part over the link; this Mac makes the clip.
+    bool        split_decode = false;
+  };
+  // How `r` would split now. An error says why not: Unsupported -- worth
+  // telling (a pair is set and the model splits); NotFound -- nothing to
+  // say (no pair, another model).
+  Result<SplitPlan> split_plan_(const project::Recipe& r,
+                                const engine::ModelRef& ref,
+                                const Json& carried, JobId job);
+  // A split clip's two ranks while they run.
+  struct Split {
+    JobId                          id;
+    std::string                    member;
+    std::string                    name;
+    std::string                    title;
+    std::mutex                     mu;
+    // This Mac's rank, until the member's begins; the clip whole, should
+    // the member not take its half.
+    std::optional<engine::JobSpec> local;
+    std::optional<engine::JobSpec> whole;
+    engine::JobSink                sink;
+    bool                           started = false;
+    bool                           ended = false;
+    bool                           cancelled = false;
+    bool                           peer_done = false;
+    std::string                    peer_error;
+    // The member makes the clip (SplitPlan::peer_keeps): this Mac's rank
+    // ending is not the clip's end; the member's outputs and Finished are.
+    bool                           peer_keeps = false;
+    bool                           local_done = false;
+  };
+  Status run_split_(SplitPlan plan, engine::JobSpec spec,
+                    const project::Recipe& r, const std::string& title,
+                    engine::JobSink sink);
+  void split_peer_event_(const std::shared_ptr<Split>&,
+                         const engine::JobEvent&);
+  void split_local_event_(const std::shared_ptr<Split>&,
+                          const engine::JobEvent&);
   // A member taking jobs runs "<modality>/<op>/<model>".
   bool fleet_runs_(const std::string& key) const;
+  // `own_ok`: its weight files' paths are this Mac's, copied here first
+  // (serve_weights_).
   Status fleet_serve_(const fleet::Offer&, const std::string& from,
                       const std::filesystem::path& out_dir,
-                      engine::JobSink sink);
+                      engine::JobSink sink, bool own_ok = false);
+  // A JOB'S OWN WEIGHTS sent with it (DESIGN §11d). The sender's side:
+  // its weight files -- Custom's LoRAs, DiT, VAE, files or folders --
+  // served for the job by this Mac's model share as "job:<id>" until it
+  // ends; what the offer says of them ("weights_from"), their bytes.
+  Result<Json> own_weights_(const Json& params, JobId job,
+                            std::uint64_t* bytes);
+  void unshare_job_(JobId);
+  // Pushed to the member chosen BEFORE the job is offered to it (a
+  // member serving detached may not connect out, so it cannot fetch
+  // them): in a thread, its progress the job's; `then` told how it went
+  // -- Busy where the member has no room.
+  Status push_weights_(const Json& member, const fleet::Offer&,
+                       std::function<void(Status)> then,
+                       engine::JobSink sink);
+  // The member's side: where a bundle pushed here goes
+  // (`<fleet files>/weights/<bundle>`, kept a week since last used, a
+  // later job of the same files sending nothing) -- Busy without the
+  // room; and the job served with its weights' paths there.
+  Result<std::filesystem::path> weights_dir_(const std::string& bundle,
+                                             std::uint64_t bytes);
+  Status serve_weights_(const fleet::Offer&, const std::string& from,
+                        const std::filesystem::path& out_dir,
+                        engine::JobSink sink);
+  void cancel_weights_(JobId);
   // A preset that needs a LoRA none of whose candidates is installed is
   // refused by name (kPresetLoraMissing) -- unless Custom names its own
   // LoRAs or turns the adapter off.
@@ -2464,6 +2614,10 @@ private:
   // A refiner runs here: ready, on an engine with the latent upscaler --
   // and, one IN CONTEXT (its `in_context`), the reference refine too.
   bool refiner_runs_(const models::ModelEntry& refiner) const;
+  // An upscaler runs on this engine: RelayVSR (its `upscale` block's
+  // `kind` "relayvsr") only on a vpipe with its stage; any other, and
+  // any where no engine runs to ask, yes.
+  bool upscaler_runs_(const models::ModelEntry& upscaler) const;
   // The words `m`'s clip regenerated by `refiner` is refined against --
   // its prompt's "regenerate_prompt:" segment, else made from `prompt`
   // (the model's) where the refine runs another model -- and where they
@@ -3098,6 +3252,9 @@ private:
   };
   std::mutex                         _naming_mu;
   std::map<AssetId, Naming>          _naming;
+  // Names landed and being written (out of `_naming` already): waited
+  // for too.
+  int                                _naming_writing = 0;
   models::Catalog                    _catalog;
   // Every package found at launch, as taken (fixed for the run).
   std::vector<ext::Extension>        _extensions;
@@ -3109,7 +3266,39 @@ private:
   JobTable                           _jobs;
   std::string                        _host;
   std::unique_ptr<FleetHost>         _fleet_host;
+  std::unique_ptr<fleet::ShareServer> _share;
+  std::filesystem::path              _fleet_files;
+  mutable std::mutex                 _share_jobs_mu;
+  std::map<std::string, fleet::ShareList> _share_jobs;
+  std::mutex                         _weights_mu;
+  std::map<JobId, std::shared_ptr<std::atomic<bool>>> _weight_stops;
+  std::vector<std::thread>           _weight_threads;
   std::unique_ptr<fleet::Fleet>      _fleet;
+  // Thunderbolt: this Mac's network as last read, the links to each
+  // member as last probed (with the member's network they were probed
+  // against), the probe running in the background.
+  mutable std::mutex                 _tb_mu;
+  mutable fleet::TbState             _tb_state;
+  mutable double                     _tb_state_at = -1;
+  int                                _tb_fleet_port = 0;
+  struct TbMember {
+    fleet::TbState               theirs;
+    std::vector<fleet::TbLink>   links;
+  };
+  std::map<std::string, TbMember>    _tb_members;
+  double                             _tb_probed_at = -1;
+  bool                               _tb_probing = false;
+  // The split's traffic as last sampled (pair_traffic_), its rates.
+  std::mutex                         _traffic_mu;
+  double                             _traffic_at = -1;
+  std::uint64_t                      _traffic_sent = 0;
+  std::uint64_t                      _traffic_received = 0;
+  double                             _traffic_sent_rate = 0;
+  double                             _traffic_received_rate = 0;
+  std::thread                        _tb_thread;
+  // Clips split with the paired member, while they run.
+  std::mutex                                     _splits_mu;
+  std::map<JobId, std::shared_ptr<Split>>        _splits;
   // After the engine and the fleet it uses: its threads joined first.
   std::unique_ptr<AgentHost>         _agent;
 

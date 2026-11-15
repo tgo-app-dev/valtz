@@ -52,6 +52,9 @@ struct JobRecord {
   std::string                runner;
   std::string                runner_name;
   std::string                runner_engine;
+  // Its DiT SPLIT with the paired member (DESIGN §11c): that member's
+  // name -- this Mac runs one rank, it the other. "" not split.
+  std::string                split_with;
   // A continuation's: how the clip it continues reached the model -- its
   // kept latents carried, or its pixels read (DESIGN §4e). Kept with
   // the version it makes (its outputs' "continued").

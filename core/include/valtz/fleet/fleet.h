@@ -93,6 +93,27 @@ struct Config {
   // is withheld).
   std::set<std::string> withheld_tasks;
   std::set<std::string> withheld_models;
+  // The member this Mac is PAIRED with over Thunderbolt (DESIGN §11c):
+  // a clip whose DiT may be split runs half there -- this Mac one rank,
+  // the member the other, their partial sums over the cable. Its id
+  // ("" none) and its name when paired; `pair_rdma` the partials over
+  // RDMA where both ports of the cable have it up (else TCP);
+  // `pair_share` this Mac's share of the heads, 0 by the two GPUs.
+  std::string pair_member;
+  std::string pair_name;
+  bool        pair_rdma = true;
+  double      pair_share = 0;
+  // Which Mac DECODES a split clip: "here" (this Mac's rank makes the
+  // clip), "there" (the member's half makes it and sends it back), "auto"
+  // (the default) the one with the faster GPU -- the decode, the sound and
+  // the writing are a split clip's work neither rank shares.
+  std::string pair_decode = "auto";
+  // A job naming WEIGHTS OF ONE'S OWN -- Custom's LoRAs, DiT, VAE --
+  // sent too (DESIGN §11d): to a member with the disk for them, which
+  // copies them from this Mac's model share before it starts the job
+  // (over Thunderbolt where a cable is), keeping them for the next. Off:
+  // such a job runs here, as before.
+  bool send_weights = false;
 
   bool joined() const { return !fleet.empty() && !key.empty(); }
   // Takes fleet jobs at `t`: its policy, its schedule.
@@ -106,6 +127,11 @@ struct Config {
 // The pre-shared key: HMAC-SHA256 of the fleet's name, keyed by its
 // secret, as hex. The same name and secret make the same key on any Mac.
 std::string derive_key(std::string_view fleet, std::string_view secret);
+
+// The KEY a split DiT's two ranks prove to each other (valtz-tp's
+// handshake): HMAC-SHA256 of the job's id, keyed by the fleet's key, as
+// hex -- each rank makes it from its own copy, so it never crosses.
+std::string split_key(std::string_view fleet_key_hex, std::string_view job);
 
 // Kept as JSON beside the rest of Valtz's settings (or where
 // $VALTZ_FLEET_CONFIG says), its key with it, readable by its owner

@@ -260,7 +260,7 @@ enum SettingsPage: String, CaseIterable, Identifiable, Hashable {
         case .helper:
             String(localized: "The model that writes prompts with you, reads what you ask for and watches your clips: which one, and how it runs.")
         case .upscaling:
-            String(localized: "How Render Upscaled restores a layer at the size it is shown — FlashVSR+ or FlashVSR 1.1 for clips, or Open-H3-Regenerate-2K to regenerate one; VOSR for pictures: which one, and the arithmetic each runs with.")
+            String(localized: "How Render Upscaled restores a layer at the size it is shown — FlashVSR+, FlashVSR 1.1 or RelayVSR for clips, or Open-H3-Regenerate-2K to regenerate one; VOSR for pictures: which one, and the arithmetic each runs with.")
         case .resampling:
             String(localized: "How Render Interpolated makes a clip at the rate its timeline shows it — slowed down, or on a timeline of more frames a second — the frames in between made by RIFE: which release, and how it reads the motion.")
         case .fleet:
@@ -684,6 +684,19 @@ private struct GeneralSettings: View {
                 }
                 .settingsMark(String(localized: "Playhead"),
                               String(localized: "Place a generated clip on the timeline"))
+                // Where a generated picture goes on a still
+                // (AppModel.picturesOnNewPage).
+                Picker(selection: $model.picturesOnNewPage) {
+                    Text("As a New Layer on the Current Page").tag(false)
+                    Text("On a New Page").tag(true)
+                } label: {
+                    Text("Place a generated picture on a still")
+                    Text(model.picturesOnNewPage
+                         ? "Each new picture gets a page of its own, added after the last page, and the stage goes to it. Layers that ran to the last page stop before it."
+                         : "Each new picture is laid as a new layer on top of the page you are looking at.")
+                }
+                .settingsMark(String(localized: "New Page"),
+                              String(localized: "Place a generated picture on a still"))
                 // How a result is named (core Controller::asset_naming).
                 if let naming = model.assetNaming {
                     Picker(selection: Binding(

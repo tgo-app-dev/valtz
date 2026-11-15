@@ -14,6 +14,7 @@ struct FleetOffloadView: View {
             if let f = model.fleet, f.enabled {
                 policiesSection(f)
                 tasksSection(f)
+                weightsSection(f)
                 modelsSection(f)
             } else {
                 Section {
@@ -73,6 +74,21 @@ struct FleetOffloadView: View {
         } footer: {
             Text("A chat with the helper goes to a member's own helper.")
                 .foregroundStyle(.secondary)
+        }
+    }
+
+    /// A job naming Custom's own weights -- LoRAs, a DiT, a VAE: kept
+    /// here (the default), or sent too, its files copied to the member
+    /// first where it has the disk for them.
+    private func weightsSection(_ f: FleetStatus) -> some View {
+        Section {
+            Toggle(isOn: Binding(
+                get: { f.config?.sendWeights == true },
+                set: { model.configureFleet(["send_weights": $0]) })) {
+                Text("Send Custom Weights With a Job")
+                Text("A job using Custom's own LoRAs, DiT or VAE goes to a member too: their files are copied there first -- over Thunderbolt where a cable is -- if it has the disk for them, and kept a week for the next job. Off, such a job runs on this Mac.")
+            }
+            .settingsMark(String(localized: "Send Custom Weights With a Job"))
         }
     }
 

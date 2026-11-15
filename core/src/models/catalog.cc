@@ -162,6 +162,9 @@ read_entry(const Json& m, const Contributor& who, ModelEntry& e,
   e.subdir = jget<std::string>(m, "subdir", "");
   e.file = jget<std::string>(m, "file", "");
   e.fetch_variant = jget<std::string>(m, "fetch_variant", "");
+  for (const auto& b : jget(m, "beside", Json::array())) {
+    if (b.is_string()) { e.beside.push_back(b.get<std::string>()); }
+  }
   e.package = jget<std::string>(m, "package", "");
   if (const Json src = jget(m, "source", Json()); src.is_object()) {
     e.source = src;

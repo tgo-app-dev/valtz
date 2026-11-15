@@ -134,7 +134,7 @@ LanguageContext language_context(const std::filesystem::path& dir);
 // within a quarter of the memory the weights leave; whole pages of 16,
 // never under 32,768 (an agent's head -- its guide and tools -- is
 // ~15,000; past its context, a conversation is compacted). The 27B: all
-// 262,144 from about 150 GB (tgo-m5-3's 256), 231,000 on 128, 100,000 on
+// 262,144 from about 150 GB (a 256 GB Mac), 231,000 on 128, 100,000 on
 // 64 and the floor on 24, where its whole context would want 16 GB of K/V
 // beside 16 GB of weights; the 9B about 69,000 there. 0: the model says
 // none.

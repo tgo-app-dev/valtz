@@ -26,8 +26,10 @@
 #include "common/perf-flops.h"
 #include "vpipe/vpipe.h"
 #include "stages/model-catalog.h"
+#include "generative-models/tensor-parallel.h"
 
 #include <CoreGraphics/CoreGraphics.h>
+#include <dlfcn.h>
 #include <fcntl.h>
 #include <sys/mman.h>
 #include <unistd.h>
@@ -148,6 +150,203 @@ plugin_present()
   return !vp::find_plugin().empty();
 }
 
+}
+
+// The transport a DiT split across two Macs exchanges its partial sums
+// through (DESIGN §11c), over the loopback: two ranks, one link and two
+// -- each exchange striped across them, the peer's partial arriving
+// whole -- the key checked both ways, and ranks out of step caught.
+TEST(vpipe_plugin, a_split_dits_partials_cross_between_ranks)
+{
+  REQUIRE(plugin_present());
+  TestSession ts(test::temp_dir("vpx-tp"));
+  REQUIRE(ts.s);
+  namespace g = vpipe::genai;
+  if (!g::tp_transports_available()) {
+    SKIP("vpipe without tensor-parallel/1");
+  }
+  g::TpTransport* tr = g::find_tp_transport(ex::kTpTransport);
+  REQUIRE(tr != nullptr);
+  constexpr g::TpDType kBf16 = g::TpDType::kBF16;
+  static int port = 47400 + (int)(::getpid() % 400) * 4;
+  auto params = [&](const char* role, int links, const char* key) {
+    Json l = Json::array();
+    for (int i = 0; i < links; ++i) {
+      l.push_back(std::format("127.0.0.1:{}", port + i));
+    }
+    return vp::to_flex({{"role", role}, {"links", l}, {"key", key},
+                        {"wait_ms", 5000}});
+  };
+  g::TpShare r0, r1;
+  r0.ranks = r1.ranks = 2;
+  r1.rank = 1;
+  struct Pair {
+    std::shared_ptr<g::TpChannel> a, b;
+  };
+  auto open = [&](int links, const char* ka, const char* kb) {
+    std::string e0, e1;
+    Pair p{tr->open(params("listen", links, ka), r0, &e0),
+           tr->open(params("connect", links, kb), r1, &e1)};
+    port += links;
+    return p;
+  };
+  // Both ranks at once, as two Macs reach the same reduction point.
+  auto swap = [](Pair& p, std::size_t n, std::uint64_t s0, std::uint64_t s1,
+                 std::string* e0, std::string* e1) {
+    std::vector<std::uint8_t> a(n), b(n), ga(n), gb(n);
+    for (std::size_t i = 0; i < n; ++i) {
+      a[i] = (std::uint8_t)(i * 7);
+      b[i] = (std::uint8_t)(i * 13 + 1);
+    }
+    bool okb = false;
+    std::thread t([&] {
+      okb = p.b->exchange(b.data(), gb.data(), n, kBf16, s1, e1);
+    });
+    const bool oka = p.a->exchange(a.data(), ga.data(), n, kBf16, s0, e0);
+    t.join();
+    // Each buffer forgotten as the host forgets one it frees: the next
+    // exchange is of other memory.
+    p.a->forget(a.data(), n);
+    p.a->forget(ga.data(), n);
+    p.b->forget(b.data(), n);
+    p.b->forget(gb.data(), n);
+    return oka && okb && ga == b && gb == a;
+  };
+  // What the transport has carried, as the engine reads it for the
+  // status bar's Fleet popover (exchange.h's kTpTrafficSymbol).
+  void* h = ::dlopen(vp::find_plugin().c_str(), RTLD_LAZY | RTLD_NOLOAD);
+  REQUIRE(h != nullptr);
+  auto traffic = reinterpret_cast<ex::TpTrafficFn>(
+      ::dlsym(h, ex::kTpTrafficSymbol));
+  ::dlclose(h);
+  REQUIRE(traffic != nullptr);
+  const char* key = "00112233445566778899aabbccddeeff";
+  for (int links : {1, 2}) {
+    Pair p = open(links, key, key);
+    REQUIRE(p.a && p.b);
+    unsigned long long t0[3], t1[3];
+    traffic(t0);
+    CHECK(t0[2] >= 2);  // both ranks' channels open
+    std::string e0, e1;
+    // Odd sizes: the stripes are not equal, and the last may be short.
+    CHECK(swap(p, (std::size_t)1 << 20 | 3, 0, 0, &e0, &e1));
+    CHECK(swap(p, 5, 1, 1, &e0, &e1));
+    CHECK(swap(p, 0, 2, 2, &e0, &e1));
+    CHECK(swap(p, (std::size_t)24 << 20, 3, 3, &e0, &e1));
+    CHECK(e0.empty() && e1.empty());
+    // Each rank sent its partial and took the other's: both counted.
+    traffic(t1);
+    const unsigned long long each =
+        ((1ull << 20) | 3) + 5 + 0 + (24ull << 20);
+    CHECK(t1[0] - t0[0] == 2 * each);
+    CHECK(t1[1] - t0[1] == 2 * each);
+    // A rank one exchange ahead of its peer: both fail, saying so.
+    CHECK(!swap(p, 64, 4, 5, &e0, &e1));
+    CHECK(e0.find("out of step") != std::string::npos);
+  }
+  {
+    // Another key: refused at the handshake, by name.
+    Pair p = open(1, key, "ffeeddccbbaa99887766554433221100");
+    REQUIRE(p.a && p.b);
+    std::string e0, e1;
+    CHECK(!swap(p, 64, 0, 0, &e0, &e1));
+    CHECK(e0.find("key") != std::string::npos ||
+          e1.find("key") != std::string::npos);
+  }
+  // RDMA asked of one rank alone: "auto" settles for TCP beside a peer
+  // not asked (the sums still cross); devices NAMED are required -- both
+  // ranks fail, saying why (a Mac without RDMA refuses them at open).
+  auto with_rdma = [&](const char* role, Json rdma) {
+    Json l = Json::array({std::format("127.0.0.1:{}", port)});
+    return vp::to_flex({{"role", role}, {"links", l}, {"key", key},
+                        {"wait_ms", 5000}, {"rdma", rdma}});
+  };
+  {
+    std::string e0, e1;
+    Pair p{tr->open(with_rdma("listen", "auto"), r0, &e0),
+           tr->open(params("connect", 1, key), r1, &e1)};
+    ++port;
+    REQUIRE(p.a && p.b);
+    CHECK(swap(p, (std::size_t)3 << 20 | 1, 0, 0, &e0, &e1));
+    CHECK(e0.empty() && e1.empty());
+  }
+  {
+    std::string e0, e1;
+    Pair p{tr->open(with_rdma("listen", Json::array({"rdma_en1"})), r0,
+                    &e0),
+           tr->open(params("connect", 1, key), r1, &e1)};
+    ++port;
+    if (p.a) {
+      REQUIRE(p.b);
+      CHECK(!swap(p, 64, 0, 0, &e0, &e1));
+      CHECK(e0.find("not asked for RDMA") != std::string::npos);
+      CHECK(e1.find("asks for RDMA") != std::string::npos);
+    } else {
+      CHECK(e0.find("RDMA") != std::string::npos);
+    }
+  }
+  // STOPPED while a rank waits -- for a peer that never comes, listening
+  // or connecting; for the partial of a peer that never sends -- the
+  // exchange ends at once, "stopped", not when the wait runs out.
+  auto stop_after = [](int ms) {
+    const auto at = std::chrono::steady_clock::now() +
+                    std::chrono::milliseconds(ms);
+    return [at] { return std::chrono::steady_clock::now() >= at; };
+  };
+  auto waits = [&](const char* role) {
+    Json l = Json::array({std::format("127.0.0.1:{}", port++)});
+    std::string e;
+    auto ch = tr->open(vp::to_flex({{"role", role}, {"links", l},
+                                    {"key", key}, {"wait_ms", 60000}}),
+                       std::string(role) == "listen" ? r0 : r1, &e);
+    REQUIRE(ch);
+    ch->set_stop(stop_after(300));
+    std::vector<std::uint8_t> a(64), b(64);
+    const auto t0 = std::chrono::steady_clock::now();
+    CHECK(!ch->exchange(a.data(), b.data(), a.size(), kBf16, 0, &e));
+    CHECK(std::chrono::steady_clock::now() - t0 <
+          std::chrono::seconds(3));
+    CHECK(e.find("stopped") != std::string::npos);
+    ch->set_stop({});
+  };
+  waits("listen");
+  waits("connect");
+  // Torn down before its peer came, no stop set (stopped before its
+  // denoise began): let go at once, not at its wait.
+  for (const char* role : {"listen", "connect"}) {
+    Json l = Json::array({std::format("127.0.0.1:{}", port++)});
+    std::string e;
+    auto ch = tr->open(vp::to_flex({{"role", role}, {"links", l},
+                                    {"key", key}, {"wait_ms", 60000}}),
+                       std::string(role) == "listen" ? r0 : r1, &e);
+    REQUIRE(ch);
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    const auto t0 = std::chrono::steady_clock::now();
+    ch.reset();
+    CHECK(std::chrono::steady_clock::now() - t0 <
+          std::chrono::seconds(2));
+  }
+  {
+    Pair p = open(1, key, key);
+    REQUIRE(p.a && p.b);
+    std::string e0, e1;
+    CHECK(swap(p, 4096, 0, 0, &e0, &e1));
+    // The peer computes on and never sends: rank 0 stopped meanwhile.
+    p.a->set_stop(stop_after(300));
+    std::vector<std::uint8_t> a(4096), b(4096);
+    const auto t0 = std::chrono::steady_clock::now();
+    CHECK(!p.a->exchange(a.data(), b.data(), a.size(), kBf16, 1, &e0));
+    CHECK(std::chrono::steady_clock::now() - t0 <
+          std::chrono::seconds(3));
+    CHECK(e0.find("stopped") != std::string::npos);
+    p.a->set_stop({});
+  }
+  // Not two ranks: refused at open.
+  g::TpShare three;
+  three.ranks = 3;
+  std::string err;
+  CHECK(!tr->open(params("listen", 1, key), three, &err));
+  CHECK(!err.empty());
 }
 
 TEST(vpipe_plugin, declares_its_commands)

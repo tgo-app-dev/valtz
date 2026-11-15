@@ -191,6 +191,9 @@ private:
   blobs_of_(const UndoCommand&);
   UndoCommand* last_done_();
   const UndoCommand* last_done_() const;
+  // Where the history stands for a save (under `_mu`): the last done
+  // command's seq, a command taken up again counted (0: none).
+  std::uint64_t saved_point_() const;
   UndoCommand* first_undone_();
 
   Project&                 _p;
@@ -203,11 +206,16 @@ private:
   std::uint64_t            _saved_seq = 0;
   bool                     _untracked = false;
   // Commands being recorded, by seq (a scope's): `had` changes before
-  // this scope (a command taken up again by a join), `rejoined` if so.
+  // this scope (a command taken up again by a join), `rejoined` if so --
+  // out of `_cmds` meanwhile, yet still the last done one: what is saved
+  // and held reads it there too. `saved_at`: the changes it held when a
+  // save was made while it was open (a job's result written, saved, then
+  // its renames joining it).
   struct Open {
-    UndoCommand cmd;
-    std::size_t had = 0;
-    bool        rejoined = false;
+    UndoCommand                cmd;
+    std::size_t                had = 0;
+    bool                       rejoined = false;
+    std::optional<std::size_t> saved_at;
   };
   std::map<std::uint64_t, Open> _open;
   std::function<void()>    _changed;

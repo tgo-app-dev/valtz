@@ -259,6 +259,9 @@ extension AppModel {
         if placesAtEnd(self.asset(id: asset)?.kind ?? "") {
             req["at_end"] = true
         }
+        if self.asset(id: asset)?.kind == "image", picturesOnNewPage {
+            req["new_page"] = true
+        }
         let r = core.assetOp(project: projectId, "place-result", req)
         guard r.ok, let view = r["asset"] as? String else {
             note("error", r.message)
@@ -268,6 +271,7 @@ extension AppModel {
         guard let doc = self.asset(id: view),
               doc.id == stageAssetId else { return }
         layersChanged()
+        showLandedPage((doc, r["layer"] as? String ?? ""))
         landed(on: doc, layer: r["layer"] as? String ?? "")
     }
 

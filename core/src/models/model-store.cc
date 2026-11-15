@@ -419,10 +419,22 @@ ModelStore::scan_roots_(const ModelEntry& e,
       const fs::path f = dir / e.file;
       fs::path part = f;
       part += ".part";
-      if (fs::is_regular_file(f, ec)) {
+      // Its file there with what it needs beside it (catalog `beside`):
+      // installed; without one of those, a download not finished --
+      // resumed, the file kept, the rest fetched.
+      const bool whole = std::ranges::all_of(e.beside, [&](const auto& b) {
+        return fs::is_regular_file(f.parent_path() / b, ec);
+      });
+      if (fs::is_regular_file(f, ec) && whole) {
         info.state = InstallState::Installed;
         info.bytes = fs::file_size(f, ec);
         return info;
+      }
+      if (fs::is_regular_file(f, ec) && best.state == InstallState::Missing) {
+        info.state = InstallState::Partial;
+        info.bytes = fs::file_size(f, ec);
+        best = info;
+        continue;
       }
       if (fs::exists(part, ec) && best.state == InstallState::Missing) {
         info.state = InstallState::Partial;

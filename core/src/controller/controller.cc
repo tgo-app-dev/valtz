@@ -262,8 +262,21 @@ out_of_memory_report(const Json& m, const project::Recipe* r)
     const Json& p = r->params;
     const int w = jget(p, "width", 0);
     const int h = jget(p, "height", 0);
-    if (w > 0 && h > 0) {
+    const bool upscale = r->op == engine::kOpUpscaleVideo ||
+                         r->op == engine::kOpUpscaleImage;
+    // An upscale's size is the layer's scale, not the generation card's.
+    if (w > 0 && h > 0 && !upscale) {
       suggest["resolution"] = {{"width", w}, {"height", h}};
+    }
+    // RelayVSR read at the clip's own size (Read At's default): its ring
+    // grows with the frame read, so A Quarter of the Size is what fits --
+    // the 4x frames made at the size shown, nothing fitted down.
+    const Json t = jget(p, "tuning", Json::object());
+    if (upscale && t.contains("read_at") &&
+        jget<std::string>(t, "read_at", "source") != "quarter") {
+      suggest["read_at"] = {{"model", r->model},
+                            {"now", jget<std::string>(t, "read_at", "")},
+                            {"to", "quarter"}};
     }
     const int frames = jget(p, "frames", 0);
     const double fps = jget(p, "fps", 24.0);
@@ -351,10 +364,18 @@ public:
   fleet_serve(const fleet::Offer& o, const std::string& from,
               const fs::path& out_dir, engine::JobSink sink) override
   {
+    if (o.params.contains("weights_from")) {
+      return _c.serve_weights_(o, from, out_dir, std::move(sink));
+    }
     return _c.fleet_serve_(o, from, out_dir, std::move(sink));
   }
 
-  void fleet_cancel(JobId id) override { (void)_c._engine->cancel(id); }
+  void
+  fleet_cancel(JobId id) override
+  {
+    _c.cancel_weights_(id);
+    (void)_c._engine->cancel(id);
+  }
 
   Json
   fleet_load() override
@@ -368,6 +389,10 @@ public:
     JobId job;
     if (auto id = JobId::parse(jget<std::string>(data, "job", ""))) {
       job = *id;
+    }
+    // A member came, went or changed: its Thunderbolt probed again.
+    if (kind == "fleet.changed") {
+      _c.tb_refresh_();
     }
     _c.post_(std::move(kind), job, std::move(data));
   }
@@ -573,8 +598,10 @@ Controller::create(ControllerConfig cfg)
     }
     const fs::path work =
         conf.parent_path() / (conf.stem().string() + "-files");
+    c->_fleet_files = work;
     c->_fleet_host = std::make_unique<FleetHost>(*c);
     c->_fleet = fleet::make_fleet(conf, work, *c->_fleet_host);
+    c->share_follow_();
     // Members at addresses, without Bonjour ("host:port,..."): a network
     // that does not carry it, or a Mac not allowed to use it.
     if (const char* to = std::getenv("VALTZ_FLEET_CONNECT"); to && *to) {
@@ -626,7 +653,32 @@ Controller::shutdown()
       fs::remove(f, ec);
     }
   }
-  // The fleet first: no job comes in, none goes out.
+  // A Thunderbolt probe under way: done first (it asks the fleet).
+  {
+    std::unique_lock lk(_tb_mu);
+    if (_tb_thread.joinable()) {
+      std::thread t = std::move(_tb_thread);
+      lk.unlock();
+      t.join();
+    }
+  }
+  // Weights being copied for a member's job: stopped, waited for.
+  std::vector<std::thread> copies;
+  {
+    std::lock_guard lk(_weights_mu);
+    for (auto& [id, stop] : _weight_stops) {
+      *stop = true;
+    }
+    copies.swap(_weight_threads);
+  }
+  for (auto& t : copies) {
+    if (t.joinable()) {
+      t.join();
+    }
+  }
+  // The fleet first: no job comes in, none goes out -- nor a model's
+  // files to a member.
+  _share.reset();
   if (_fleet) {
     _fleet->stop();
   }
@@ -916,6 +968,9 @@ Controller::machine_status()
   }
   if (_fleet) {
     if (Json f = _fleet->throughput(); jget(f, "connected", 0) > 0) {
+      if (Json p = pair_traffic_(); p.is_object()) {
+        f["pair"] = std::move(p);
+      }
       j["fleet"] = std::move(f);
     }
   }
@@ -1713,6 +1768,9 @@ Controller::capability_tree() const
   };
   Json families = Json::array();
   const Json sources = _engine->download_sources();
+  // The members sharing a model (DESIGN §11d): a row not here offers a
+  // copy from each.
+  const auto copies = fleet_copies_();
   for (const auto& f : _catalog.families()) {
     Json members = Json::array();
     for (const auto& mem : f.members) {
@@ -1776,6 +1834,12 @@ Controller::capability_tree() const
           }
         }
         members.back()["sources"] = std::move(from);
+      }
+      // Copied from a member of the fleet that shares it (DESIGN §11d).
+      if (e->quantize_from.empty()) {
+        if (auto it = copies.find(e->id); it != copies.end()) {
+          members.back()["fleet"] = it->second;
+        }
       }
       // A quantized variant: made here from its source (no download),
       // which must be here first; no page of its own on Hugging Face.
@@ -1855,7 +1919,7 @@ Controller::capability_tree() const
           continue;
         }
         for (const auto c : models::feature_capabilities(ft)) {
-          if (!e->has(c) || !engine_runs_(c)) {
+          if (!e->has(c) || !engine_runs_(c) || !upscaler_runs_(*e)) {
             continue;
           }
           const bool fits = e->min_ram_gb <= _hw.ram_gb();
@@ -2132,6 +2196,16 @@ Controller::check_model(const std::string& id, const fs::path& target) const
   Json out = models::check_model(*e, at, &_catalog).to_json();
   out["installed"] = target.empty();
   return out;
+}
+
+Result<Json>
+Controller::tp_bench(const Json& tp, const std::vector<std::size_t>& sizes,
+                     int rounds) const
+{
+  if (!_engine || !_engine->available()) {
+    return make_error(Code::Unsupported, "no engine");
+  }
+  return _engine->tp_bench(tp, sizes, rounds);
 }
 
 Result<Json>
@@ -2916,7 +2990,7 @@ Controller::upscale_settings() const
   // rank that is not chosen by name alone (operation_model_'s order, by
   // what is on disk alone: valtzctl lists this without an engine).
   const auto installed = [&](const models::ModelEntry* e) {
-    return e && ready_(*e);
+    return e && ready_(*e) && upscaler_runs_(*e);
   };
   Json kinds = Json::array();
   std::vector<std::string> running;
@@ -3021,7 +3095,7 @@ Controller::upscale_settings() const
                     Json::object()),
                "in_context", false)},
          {"needs", std::move(needs)},
-         {"ready", ready_(e) &&
+         {"ready", ready_(e) && upscaler_runs_(e) &&
                        (!refines || !_engine || !_engine->available() ||
                         refiner_runs_(e))},
          {"state", models::to_str(_store->info(e).state)},
@@ -3707,12 +3781,17 @@ Controller::download_model(const std::string& model_id,
   if (!_engine->supports(engine::kOpFetchModel)) {
     return make_error(Code::Unsupported, msg::kNoEngineForDownload);
   }
+  // COPIED from a member of the fleet (DESIGN §11d): its files over the
+  // cables to it, into the folder a download goes to.
+  const bool by_fleet = source_in.starts_with("fleet:");
   // Fetched from its makers' own URL (catalog `source`, DESIGN §4u:
   // Practical-RIFE's zips on Google Drive): no hub, no source to choose.
-  const bool by_url = e->source.is_object() && !e->source.empty();
+  const bool by_url = !by_fleet && e->source.is_object() &&
+                      !e->source.empty();
   // Where from: the one named, else the one chosen -- passed over for
   // Hugging Face where vpipe knows it not to carry the repo.
-  std::string source = source_in.empty() ? download_source_() : source_in;
+  std::string source = source_in.empty() || by_fleet ? download_source_()
+                                                    : source_in;
   std::string label = source;
   bool offered = false;
   for (const auto& s : _engine->download_sources()) {
@@ -3721,11 +3800,11 @@ Controller::download_model(const std::string& model_id,
       label = jget<std::string>(s, "label", source);
     }
   }
-  if (!offered && !source_in.empty()) {
+  if (!offered && !source_in.empty() && !by_fleet) {
     return make_error(Code::InvalidArgument, msg::kUnknownDownloadSource,
                       {{"source", source_in}});
   }
-  if (!by_url && offered &&
+  if (!by_url && !by_fleet && offered &&
       _engine->source_path(source, e->hf_path).empty()) {
     if (!source_in.empty()) {
       return make_error(Code::NotFound, msg::kNotOnDownloadSource,
@@ -3764,14 +3843,39 @@ Controller::download_model(const std::string& model_id,
     spec.params = {{"url_source", e->source}, {"dest", dir.string()},
                    {"label", e->name}};
   }
-  if (!by_url && !e->fetch_variant.empty()) {
+  std::string copied_from;
+  if (by_fleet) {
+    fs::path dir = download_base_(*e) / e->hf_path;
+    if (!e->subdir.empty()) {
+      dir /= e->subdir;
+    }
+    VALTZ_ASSIGN(fleet::CopyPlan plan,
+                 copy_plan_(*e, source_in.substr(6), dir));
+    for (const auto& m : _fleet->members()) {
+      if (jget<std::string>(m, "id", "") == source_in.substr(6) ||
+          jget<std::string>(m, "name", "") == source_in.substr(6)) {
+        copied_from = jget<std::string>(m, "name", "");
+      }
+    }
+    spec.params = {{"fleet_source", fleet::to_json(plan)},
+                   {"label", e->name},
+                   {"from", copied_from}};
+  }
+  const bool by_hub = !by_url && !by_fleet;
+  if (by_hub && !e->fetch_variant.empty()) {
     spec.params["variant"] = e->fetch_variant;
   }
-  if (!by_url && !hf_token.empty()) {
+  // The person's Hugging Face token goes to Hugging Face alone -- never
+  // to a mirror (hf-mirror.com is a third party; ModelScope has tokens of
+  // its own): another source is fetched without it.
+  if (by_hub && !hf_token.empty() && source == "huggingface") {
     spec.params["hf_token"] = hf_token;
+  } else if (by_hub && !hf_token.empty()) {
+    VALTZ_LOG_INFO("models", "{}: the Hugging Face token is not sent to "
+                   "{}", e->name, label);
   }
   // Said always: Valtz's choice, not vpipe's $VPIPE_MODEL_SOURCE.
-  if (!by_url && (offered || source == "huggingface")) {
+  if (by_hub && (offered || source == "huggingface")) {
     spec.params["source"] = source;
   }
 
@@ -3779,7 +3883,11 @@ Controller::download_model(const std::string& model_id,
   rec.id = spec.id;
   rec.op = spec.op;
   rec.purpose = "download";
-  rec.title = std::format("Download {}", e->name);
+  const std::string member_name =
+      copied_from.empty() && by_fleet ? source_in.substr(6) : copied_from;
+  rec.title = by_fleet ? std::format("Copy {} from {}", e->name,
+                                     member_name)
+                       : std::format("Download {}", e->name);
   rec.created_ms = project::now_ms();
   _jobs.add(rec);
   // On its way from now: what needs it waits for it -- before the
@@ -3793,7 +3901,7 @@ Controller::download_model(const std::string& model_id,
                                 {"model", e->id}});
 
   // Hugging Face's gate: another source answers in its own terms.
-  const bool gated = !by_url && e->gated && source == "huggingface";
+  const bool gated = by_hub && e->gated && source == "huggingface";
   const std::string name = e->name;
   const std::string id = e->id;
   // Cancelled to be deleted (stop_download): its files go once the job
@@ -5393,6 +5501,9 @@ Controller::tasks() const
                                : positions[line]++},
               {"runner", runner},
               {"progress", j.progress}};
+    if (!j.split_with.empty()) {
+      t["split"] = j.split_with;
+    }
     if (wait != waits.end()) {
       t["waiting"] = wait->second;
     }
@@ -6179,7 +6290,19 @@ Controller::name_from_prompt_(ProjectId pid, project::Project& p,
                 }
                 n = std::move(it->second);
                 _naming.erase(it);
+                ++_naming_writing;
               }
+              // Written -- its command ended, `undo` below gone first --
+              // before wait_micro lets valtzctl save and end: it saw the
+              // naming over as the renames began, and saved too soon.
+              struct Writing {
+                Controller* c;
+                ~Writing()
+                {
+                  std::lock_guard lk(c->_naming_mu);
+                  --c->_naming_writing;
+                }
+              } writing{this};
               const std::string name =
                   reply ? assist::micro_name(*reply) : std::string();
               project::Project* p = project(n.project);
@@ -6298,7 +6421,7 @@ Controller::wait_micro(int timeout_ms)
   for (;;) {
     {
       std::lock_guard lk(_naming_mu);
-      if (_naming.empty()) {
+      if (_naming.empty() && _naming_writing == 0) {
         return true;
       }
     }
@@ -8299,6 +8422,9 @@ Controller::generate_video(GenerateVideoRequest req)
   if (req.keep_latents && jget(vp, "keeps_latents", false)) {
     r.params["keep_latents"] = true;
   }
+  if (req.tensor_parallel.is_object()) {
+    r.params["tensor_parallel"] = req.tensor_parallel;
+  }
   // Regenerated: the draft's size, the refiner, and its arithmetic --
   // recorded, so a rebuild refines alike.
   if (refiner) {
@@ -9155,7 +9281,7 @@ Controller::operation_model_(
     return nullptr;
   }
   const auto serves = [&](const models::ModelEntry& e) {
-    return e.has(cap) && (!fits || fits(e));
+    return e.has(cap) && upscaler_runs_(e) && (!fits || fits(e));
   };
   // With what it needs beside it (catalog `requires`).
   const auto installed = [&](const models::ModelEntry& e) {
@@ -9270,6 +9396,19 @@ Controller::refiner_runs_(const models::ModelEntry& re) const
                             "regenerate", Json::object()),
                        "in_context", false);
   return !ic || _engine->supports(engine::kOpRegenerateInContext);
+}
+
+bool
+Controller::upscaler_runs_(const models::ModelEntry& e) const
+{
+  if (e.role != "upscale" || !_engine || !_engine->available()) {
+    return true;
+  }
+  const auto kind = jget<std::string>(
+      jget(jget(e.engine, "vpipe", Json::object()), "upscale",
+           Json::object()),
+      "kind", "");
+  return kind != "relayvsr" || _engine->supports(engine::kOpUpscaleRelay);
 }
 
 const models::ModelEntry*
@@ -11280,8 +11419,29 @@ Controller::submit_build_(
     }
   }
   std::vector<Json> members;
-  if (!own_files && !no_model) {
-    members = fleet_candidates_(r.op, needs, here.ok());
+  // Its own weight files sent with it, where Settings › Fleet says so
+  // (DESIGN §11d): served for the job by this Mac's model share, copied
+  // by the member first -- one with the disk for them.
+  Json weights_from;
+  std::uint64_t own_bytes = 0;
+  if (own_files && !no_model && _share && _fleet &&
+      _fleet->config().send_weights &&
+      !r.params.contains("tensor_parallel")) {
+    if (auto w = own_weights_(r.params, id, &own_bytes); w.ok()) {
+      weights_from = std::move(*w);
+    } else {
+      VALTZ_LOG_WARN("fleet", "its weights not sent: {}",
+                     w.error().message);
+    }
+  }
+  // A rank of a split asked for by hand (valtzctl --tp) is this Mac's.
+  if ((!own_files || weights_from.is_object()) && !no_model &&
+      !r.params.contains("tensor_parallel")) {
+    members = fleet_candidates_(r.op, needs, here.ok(), own_bytes);
+  }
+  if (weights_from.is_object() && members.empty()) {
+    unshare_job_(id);
+    weights_from = Json();
   }
   // Set to run on the fleet only: never here, and refused while no member
   // can take it (a weight file of one's own included: it is not sent).
@@ -11512,12 +11672,47 @@ Controller::submit_build_(
     }
     spec.params.update(helpers);
   }
+  // SPLIT with the Mac this one is paired with over Thunderbolt (DESIGN
+  // §11c, split.cc): a clip whose DiT splits runs one rank here and the
+  // other there -- or, not this time, as ever, why said.
+  if (here.ok() && awaits.empty() && !fleet_only) {
+    auto plan = split_plan_(r, spec.model, carried, rec.id);
+    if (plan.ok()) {
+      VALTZ_TRY(run_split_(std::move(*plan), std::move(spec), r, rec.title,
+                           std::move(sink)));
+      return rec.id;
+    }
+    if (plan.error().code == Code::Unsupported) {
+      VALTZ_LOG_INFO("fleet", "{}: not split -- {}", rec.title,
+                     plan.error().message);
+      post_("job.runner", rec.id,
+            {{"runner", "local"},
+             {"unsplit", message_fields(plan.error())}});
+    }
+  }
   if (members.empty()) {
     VALTZ_TRY(_engine->submit(std::move(spec), std::move(sink)));
     return rec.id;
   }
   fleet::Offer offer{spec.id, r.op, r.model, rec.title, r.params,
                      spec.inputs};
+  if (weights_from.is_object()) {
+    // Its weights named by the share, not by this Mac's paths -- and let
+    // go of there as the job ends, wherever it ran.
+    for (const auto& k : own_file_keys()) {
+      offer.params.erase(k);
+    }
+    offer.params["weights_from"] = weights_from;
+    sink = [this, job = spec.id, inner = std::move(sink)](
+               const engine::JobEvent& ev) {
+      if (ev.kind == engine::JobEventKind::Finished ||
+          ev.kind == engine::JobEventKind::Failed ||
+          ev.kind == engine::JobEventKind::Cancelled) {
+        unshare_job_(job);
+      }
+      inner(ev);
+    };
+  }
   const fs::path out = spec.output_dir;
   std::optional<engine::JobSpec> local;
   if (here.ok() && !fleet_only) {
@@ -12552,6 +12747,14 @@ Controller::cancel(JobId id)
       return ok_status();
     }
   }
+  // Its weights being pushed to a member (DESIGN §11d): stopped there.
+  {
+    std::lock_guard lk(_weights_mu);
+    if (auto it = _weight_stops.find(id); it != _weight_stops.end()) {
+      it->second->store(true);
+      return ok_status();
+    }
+  }
   // A folder being moved: it stops copying, the move undone.
   {
     std::lock_guard lk(_paths_mu);
@@ -12584,6 +12787,44 @@ Controller::cancel(JobId id)
     ev.job = id;
     ev.kind = engine::JobEventKind::Cancelled;
     w->sink(ev);
+    return ok_status();
+  }
+  // Split with the paired member (split.cc): both halves stopped -- or,
+  // the member's not begun, the clip at once.
+  std::shared_ptr<Split> split;
+  {
+    std::lock_guard lk(_splits_mu);
+    if (auto it = _splits.find(id); it != _splits.end()) {
+      split = it->second;
+    }
+  }
+  if (split) {
+    std::unique_lock lk(split->mu);
+    split->cancelled = true;
+    const bool started = split->started;
+    const bool ended = split->ended;
+    if (!started) {
+      split->ended = true;
+    }
+    lk.unlock();
+    // Its own weights on their way to the member: stopped.
+    cancel_weights_(id);
+    if (_fleet) {
+      _fleet->cancel(id);
+    }
+    if (started) {
+      return _engine->cancel(id);
+    }
+    if (!ended) {
+      {
+        std::lock_guard g(_splits_mu);
+        _splits.erase(id);
+      }
+      engine::JobEvent ev;
+      ev.job = id;
+      ev.kind = engine::JobEventKind::Cancelled;
+      split->sink(ev);
+    }
     return ok_status();
   }
   // Sent to a fleet member: told to stop there.
@@ -12620,6 +12861,7 @@ refusal(std::string_view why)
   return why == "busy"                               ? msg::kFleetBusy
          : why == "schedule" || why == "not-accepting" ? msg::kFleetNotTaking
          : why == "cannot-run"                       ? msg::kFleetCannotRun
+         : why == "no-room"                          ? msg::kFleetNoRoom
          : why == "lost" || why == "left" || why == "stopped"
              ? msg::kFleetLost
              : msg::kFleetDeclined;
@@ -12628,12 +12870,13 @@ refusal(std::string_view why)
 }  // namespace
 
 bool
-Controller::busy_here_() const
+Controller::busy_here_(JobId except) const
 {
   for (const auto& j : _jobs.list()) {
     // (One waiting for a download holds nothing yet.)
     if ((j.state == JobState::Queued || j.state == JobState::Running) &&
-        j.runner.empty() && holds_engine(j.op) && !waiting_(j.id)) {
+        j.runner.empty() && holds_engine(j.op) && !waiting_(j.id) &&
+        j.id != except) {
       return true;
     }
   }
@@ -12643,7 +12886,7 @@ Controller::busy_here_() const
 std::vector<Json>
 Controller::fleet_candidates_(const std::string& op,
                               const std::vector<std::string>& models,
-                              bool here) const
+                              bool here, std::uint64_t weights) const
 {
   std::vector<Json> out;
   if (!_fleet) {
@@ -12684,6 +12927,14 @@ Controller::fleet_candidates_(const std::string& op,
     }
     const Json machine = jget(self, "machine", Json::object());
     if (m && jget(machine, "ram_gb", 0u) < m->min_ram_gb) {
+      continue;
+    }
+    // The job's own weights sent with it: a member that takes them, with
+    // the disk for them and some to spare.
+    if (weights > 0 &&
+        (!jget(self, "takes_weights", false) ||
+         jget<std::uint64_t>(self, "free_bytes", 0) <
+             weights + weights / 10 + (2ull << 30))) {
       continue;
     }
     out.push_back(std::move(member));
@@ -12748,6 +12999,64 @@ Controller::run_remote_(std::vector<Json> members, fleet::Offer offer,
     r.runner_engine = engine_desc;
   });
   post_("job.runner", offer.id, {{"runner", name}});
+  // Its own weights (DESIGN §11d) pushed to the member first -- the job
+  // offered once they are there; no room there, or no way: the next
+  // member, or here.
+  if (offer.params.contains("weights_from") &&
+      jget<std::string>(offer.params["weights_from"], "pushed_to", "") !=
+          id) {
+    auto rest = std::make_shared<std::vector<Json>>(std::move(members));
+    auto keep = std::make_shared<std::optional<engine::JobSpec>>(
+        std::move(local));
+    auto after = [this, m, offer, out_dir, rest, keep, sink, id,
+                  name](Status st) mutable {
+      if (st.ok()) {
+        offer.params["weights_from"]["pushed_to"] = id;
+        std::vector<Json> again = {m};
+        again.insert(again.end(), rest->begin(), rest->end());
+        if (Status r = run_remote_(std::move(again), offer, out_dir,
+                                   std::move(*keep), sink);
+            !r.ok()) {
+          engine::JobEvent e;
+          e.job = offer.id;
+          e.kind = engine::JobEventKind::Failed;
+          e.error = r.error().code;
+          e.text = r.error().message;
+          sink(e);
+        }
+        return;
+      }
+      engine::JobEvent e;
+      e.job = offer.id;
+      if (st.error().code == Code::Cancelled || withdrawn_(offer.id)) {
+        e.kind = engine::JobEventKind::Cancelled;
+        sink(e);
+        return;
+      }
+      VALTZ_LOG_INFO("fleet", "{}: its weights not sent to {}: {}",
+                     offer.title, name, st.error().message);
+      if (!rest->empty() || keep->has_value()) {
+        if (run_remote_(std::move(*rest), offer, out_dir, std::move(*keep),
+                        sink)
+                .ok()) {
+          return;
+        }
+      }
+      const Message& said = st.error().code == Code::Busy
+                                ? msg::kFleetNoRoom
+                                : msg::kFleetDeclined;
+      const MessageArgs args = {{"member", name}};
+      e.kind = engine::JobEventKind::Failed;
+      e.error = st.error().code;
+      e.text = render_message(said.english, args);
+      e.data = message_fields(said, args);
+      sink(e);
+    };
+    if (Status st = push_weights_(m, offer, after, sink); !st.ok()) {
+      after(st);
+    }
+    return ok_status();
+  }
   VALTZ_LOG_INFO("fleet", "{}: sent to {}", offer.title, name);
   auto started = std::make_shared<std::atomic<bool>>(false);
   auto rest = std::make_shared<std::vector<Json>>(std::move(members));
@@ -12801,12 +13110,21 @@ Controller::fleet_self_() const
   }
   Json installed = Json::array();
   Json runs = Json::array();
+  Json shares = Json::array();
   for (const auto& m : _catalog.models()) {
-    if (_store->info(m).state != models::InstallState::Installed ||
+    const auto info = _store->info(m);
+    if (info.state != models::InstallState::Installed ||
         fc.withheld_models.contains(m.id)) {
       continue;
     }
     installed.push_back(m.id);
+    // Its own files to hand over: not a compressed copy alone, not a
+    // quantized variant (made here from its source).
+    if (m.quantize_from.empty() &&
+        (info.compressed_bits == 0 ||
+         (!info.other_dir.empty() && info.other_bits == 0))) {
+      shares.push_back(m.id);
+    }
     for (const char* modality : {"image", "video", "audio"}) {
       for (const char* op : {"generate", "edit"}) {
         if (runs_here(m, modality, op) &&
@@ -12881,16 +13199,41 @@ Controller::fleet_self_() const
                         : 0;
            }()},
           {"busy", busy_here_()},
+          // Its Thunderbolt network, and whether a DiT may be split here
+          // (DESIGN §11c): a member pairs and probes by them.
+          {"thunderbolt", fleet::to_json(tb_state_())},
+          {"splits", up && _engine->splits_dit()},
+          {"splits_decode", up && _engine->splits_decode()},
+          // Its MODEL SHARE (DESIGN §11d): the port, where it answers
+          // without a cable, and the models it hands a member.
+          {"share_port", _share ? _share->port() : 0},
+          {"addresses", _share ? fleet::share_addresses() : Json::array()},
+          {"shares", _share ? shares : Json::array()},
+          // A job's own weights taken with it (DESIGN §11d), and the
+          // room for them.
+          {"takes_weights", _share != nullptr},
+          {"free_bytes", [&] {
+             std::error_code ec;
+             const auto sp = fs::space(_fleet_files.empty()
+                                           ? _paths.support
+                                           : _fleet_files.parent_path(),
+                                       ec);
+             return ec ? std::uint64_t(0) : std::uint64_t(sp.available);
+           }()},
           {"machine", {{"chip", _hw.chip},
                        {"ram_gb", _hw.ram_gb()},
-                       {"gpu_cores", _hw.gpu_cores}}},
+                       {"gpu_cores", _hw.gpu_cores},
+                       // An M5's matrix cores: a split's share counts a
+                       // GPU before them at a quarter a core.
+                       {"matrix_cores", _hw.gpu_matrix_cores}}},
           {"engine", engine_description()},
           {"version", VALTZ_VERSION}};
 }
 
 Status
 Controller::fleet_serve_(const fleet::Offer& o, const std::string& from,
-                         const fs::path& out_dir, engine::JobSink sink)
+                         const fs::path& out_dir, engine::JobSink sink,
+                         bool own_ok)
 {
   // A member's agent session over: what this Mac kept for it let go.
   if (o.op == "agent-close") {
@@ -12917,6 +13260,11 @@ Controller::fleet_serve_(const fleet::Offer& o, const std::string& from,
     named.emplace_back(k);
   }
   for (const auto& k : named) {
+    // Its weights copied here first (serve_weights_): their paths here.
+    const bool weight = k.ends_with("_file") || k.ends_with("_weights");
+    if (own_ok && weight) {
+      continue;
+    }
     if (o.params.contains(k)) {
       return make_error(Code::InvalidArgument,
                         std::format("a fleet job names a file ({})", k));
@@ -12941,6 +13289,52 @@ Controller::fleet_serve_(const fleet::Offer& o, const std::string& from,
     spec.params.update(helpers);
     spec.inputs = o.inputs;
   }
+  // One RANK of a clip split with the member that sent it (DESIGN §11c):
+  // connecting from this Mac's end of the cable, its key made here from
+  // the fleet's (it never crosses), its clip the sender's -- not sent
+  // back.
+  bool split_rank = false;
+  bool split_keeps = false;
+  Json split_links;
+  if (Json tp = jget(o.params, "tensor_parallel", Json()); tp.is_object()) {
+    const Json tpp = jget(tp, "params", Json::object());
+    if (o.op != engine::kOpGenerateVideo || !_engine->splits_dit() ||
+        jget(tp, "rank", 0) != 1 ||
+        jget<std::string>(tpp, "role", "") != "listen") {
+      return make_error(Code::Unsupported, msg::kSplitCannotHere);
+    }
+    // It listens on its end of each cable, on a port free there -- told
+    // back as it starts, for the sender to connect to.
+    std::vector<std::string> addresses;
+    for (const auto& l : jget(tpp, "links", Json::array())) {
+      const auto a = l.is_string() ? l.get<std::string>() : std::string();
+      addresses.push_back(a.substr(0, a.rfind(':')));
+    }
+    const int port = fleet::free_tcp_port(addresses);
+    if (port <= 0) {
+      return make_error(Code::Unsupported, msg::kSplitCannotHere);
+    }
+    split_links = Json::array();
+    for (const auto& a : addresses) {
+      split_links.push_back(std::format("{}:{}", a, port));
+    }
+    tp["params"]["links"] = split_links;
+    tp["params"]["key"] =
+        fleet::split_key(_fleet->config().key, o.id.str());
+    spec.params["tensor_parallel"] = std::move(tp);
+    // Its denoise alone: the sender decodes the clip; no preview, no
+    // latents kept here. Or, asked (`split_keeps`: this Mac the faster to
+    // decode), the CLIP made here -- decoded, written, sent back as any
+    // fleet job's -- the sender's rank denoising alone.
+    split_keeps = jget(o.params, "split_keeps", false);
+    spec.params.erase("split_keeps");
+    if (!split_keeps) {
+      spec.params["denoise_only"] = true;
+    }
+    spec.params["preview"] = false;
+    spec.params.erase("keep_latents");
+    split_rank = true;
+  }
   spec.output_dir = out_dir;
   JobRecord rec;
   rec.id = o.id;
@@ -12951,12 +13345,38 @@ Controller::fleet_serve_(const fleet::Offer& o, const std::string& from,
   rec.created_ms = project::now_ms();
   _jobs.add(rec);
   const Json about = {{"from", from}, {"title", o.title}, {"op", o.op},
-                      {"model", o.model}};
+                      {"model", o.model}, {"split", split_rank}};
   Json queued = about;
   queued["state"] = "queued";
   post_("fleet.serving", o.id, queued);
   return _engine->submit(
-      std::move(spec), [this, sink, about](const engine::JobEvent& ev) {
+      std::move(spec),
+      [this, sink, about, split_rank, split_keeps,
+       split_links](const engine::JobEvent& ev) {
+        // A split rank's clip stays here, deleted: the sender has its own
+        // -- unless this rank makes it (split_keeps), sent back as ever.
+        if (split_rank && !split_keeps &&
+            ev.kind == engine::JobEventKind::Output) {
+          std::error_code ec;
+          fs::remove(ev.output, ec);
+          return;
+        }
+        // ...and where it listens goes back as it starts.
+        if (split_rank && ev.kind == engine::JobEventKind::Started) {
+          engine::JobEvent e = ev;
+          if (!e.data.is_object()) {
+            e.data = Json::object();
+          }
+          e.data["split_links"] = split_links;
+          Json d = about;
+          d["state"] = "running";
+          _jobs.update(ev.job, [](JobRecord& r) {
+            r.state = JobState::Running;
+          });
+          post_("fleet.serving", ev.job, d);
+          sink(e);
+          return;
+        }
         Json d = about;
         switch (ev.kind) {
         case engine::JobEventKind::Started:
@@ -13025,6 +13445,21 @@ Controller::fleet_status() const
                      {"models", std::move(ms)}});
   }
   s["tasks"] = std::move(tasks);
+  // Thunderbolt (DESIGN §11c): this Mac's network, the cables found to
+  // each member (probed again in the background when stale), the pair.
+  auto* self = const_cast<Controller*>(this);
+  Json links = Json::object();
+  for (const auto& [id, ls] : self->tb_links_(false)) {
+    Json a = Json::array();
+    for (const auto& l : ls) {
+      a.push_back(fleet::to_json(l));
+    }
+    links[id] = std::move(a);
+  }
+  s["thunderbolt"] = {{"self", fleet::to_json(tb_state_())},
+                      {"links", std::move(links)},
+                      {"splits", up && _engine->splits_dit()}};
+  s["pair"] = self->pair_outlook_();
   return s;
 }
 
@@ -13104,6 +13539,44 @@ Controller::fleet_configure(const Json& j)
   VALTZ_TRY(change("models", [this](const std::string& id) {
     return _catalog.find(id) != nullptr;
   }, c.offload_models, c.withheld_models));
+  // PAIRED with a member over Thunderbolt (DESIGN §11c): one connected
+  // now, by its id or name; "" unpaired. How the pair splits.
+  if (j.contains("pair")) {
+    const std::string who = jget<std::string>(j, "pair", "");
+    if (who.empty()) {
+      c.pair_member.clear();
+      c.pair_name.clear();
+    } else {
+      bool found = false;
+      for (const auto& m : _fleet->members()) {
+        const auto id = jget<std::string>(m, "id", "");
+        const auto name = jget<std::string>(m, "name", "");
+        if (who == id || who == name) {
+          c.pair_member = id;
+          c.pair_name = name;
+          found = true;
+          break;
+        }
+      }
+      if (!found && who != c.pair_member) {
+        return make_error(Code::NotFound, msg::kFleetNoSuchMember,
+                          {{"name", who}});
+      }
+    }
+  }
+  if (j.contains("pair_rdma")) {
+    c.pair_rdma = jget(j, "pair_rdma", true);
+  }
+  if (j.contains("send_weights")) {
+    c.send_weights = jget(j, "send_weights", false);
+  }
+  if (j.contains("pair_share")) {
+    c.pair_share = std::clamp(jget(j, "pair_share", 0.0), 0.0, 0.95);
+  }
+  if (j.contains("pair_decode")) {
+    const auto d = jget<std::string>(j, "pair_decode", "auto");
+    c.pair_decode = d == "here" || d == "there" ? d : "auto";
+  }
   // A fleet made or joined -- its name and secret -- or left.
   const std::string secret = jget<std::string>(j, "secret", "");
   if (!secret.empty() && secret.size() < 8) {
@@ -13114,6 +13587,8 @@ Controller::fleet_configure(const Json& j)
     if (name.empty()) {
       c.fleet.clear();
       c.key.clear();
+      c.pair_member.clear();
+      c.pair_name.clear();
     } else if (secret.empty() && (name != c.fleet || c.key.empty())) {
       return make_error(Code::InvalidArgument, msg::kFleetNeedsSecret);
     } else {
@@ -13129,8 +13604,9 @@ Controller::fleet_configure(const Json& j)
     c.key = fleet::derive_key(c.fleet, secret);
   }
   VALTZ_TRY(_fleet->set_config(c));
+  share_follow_();
   // What it offers told the members at once.
-  if (j.contains("share")) {
+  if (j.contains("share") || j.contains("fleet")) {
     _fleet->self_changed();
   }
   post_("fleet.changed", JobId{});
@@ -13142,6 +13618,10 @@ Controller::fleet_browse(bool on)
 {
   if (_fleet) {
     _fleet->browse(on);
+    // The Fleet page open: the cables to the members looked for again.
+    if (on) {
+      tb_refresh_();
+    }
   }
 }
 

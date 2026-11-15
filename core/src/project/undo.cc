@@ -551,7 +551,7 @@ UndoLog::command(std::string kind, Json args, std::string asset,
     std::lock_guard lk(_mu);
     c.seq = _next_seq++;
     s._seq = c.seq;
-    _open.emplace(c.seq, Open{std::move(c), 0, false});
+    _open.emplace(c.seq, Open{std::move(c), 0, false, std::nullopt});
   }
   s._outer = true;
   t_scopes.emplace_back(this, s._seq);
@@ -588,7 +588,14 @@ UndoLog::join(std::uint64_t seq)
     }
     s._seq = c.seq;
     const std::size_t had = c.changes.size();
-    _open.emplace(c.seq, Open{std::move(c), had, rejoined});
+    // Taken up where a save stands: the save holds what it had, and what
+    // it writes now is after it (its seq stays the saved one -- read as
+    // saved, a name landing after a Save was never written).
+    std::optional<std::size_t> saved_at;
+    if (rejoined && c.seq == _saved_seq) {
+      saved_at = had;
+    }
+    _open.emplace(c.seq, Open{std::move(c), had, rejoined, saved_at});
   }
   s._outer = true;
   t_scopes.emplace_back(this, s._seq);
@@ -610,6 +617,7 @@ UndoLog::end_(Scope& s)
   std::vector<std::uint64_t> dropped;
   std::optional<UndoCommand> stored;
   std::optional<UndoCommand> compacted;
+  bool saved_moved = false;
   {
     std::lock_guard lk(_mu);
     auto it = _open.find(s._seq);
@@ -619,6 +627,7 @@ UndoLog::end_(Scope& s)
     UndoCommand c = std::move(it->second.cmd);
     const std::size_t had = it->second.had;
     const bool rejoined = it->second.rejoined;
+    const std::optional<std::size_t> saved_at = it->second.saved_at;
     _open.erase(it);
     if (c.changes.size() == had) {
       // Nothing changed: a command taken up again goes back as it was;
@@ -637,6 +646,10 @@ UndoLog::end_(Scope& s)
     }
     std::erase_if(_cmds, [](const UndoCommand& u) { return !u.done; });
     UndoCommand* last = last_done_();
+    // Saved while it was open, nothing ending since: the save holds what
+    // it had then.
+    const bool quiet_since = saved_at && !_untracked &&
+                             saved_point_() == _saved_seq;
     const std::int64_t now = now_ms();
     // Never into the command a save was made at: its seq would stay the
     // saved one, and the change after the save read as saved (lost).
@@ -677,6 +690,18 @@ UndoLog::end_(Scope& s)
       _cmds.push_back(std::move(c));
       stored = _cmds.back();
     }
+    if (saved_at) {
+      if (stored->changes.size() > *saved_at) {
+        // Written after that save: dirty until the next (its seq may be
+        // the saved one -- a command taken up again keeps it).
+        _untracked = true;
+        saved_moved = true;
+      } else if (quiet_since && _saved_seq != stored->seq) {
+        // All of it in the save: the save stands at it.
+        _saved_seq = stored->seq;
+        saved_moved = true;
+      }
+    }
     while (_cmds.size() > kMaxCommands) {
       dropped.push_back(_cmds.front().seq);
       _cmds.erase(_cmds.begin());
@@ -691,6 +716,9 @@ UndoLog::end_(Scope& s)
       VALTZ_LOG_WARN("undo", "cannot keep the history: {}",
                      st.error().message);
     }
+  }
+  if (saved_moved) {
+    (void)store_saved_();
   }
   if (stored) {
     // Stored compact even while it is the last (whole in memory, so a
@@ -969,9 +997,12 @@ UndoLog::mark_saved()
 {
   {
     std::lock_guard lk(_mu);
-    const UndoCommand* last = last_done_();
-    _saved_seq = last ? last->seq : 0;
+    _saved_seq = saved_point_();
     _untracked = false;
+    // Commands open across the save: what each held then is saved.
+    for (auto& [seq, o] : _open) {
+      o.saved_at = o.cmd.changes.size();
+    }
   }
   VALTZ_TRY(store_saved_());
   if (_changed) {
@@ -998,8 +1029,40 @@ bool
 UndoLog::at_saved() const
 {
   std::lock_guard lk(_mu);
-  const UndoCommand* last = last_done_();
-  return !_untracked && (last ? last->seq : 0) == _saved_seq;
+  if (_untracked) {
+    return false;
+  }
+  // A command being recorded that has written since the save (or since
+  // it was opened): the records are not as saved.
+  for (const auto& [seq, o] : _open) {
+    if (o.cmd.changes.size() > (o.saved_at ? *o.saved_at : o.had)) {
+      return false;
+    }
+  }
+  return saved_point_() == _saved_seq;
+}
+
+std::uint64_t
+UndoLog::saved_point_() const
+{
+  // The newest done command -- one taken up again by a join (a job's
+  // later writes) still that, though out of `_cmds` while it records:
+  // read without it, a project saved at it read clean, the save at
+  // valtzctl's end skipped and a clip left in the working copy. By seq,
+  // not place: one taken up again goes back after any that ended
+  // meanwhile.
+  std::uint64_t at = 0;
+  for (const auto& c : _cmds) {
+    if (c.done) {
+      at = std::max(at, c.seq);
+    }
+  }
+  for (const auto& [seq, o] : _open) {
+    if (o.rejoined) {
+      at = std::max(at, seq);
+    }
+  }
+  return at;
 }
 
 std::set<std::string>
@@ -1009,6 +1072,15 @@ UndoLog::held_blobs() const
   std::lock_guard lk(_mu);
   for (const auto& c : _cmds) {
     const auto names = c.blobs ? c.blobs : blobs_of_(c);
+    held.insert(names->begin(), names->end());
+  }
+  // Those being recorded too: a command taken up again is out of
+  // `_cmds` until it ends.
+  for (const auto& [seq, o] : _open) {
+    if (o.cmd.blobs) {
+      held.insert(o.cmd.blobs->begin(), o.cmd.blobs->end());
+    }
+    const auto names = blobs_of_(o.cmd);
     held.insert(names->begin(), names->end());
   }
   return held;

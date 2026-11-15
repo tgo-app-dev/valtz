@@ -3103,14 +3103,15 @@ TEST(controller, minimax_h3_image_conditions_on_an_h3_encoder_here)
     };
     return Controller::create(cfg);
   };
-  auto ask = [&](Controller& ctl, const char* name, bool preview = true) {
+  auto ask = [&](Controller& ctl, const char* name, bool preview = true,
+                 int side = 1024) {
     auto pid = ctl.create_project(root / std::format("{}.valtz", name), name);
     GenerateImageRequest req;
     req.project = pid.ok() ? *pid : ProjectId();
     req.prompt = "A lighthouse at dusk";
     req.model = "minimax-h3-image";
-    req.width = 1024;
-    req.height = 1024;
+    req.width = side;
+    req.height = side;
     req.steps = 20;
     req.preview = preview;
     return ctl.generate_image(req);
@@ -3154,6 +3155,19 @@ TEST(controller, minimax_h3_image_conditions_on_an_h3_encoder_here)
   CHECK(jget<std::string>(spec->params, "encoder", "") == "minimax-h3-fl2va");
   CHECK(spec->model.encoder.filename() == "FL2VA");
   CHECK(spec->model.preview.empty());   // no TAE here
+
+  // Up to 8K a side (`max_edge` 8192: 6272 until 2026-11-13); past it
+  // refused, naming the edge.
+  auto eight = ask(**made, "eight", true, 8192);
+  REQUIRE_OK(eight);
+  const auto* es = engine->spec(*eight);
+  REQUIRE(es != nullptr);
+  CHECK(jget(es->params, "width", 0) == 8192);
+  CHECK(jget(es->params, "height", 0) == 8192);
+  auto past = ask(**made, "past", true, 8193);
+  REQUIRE(!past.ok());
+  CHECK(past.error().key == msg::kSizeTooLarge.key);
+  CHECK(past.error().message.find("8192") != std::string::npos);
 
   // H3's TAE here: its live preview, as a clip's -- unless asked off
   // (valtzctl --no-preview), which a picture's request had dropped.
@@ -4108,6 +4122,23 @@ TEST(controller, a_gated_download_takes_a_token_kept_nowhere)
   CHECK(jget<std::string>(failed, "key", "") == "");
   CHECK(jget<std::string>(failed, "message", "").find("HTTP 401")
         != std::string::npos);
+  // From a MIRROR -- hf-mirror.com, a third party; ModelScope: the
+  // Hugging Face token is never sent, the source still named.
+  engine->sources = Json::array(
+      {{{"name", "huggingface"}, {"label", "HuggingFace"},
+        {"default", true}},
+       {{"name", "modelscope"}, {"label", "ModelScope"}},
+       {{"name", "hf-mirror"}, {"label", "HF-Mirror"}}});
+  for (const char* from : {"hf-mirror", "modelscope"}) {
+    auto jm = ctl.download_model("krea2-turbo", token, from);
+    REQUIRE_OK(jm);
+    const engine::JobSpec* sm = engine->spec(*jm);
+    REQUIRE(sm != nullptr);
+    CHECK(jget<std::string>(sm->params, "source", "") == from);
+    CHECK(!sm->params.contains("hf_token"));
+    engine->fail(*jm, "lists no files");
+    said += drain();
+  }
 
   CHECK(said.find(token) == std::string::npos);
   CHECK(to_text(ctl.log_since(0)).find(token) == std::string::npos);
@@ -4518,6 +4549,62 @@ TEST(composition, a_result_lands_in_a_new_layer_or_its_own)
   auto again = ctl.place_result(pid, *red, std::nullopt);
   REQUIRE_OK(again);
   CHECK(b.p().asset(again->first)->name == "kite (3)");
+}
+
+// A PICTURE landing on a still ON A NEW PAGE (Settings › General ›
+// Generations): a page of its own added after the last, the picture
+// alone on it -- the earlier one, which ran to the last page, stops
+// before it -- one command with the landing; a clip or a sound is laid
+// as before.
+TEST(composition, a_picture_lands_on_a_new_page)
+{
+  Bench b("comp-land-page");
+  REQUIRE(b.ok());
+  Controller& ctl = *b.ctl;
+  const ProjectId pid = b.pid;
+  auto red = b.png("red.png", 32, 32, {0xff, 0, 0, 0xff});
+  auto blue = b.png("blue.png", 32, 32, {0, 0, 0xff, 0xff});
+  REQUIRE(red && blue);
+  auto own = ctl.place_result(pid, *red, std::nullopt);
+  REQUIRE_OK(own);
+  const AssetId still = own->first;
+  const auto pages_of = [&] { return b.p().asset(still)->pages; };
+  const auto span = [&](const std::string& id) {
+    for (const auto& l : b.layers(still)) {
+      if (l.id == id) {
+        return std::pair{l.time.offset, l.time.duration};
+      }
+    }
+    return std::pair<std::int64_t, std::int64_t>{-1, -1};
+  };
+  const std::string first_layer = b.layers(still)[0].id;
+  auto put = ctl.place_result(pid, *blue, still, std::nullopt, 0,
+                              std::nullopt, false, true);
+  REQUIRE_OK(put);
+  CHECK(put->first == still);
+  CHECK(pages_of() == 2);
+  using Span = std::pair<std::int64_t, std::int64_t>;
+  CHECK((span(first_layer) == Span{0, 1}));
+  CHECK(span(put->second).first == 1);
+  // Page 2 is the blue picture alone, page 1 the red.
+  const auto flat = b.root / "page.png";
+  REQUIRE_OK(ctl.flatten(pid, still, flat, std::nullopt, std::nullopt, {},
+                         1));
+  CHECK(pixel_at(flat, 16, 16)[2] > 200);
+  CHECK(pixel_at(flat, 16, 16)[0] < 40);
+  REQUIRE_OK(ctl.flatten(pid, still, flat, std::nullopt, std::nullopt, {},
+                         0));
+  CHECK(pixel_at(flat, 16, 16)[0] > 200);
+  // A third: page 3.
+  auto third = ctl.place_result(pid, *red, still, std::nullopt, 0,
+                                std::nullopt, false, true);
+  REQUIRE_OK(third);
+  CHECK(pages_of() == 3);
+  CHECK((span(put->second) == Span{1, 1}));
+  // One command: undone, the page and the picture go.
+  REQUIRE_OK(ctl.undo(pid));
+  CHECK(pages_of() == 2);
+  CHECK(b.layers(still).size() == 2);
 }
 
 // A CLIP landing on a timeline (Settings › General › Generations): at
@@ -10294,6 +10381,28 @@ TEST(controller, out_of_memory_names_what_to_change)
   CHECK(p["suggest"].contains("resolution"));
   // No recipe (the job was gone): the numbers, nothing to suggest.
   CHECK(out_of_memory_report(memory, nullptr)["suggest"].empty());
+
+  // RelayVSR read at its clip's own size: read a quarter of the size
+  // shown instead -- never "a smaller size" (an upscale's is the layer's).
+  project::Recipe relay;
+  relay.op = std::string(engine::kOpUpscaleVideo);
+  relay.model = "relayvsr";
+  relay.params = {{"width", 3840}, {"height", 2160}, {"frames", 124},
+                  {"tuning", {{"read_at", "source"}, {"window", 16}}}};
+  const Json u = out_of_memory_report(memory, &relay)["suggest"];
+  CHECK(jget<std::string>(u["read_at"], "model", "") == "relayvsr");
+  CHECK(jget<std::string>(u["read_at"], "now", "") == "source");
+  CHECK(jget<std::string>(u["read_at"], "to", "") == "quarter");
+  CHECK(!u.contains("resolution"));
+  CHECK(!u.contains("length"));
+  // ...already at a quarter: nothing of it to suggest.
+  relay.params["tuning"]["read_at"] = "quarter";
+  CHECK(out_of_memory_report(memory, &relay)["suggest"].empty());
+  // FlashVSR has no Read At.
+  project::Recipe flash = relay;
+  flash.model = "flashvsr-plus-turbo";
+  flash.params["tuning"] = {{"i8_gemm", true}};
+  CHECK(out_of_memory_report(memory, &flash)["suggest"].empty());
 }
 
 // Blank assets of the list and SOUND CAPTURED into them (DESIGN §7b): a
@@ -11575,6 +11684,88 @@ TEST(controller, what_the_engine_holds_is_named_and_counted_once)
   // Largest first; the export's 500 is no model's.
   CHECK(held_models[0]["model"] == "qwen3.8-27b-4bit");
   CHECK(held["attributed_bytes"] == 20100 + 10000 + 4 + 300);
+}
+
+// RELAYVSR (DESIGN §4f): an upscaler of clips chosen in Settings ›
+// Upscaling, never Auto's while FlashVSR+ is here; offered its own
+// options (what it reads, its keyframe window); not ready -- nor run,
+// picked or not -- on a vpipe without its stage, Auto's in its place.
+TEST(controller, relayvsr_upscales_clips_where_vpipe_has_it)
+{
+  auto root = test::temp_dir("ctl-relayvsr");
+  const fs::path models = root / "models";
+  auto put = [&](const char* file) {
+    const fs::path f = models / file;
+    fs::create_directories(f.parent_path());
+    std::ofstream(f) << "w";
+  };
+  put("kopper/RelayVSR/wan.safetensors");
+  put("kopper/RelayVSR/flash.safetensors");
+  put("ruchangyao/FlashVSR_plus/base/dit.safetensors");
+  put("ruchangyao/FlashVSR_plus/base/lq_proj_in.safetensors");
+  ControllerConfig cfg;
+  cfg.support_root = root / "support";
+  cfg.model_roots = {models};
+  cfg.with_engine = false;
+  cfg.extensions = false;
+  HeldEngine* engine = nullptr;
+  cfg.engine_factory = [&engine] {
+    auto e = std::make_unique<HeldEngine>();
+    engine = e.get();
+    return std::unique_ptr<engine::Engine>(std::move(e));
+  };
+  auto made = Controller::create(cfg);
+  REQUIRE_OK(made);
+  REQUIRE(engine != nullptr);
+  Controller& ctl = **made;
+  auto video = [&] {
+    const Json all = ctl.upscale_settings();
+    for (const auto& k : all["kinds"]) {
+      if (k["kind"] == "video") {
+        return k;
+      }
+    }
+    return Json();
+  };
+  auto row = [&] {
+    const Json all = ctl.upscale_settings();
+    for (const auto& u : all["upscalers"]) {
+      if (u["id"] == "relayvsr") {
+        return u;
+      }
+    }
+    return Json();
+  };
+  // Installed, ready; Auto keeps FlashVSR+.
+  CHECK(jget(row(), "ready", false));
+  CHECK(row()["kind"] == "video");
+  CHECK(video()["auto"] == "flashvsr-plus-base");
+  // Its options: what it reads, its window.
+  std::set<std::string> keys;
+  const Json relay = row();
+  for (const auto& o : relay["tuning"]["options"]) {
+    keys.insert(jget<std::string>(o, "key", ""));
+  }
+  CHECK(keys.contains("read_at"));
+  CHECK(keys.contains("window"));
+  // ...and its arithmetic (vpipe 81891d62).
+  for (const char* k : {"i8_gemm", "i8_gemm_tier", "sage_attn", "sage_pv8",
+                        "ane_ffn"}) {
+    CHECK(keys.contains(k));
+  }
+  CHECK(!keys.contains("steps"));
+  REQUIRE_OK(ctl.set_upscale_tuning("relayvsr", {{"window", 8},
+                                                 {"read_at", "quarter"}}));
+  // Picked: it runs.
+  REQUIRE_OK(ctl.use_upscaler("video", "relayvsr"));
+  CHECK(video()["runs"] == "relayvsr");
+  // An older vpipe: not ready, the pick kept, FlashVSR+ running.
+  engine->lacks.insert(std::string(engine::kOpUpscaleRelay));
+  CHECK(!jget(row(), "ready", true));
+  CHECK(video()["chosen"] == "relayvsr");
+  CHECK(video()["runs"] == "flashvsr-plus-base");
+  engine->lacks.clear();
+  CHECK(video()["runs"] == "relayvsr");
 }
 
 TEST(controller, a_video_upscaler_is_auto_or_picked)

@@ -213,6 +213,14 @@ inline constexpr Message kFleetNeedsSecret{
 inline constexpr Message kFleetSecretShort{
     "core.fleet_secret_short",
     "A fleet's secret has at least 8 characters."};
+// A model copied from a member (DESIGN §11d).
+inline constexpr Message kFleetCopyAway{
+    "core.fleet_copy_away",
+    "{member} is not connected: {model} cannot be copied from it."};
+inline constexpr Message kFleetCopyNotShared{
+    "core.fleet_copy_not_shared", "{member} does not share {model}."};
+inline constexpr Message kFleetNoRoom{
+    "core.fleet_no_room", "{member} has no room for the job's weights."};
 inline constexpr Message kFleetOnlyNoMember{
     "core.fleet_only_no_member",
     "It is set to run on the fleet only, and no member can take it now."};
@@ -222,6 +230,51 @@ inline constexpr Message kFleetUnknownPolicy{
     "core.fleet_unknown_policy",
     "“{policy}” is no offload policy: never, local-first, fleet-first or "
     "always."};
+// A clip split with the paired member over Thunderbolt (DESIGN §11c).
+inline constexpr Message kFleetNoSuchMember{
+    "core.fleet_no_such_member",
+    "No member “{name}” is connected."};
+inline constexpr Message kSplitPairAway{
+    "core.split_pair_away",
+    "{member} is not connected."};
+inline constexpr Message kSplitNoLink{
+    "core.split_no_link",
+    "No Thunderbolt cable joins this Mac and {member} now."};
+inline constexpr Message kSplitCannotHere{
+    "core.split_cannot_here",
+    "This Valtz cannot split a DiT: its vpipe has no tensor "
+    "parallelism."};
+inline constexpr Message kSplitCannotThere{
+    "core.split_cannot_there",
+    "{member} cannot split a DiT: its Valtz or vpipe has no tensor "
+    "parallelism."};
+inline constexpr Message kSplitNoModelThere{
+    "core.split_no_model_there",
+    "{member} does not have {model}."};
+inline constexpr Message kSplitBusyHere{
+    "core.split_busy_here",
+    "This Mac is busy: the clip waits its turn here, whole."};
+inline constexpr Message kSplitNeuralEngine{
+    "core.split_neural_engine",
+    "Not with the Neural Engine's share yet."};
+inline constexpr Message kSplitVdnTaomate{
+    "core.split_vdn_taomate",
+    "Not with VDN or TaoMate."};
+inline constexpr Message kSplitOwnFiles{
+    "core.split_own_files",
+    "Not with Custom's own DiT, VAE or text encoder: {member} does not "
+    "have them."};
+inline constexpr Message kSplitOwnLoras{
+    "core.split_own_loras",
+    "Not with LoRAs of this Mac's own unless they go with the job: turn "
+    "on Send Custom Weights With a Job (Settings › Fleet › Offload "
+    "Policies) -- {member} must take them and have room for them."};
+inline constexpr Message kSplitContinued{
+    "core.split_continued",
+    "Not a clip continued from its kept latents, or cleaned, yet."};
+inline constexpr Message kSplitPeerFailed{
+    "core.split_peer_failed",
+    "{member} failed its half of the clip: {reason}"};
 inline constexpr Message kStretchNeedsStill{
     "core.stretch_needs_still",
     "Only a picture, a markup or a still composition is stretched: a "

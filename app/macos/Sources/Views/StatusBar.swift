@@ -20,7 +20,8 @@ import SwiftUI
 /// first, then the thermal row's word and the Mac's memory figure.
 ///
 /// Its context menu checks which items show (remembered). A click on RAM
-/// shows what Valtz holds, model by model (MemoryPopover).
+/// shows what Valtz holds, model by model (MemoryPopover); one on Fleet
+/// each member's arithmetic and the paired link (FleetPopover).
 ///
 /// Each figure keeps the width of the widest it can show -- a template
 /// of it, every digit as wide as any other in monospaced digits -- so a
@@ -66,8 +67,9 @@ struct StatusBar: View {
         .onAppear { monitor.start() }
         .onDisappear {
             monitor.stop()
-            // Its popover goes with it, not to come back with the bar.
+            // Its popovers go with it, not to come back with the bar.
             model.memoryPopoverOpen = false
+            model.fleetPopoverOpen = false
         }
     }
 
@@ -93,6 +95,13 @@ struct StatusBar: View {
             if model.showsStatusItem(.fleet), let fleet = load.fleet {
                 flopsMeter("Fleet", fleet)
                     .help(fleetHelp(fleet))
+                    // A click: each member's, and the paired link.
+                    .contentShape(Rectangle())
+                    .onTapGesture { model.fleetPopoverOpen.toggle() }
+                    .popover(isPresented: $model.fleetPopoverOpen,
+                             arrowEdge: .top) {
+                        FleetPopover(model: model)
+                    }
             }
             Spacer(minLength: 8)
             if model.showsStatusItem(.thermal) {
@@ -206,7 +215,7 @@ struct StatusBar: View {
             return String(localized: "\(name): GPU \(gpu), ANE \(ane)")
         }
         if !lines.isEmpty { s += "\n\n" + lines.joined(separator: "\n") }
-        return s
+        return s + "\n\n" + String(localized: "Click it for each member's arithmetic and, paired over Thunderbolt, the split's link.")
     }
 
     /// "GPU ▬▬▭ 95.0%": its bar -- with `behind`, a second reading drawn

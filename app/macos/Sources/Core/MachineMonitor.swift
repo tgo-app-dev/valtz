@@ -45,6 +45,8 @@ final class MachineMonitor {
         var peak: Double
         /// A fleet's: each member's as it told them (nil: it does not).
         var members: [Member] = []
+        /// A fleet's, paired over Thunderbolt: the split's link.
+        var pair: Pair?
 
         struct Member: Equatable {
             var name: String
@@ -54,6 +56,21 @@ final class MachineMonitor {
         }
 
         var total: Double { gpu + ane }
+    }
+
+    /// The paired member's Thunderbolt link as a split uses it
+    /// (Controller::pair_traffic_): what this Mac sends it and receives
+    /// from it, bytes a second, of what the cables carry each way.
+    struct Pair: Equatable {
+        var name: String
+        var links: Int
+        var rdma: Bool
+        /// Each direction's: the cables' speeds summed (nil: not known).
+        var capacity: Double?
+        var sent: Double
+        var received: Double
+        /// A split's channel open now.
+        var active: Bool
     }
 
     /// The GPU thermal sample (vpipe's `--gpu-thermal`).
@@ -260,9 +277,18 @@ final class MachineMonitor {
                          gpu: num($0["gpu_tflops"]),
                          ane: num($0["ane_tflops"]))
         }
+        let pair = (j["pair"] as? [String: Any]).map { p in
+            Pair(name: p["name"] as? String ?? "",
+                 links: (p["links"] as? NSNumber)?.intValue ?? 0,
+                 rdma: p["rdma"] as? Bool ?? false,
+                 capacity: num(p["capacity_bytes_per_s"]),
+                 sent: num(p["sent_bytes_per_s"]) ?? 0,
+                 received: num(p["received_bytes_per_s"]) ?? 0,
+                 active: p["active"] as? Bool ?? false)
+        }
         return Flops(gpu: gpu, ane: ane,
                      peak: max(num(j["peak_tflops"]) ?? 0, gpu + ane),
-                     members: members)
+                     members: members, pair: pair)
     }
 
     private func take(thermal d: Data) {

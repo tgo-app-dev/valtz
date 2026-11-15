@@ -20,11 +20,16 @@ vpipe_add_plugin(valtz-vpipe SOURCES
   src/source-stage.cc
   src/tap-stage.cc
   src/scene-cut.cc
-  src/summary-stage.cc)
+  src/summary-stage.cc
+  src/tp-transport.cc
+  src/tp-rdma.cc)
 target_include_directories(valtz-vpipe PRIVATE
   "${CMAKE_CURRENT_SOURCE_DIR}/src")
 target_link_libraries(valtz-vpipe PRIVATE valtz_vpipe_contract
   "-framework CoreFoundation")
+# RDMA's verbs (tp-rdma.cc) WEAKLY: a macOS without librdma loads the
+# plugin all the same, and valtz-tp says it has no RDMA.
+target_link_options(valtz-vpipe PRIVATE "LINKER:-weak-lrdma")
 target_compile_definitions(valtz-vpipe PRIVATE
   VALTZ_VERSION="${PROJECT_VERSION}")
 valtz_target_warnings(valtz-vpipe)

@@ -3963,7 +3963,8 @@ Result<std::pair<AssetId, std::string>>
 Controller::place_result(ProjectId pid, AssetId asset,
                          std::optional<AssetId> onto,
                          std::optional<std::string> at, std::int64_t offset,
-                         std::optional<JobId> job, bool at_end)
+                         std::optional<JobId> job, bool at_end,
+                         bool new_page)
 {
   auto undo = job ? join_(pid, *job) : command_(pid, "asset.place", asset);
   project::Project* p = project(pid);
@@ -3987,6 +3988,30 @@ Controller::place_result(ProjectId pid, AssetId asset,
       // no content: the clip does not wait for it).
       if (at_end && a.kind == AssetKind::Video && is_timeline(*t)) {
         VALTZ_ASSIGN(offset, content_end_(pid, t->id));
+      }
+      // A picture on a NEW PAGE (Settings › General › Generations): a
+      // page added after the last, the picture alone on it -- what ran
+      // to the last page stops before it (a still's earlier pictures
+      // would show under it).
+      if (new_page && a.kind == AssetKind::Image &&
+          t->cls == AssetClass::Still) {
+        VALTZ_ASSIGN(const std::int64_t page, add_page(pid, *onto));
+        VALTZ_ASSIGN(project::Asset grown, p->asset(*onto));
+        for (const auto& l : grown.layers) {
+          const std::int64_t first = l.time.offset;
+          const std::int64_t end = l.time.duration > 0
+                                       ? first + l.time.duration
+                                       : grown.pages;
+          if (first < page && end > page) {
+            if (Status st = set_layer_pages(pid, *onto, l.id, first,
+                                            page - first);
+                !st.ok()) {
+              VALTZ_LOG_INFO("compositions", "{} kept on the new page: {}",
+                             l.id, st.error().message);
+            }
+          }
+        }
+        return instantiate(pid, asset, *onto, std::nullopt, page);
       }
       return instantiate(pid, asset, *onto, at, offset);
     }

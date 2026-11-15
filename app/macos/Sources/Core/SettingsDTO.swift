@@ -58,6 +58,7 @@ struct CapabilityTree: Decodable, Sendable {
             switch name {
             case "huggingface": String(localized: "Hugging Face")
             case "modelscope": String(localized: "ModelScope")
+            case "hf-mirror": String(localized: "HF-Mirror (hf-mirror.com)")
             default: label
             }
         }
@@ -67,6 +68,18 @@ struct CapabilityTree: Decodable, Sendable {
     struct SourcePath: Decodable, Sendable, Hashable {
         var name: String
         var path: String
+    }
+
+    /// A member of the fleet that shares a model (DESIGN §11d): its files
+    /// copied from it -- over each Thunderbolt cable to it (`cables`, their
+    /// speeds summed in `gbps`), else the network.
+    struct FleetCopy: Decodable, Sendable, Hashable, Identifiable {
+        var member: String
+        var name: String
+        var thunderbolt: Bool
+        var cables: Int
+        var gbps: Int
+        var id: String { member }
     }
 
     struct Family: Decodable, Sendable, Identifiable {
@@ -114,6 +127,8 @@ struct CapabilityTree: Decodable, Sendable {
         /// `source`, DESIGN §4u: Practical-RIFE's zips): where -- "Google
         /// Drive" -- its page the row's `url`. Nil: a hub's.
         var host: String?
+        /// The members of the fleet sharing it, to copy it from.
+        var fleet: [FleetCopy]?
         /// Its path on `source`; nil where that source does not carry it.
         func path(on source: String) -> String? {
             sources?.first { $0.name == source }?.path

@@ -433,17 +433,20 @@ struct PixelSize: Equatable, Sendable {
     var width: Int
     var height: Int
 
-    /// Edges a typed size is held to.
+    /// Edges a size is held to -- a base taken, a shape kept. A size
+    /// TYPED may go past it to the longest side its model makes (catalog
+    /// `max_edge`: MiniMax-H3-Image's 8192).
     static let edges = 256...4096
 
-    /// "1200x800", "1200 × 800" or "1200*800".
-    init?(parsing text: String) {
+    /// "1200x800", "1200 × 800" or "1200*800", each side held to
+    /// `edges`, or up to `maxEdge` where that is longer.
+    init?(parsing text: String, maxEdge: Int = 0) {
         let parts = text.split { "xX×*".contains($0) }
             .map { $0.trimmingCharacters(in: .whitespaces) }
         guard parts.count == 2, let w = Int(parts[0]), let h = Int(parts[1]),
               w > 0, h > 0 else { return nil }
-        self.init(width: w.clamped(to: Self.edges),
-                  height: h.clamped(to: Self.edges))
+        let r = Self.edges.lowerBound...max(Self.edges.upperBound, maxEdge)
+        self.init(width: w.clamped(to: r), height: h.clamped(to: r))
     }
 
     init(width: Int, height: Int) {
@@ -1104,6 +1107,9 @@ final class AppModel: TuningHost {
     /// RAM's popover open (a click on its meter): what Valtz holds in
     /// memory, model by model (MemoryPopover).
     var memoryPopoverOpen = false
+    /// The Fleet meter's popover open (a click on it): each member's
+    /// arithmetic, and the paired member's link (FleetPopover).
+    var fleetPopoverOpen = false
     /// The status bar's items its context menu unchecked: remembered as
     /// the bar is.
     var hiddenStatusItems = AppModel.storedHiddenStatusItems {
@@ -1807,6 +1813,16 @@ final class AppModel: TuningHost {
     /// the playhead: a clip, At the End.
     func placesAtEnd(_ kind: String) -> Bool {
         kind == "video" && clipPlacement == .end
+    }
+    /// Where a generated PICTURE lands on a still (Settings › General ›
+    /// Generations): a new layer on the page shown (the default, as ever),
+    /// or a NEW PAGE of its own, added after the last -- the stage going
+    /// to it (core Controller::place_result's `new_page`). Kept between
+    /// launches -- a snapshot run takes VALTZ_SNAPSHOT_LANDING's
+    /// "pictures=on".
+    var picturesOnNewPage = AppModel.storedLanding("pictures",
+                                                    default: false) {
+        didSet { Self.keep(picturesOnNewPage, as: "landing.pictures") }
     }
     /// The PROMPT BOX's words by target (Settings › General › Prompt
     /// Box): each target -- Video, Image, Audio, Agent -- keeps its own
@@ -2651,6 +2667,22 @@ final class AppModel: TuningHost {
         guard let f = memoryFailure, let n = f.references, n > 0
         else { return false }
         return promptAttachments.filter(\.isMedia).count >= n
+    }
+
+    /// The upscaler the memory card says to read a quarter of the size
+    /// with, still reading its clip's own (Settings › Upscaling).
+    var suggestsReadingAQuarter: Bool {
+        guard let id = memoryFailure?.readQuarterOf,
+              let u = upscalers.first(where: { $0.id == id }) else {
+            return false
+        }
+        return (u.info.tuning.choices["read_at"] ?? "source") != "quarter"
+    }
+
+    /// The memory card's suggestion taken: that upscaler reads a quarter
+    /// of the size shown from now on, as Settings › Upscaling would set it.
+    func readAQuarter(_ id: String) {
+        setUpscaleOption(id, "read_at", "quarter")
     }
 
     /// A row of the generation card the memory card points at.
@@ -4237,6 +4269,9 @@ final class AppModel: TuningHost {
         }
         if keyedStage, let clip = stageStack {
             loadClipTracks(clip, layer: activeLayer)
+            // The Trim and Audio panels the removed layer's no more: its
+            // sound and marks were left there, to be written to no layer.
+            if clipOnStage, trimLayer != activeLayer { loadTrim(clip) }
             return
         }
         if let pic = stagePicture {
@@ -4591,8 +4626,13 @@ final class AppModel: TuningHost {
         }
         stackPlanning = true
         let rate = stageFrameRate
-        let look = stageClipLook
         let layer = activeLayer
+        // The panels' look is the layer's they were read from
+        // (loadClipTracks), as their sound is (trimLayer): laid on another
+        // -- a plan made as a selected voice-over was removed, before the
+        // panels read the layer then active -- that one was drawn as the
+        // removed one looked, a zoomed clip at 1 (2026-11-12).
+        let look = clipTracksLayer == layer ? stageClipLook : nil
         let id = clip.id
         let firstPoster = stackPlayback == nil
         // The markup objects being changed are drawn live, over it.
@@ -6368,6 +6408,15 @@ final class AppModel: TuningHost {
         return max(16, catalog.first { $0.id == id }?.sizeAlign ?? 16)
     }
 
+    /// The longest side a size typed for a picture may have: the model
+    /// Start will run's (catalog `max_edge`: MiniMax-H3-Image's 8192),
+    /// else `PixelSize.edges`' 4096. Past it the core refuses by name.
+    var typedMaxEdge: Int {
+        guard activeModality == .image else { return 0 }
+        let id = willEdit ? editModel : imageModel
+        return catalog.first { $0.id == id }?.maxEdge ?? 0
+    }
+
     /// The model Start will run makes 4096 pixels a side (catalog
     /// `max_edge`: FLUX.3 Image Klein): a picture's Size row offers 4K.
     var makes4K: Bool {
@@ -6598,7 +6647,8 @@ final class AppModel: TuningHost {
     /// The size of the preset in use leaves it in use.
     @discardableResult
     func setCustomSize(_ text: String) -> Bool {
-        guard let size = PixelSize(parsing: text) else { return false }
+        guard let size = PixelSize(parsing: text, maxEdge: typedMaxEdge)
+        else { return false }
         let d = dimensions
         if customSize == nil, size.width == d.width, size.height == d.height {
             return true
@@ -12639,11 +12689,17 @@ final class AppModel: TuningHost {
                 if let at = ctx.at { req["at"] = at }
                 req["offset"] = ctx.offset
                 if placesAtEnd(asset.kind) { req["at_end"] = true }
+                if asset.kind == "image", picturesOnNewPage {
+                    req["new_page"] = true
+                }
             } else if ctx.intoProject, let project = projectViews.first {
                 // On top of what an earlier result of the queue made the
                 // project's (a kind it cannot show: one of its own).
                 req["onto"] = project.id
                 if placesAtEnd(asset.kind) { req["at_end"] = true }
+                if asset.kind == "image", picturesOnNewPage {
+                    req["new_page"] = true
+                }
             }
             let r = core.assetOp(project: projectId, "place-result", req)
             if r.ok, let view = r["asset"] as? String {
@@ -12672,6 +12728,7 @@ final class AppModel: TuningHost {
             guard let placed else { return }
             if placed.doc.id == stageAssetId, generationJob == nil {
                 layersChanged()
+                showLandedPage(placed)
                 landed(on: placed.doc, layer: placed.layer)
             } else if viewedAsset != nil, viewReturn == nil {
                 // An asset viewed while nothing was active -- an empty
@@ -12715,7 +12772,20 @@ final class AppModel: TuningHost {
         finishStage(state: "finished", asset: placed.doc, result: result,
                     layer: placed.layer, task: task)
         selectLayer(placed.layer)
+        showLandedPage(placed)
         landed(on: placed.doc, layer: placed.layer)
+    }
+
+    /// The page a result landed on, on the stage -- a picture given a
+    /// page of its own (Settings' On a New Page) is not on the page shown.
+    func showLandedPage(_ placed: (doc: AssetDTO, layer: String)) {
+        guard placed.doc.id == stageAssetId, let pic = stagePicture,
+              pic.isPaged,
+              let l = placed.doc.layerStack.first(where: {
+                  $0.id == placed.layer }),
+              let span = pic.pageSpan(of: l), !span.contains(stagePage)
+        else { return }
+        goToPage(span.lowerBound)
     }
 
     /// Nothing on the stage of its own: no asset shown or viewed, no

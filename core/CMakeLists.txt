@@ -72,6 +72,8 @@ set(VALTZ_CORE_SOURCES
   src/ext/extension.cc
   src/fleet/fleet-config.cc
   src/fleet/fleet.mm
+  src/fleet/model-share.cc
+  src/fleet/thunderbolt.cc
   src/engine/engine.cc
   src/engine/tensor.cc
   src/engine/null-engine.cc
@@ -81,6 +83,8 @@ set(VALTZ_CORE_SOURCES
   src/controller/atlas.cc
   src/controller/compositions.cc
   src/controller/procedural.cc
+  src/controller/split.cc
+  src/controller/fleet-models.cc
   src/controller/controller.cc
   src/controller/event-bus.cc
   src/controller/generate-nodes.cc

@@ -25,10 +25,116 @@ struct FleetStatus: Decodable, Sendable, Equatable {
     /// This Mac's offload policies and what it withholds: read from the
     /// raw JSON (FleetPolicies), not decoded.
     var policies = FleetPolicies()
+    /// Thunderbolt between the members and the pair (DESIGN §11c): read
+    /// from the raw JSON too -- its links are keyed by member ids, its
+    /// reasons are core messages.
+    var thunderbolt = FleetThunderbolt()
+    var pair: FleetPair?
 
     enum CodingKeys: String, CodingKey {
         case enabled, config, port, browsing, localNetwork, members, fleets,
              serving, asking, tasks, me = "self"
+    }
+}
+
+/// THUNDERBOLT between fleet members (DESIGN §11c): this Mac's ports,
+/// the cables found to each member -- the ports facing each other at its
+/// ends, RDMA where both have it up.
+struct FleetThunderbolt: Equatable, Sendable {
+    struct Port: Equatable, Sendable {
+        var name: String
+        var active: Bool
+        var address: String
+        var rdma: String
+    }
+    struct Link: Equatable, Sendable {
+        var localInterface: String
+        var localAddress: String
+        var localPort: String
+        var remoteAddress: String
+        var remotePort: String
+        var rttMs: Double
+        var localRdma: String
+        var remoteRdma: String
+        var rdma: Bool { !localRdma.isEmpty && !remoteRdma.isEmpty }
+    }
+    var ports: [Port] = []
+    var bridge = ""
+    var bridgeAddress = ""
+    var bridged: [String] = []
+    /// macOS has RDMA here, enabled.
+    var rdma = false
+    /// A DiT may be split here (vpipe and the plugin have it).
+    var splits = false
+    /// Member id -> the cables to it.
+    var links: [String: [Link]] = [:]
+
+    init() {}
+
+    init(_ j: [String: Any]) {
+        let me = j["self"] as? [String: Any] ?? [:]
+        ports = (me["ports"] as? [[String: Any]] ?? []).map {
+            Port(name: $0["name"] as? String ?? "",
+                 active: $0["active"] as? Bool ?? false,
+                 address: $0["address"] as? String ?? "",
+                 rdma: $0["rdma"] as? String ?? "")
+        }
+        bridge = me["bridge"] as? String ?? ""
+        bridgeAddress = me["bridge_address"] as? String ?? ""
+        bridged = me["bridged"] as? [String] ?? []
+        rdma = me["rdma"] as? Bool ?? false
+        splits = j["splits"] as? Bool ?? false
+        for (id, ls) in j["links"] as? [String: Any] ?? [:] {
+            links[id] = (ls as? [[String: Any]] ?? []).map {
+                Link(localInterface: $0["local_interface"] as? String ?? "",
+                     localAddress: $0["local_address"] as? String ?? "",
+                     localPort: $0["local_port"] as? String ?? "",
+                     remoteAddress: $0["remote_address"] as? String ?? "",
+                     remotePort: $0["remote_port"] as? String ?? "",
+                     rttMs: $0["rtt_ms"] as? Double ?? 0,
+                     localRdma: $0["local_rdma"] as? String ?? "",
+                     remoteRdma: $0["remote_rdma"] as? String ?? "")
+            }
+        }
+    }
+}
+
+/// The member this Mac is PAIRED with over Thunderbolt: its clips that
+/// may be split run half there.
+struct FleetPair: Equatable, Sendable {
+    var member: String
+    var name: String
+    var connected: Bool
+    var links: Int
+    var rdma: Bool
+    /// Ready to split now; else `why` not, localized.
+    var ready: Bool
+    var why: String
+    /// MiniMax H3's heads each Mac takes: here, there.
+    var heads: [Int]
+    /// This Mac's share, by the two GPUs (`autoShare`) or as set.
+    var share: Double
+    var autoShare: Bool
+    /// Its settings, from the configuration.
+    var useRdma: Bool
+    var setShare: Double
+
+    init?(_ j: [String: Any]?, config c: [String: Any]) {
+        guard let j, let member = j["member"] as? String, !member.isEmpty
+        else { return nil }
+        self.member = member
+        name = j["name"] as? String ?? member
+        connected = j["connected"] as? Bool ?? false
+        links = j["links"] as? Int ?? 0
+        rdma = j["rdma"] as? Bool ?? false
+        ready = j["ready"] as? Bool ?? false
+        why = (j["why"] as? [String: Any]).map(L10n.coreMessage) ?? ""
+        heads = j["heads"] as? [Int] ?? []
+        share = j["share"] as? Double ?? 0
+        autoShare = j["auto_share"] as? Bool ?? true
+        let pc = c["pair"] as? [String: Any] ?? [:]
+        useRdma = pc["rdma"] as? Bool ?? true
+        setShare = pc["share"] as? Double ?? 0
     }
 }
 
@@ -83,6 +189,9 @@ struct FleetConfig: Decodable, Sendable, Equatable {
     var schedule: FleetSchedule
     var joined: Bool
     var accepting: Bool
+    /// A job naming Custom's weights sent too, its files copied to the
+    /// member first (DESIGN §11d).
+    var sendWeights: Bool?
 }
 
 /// When this Mac takes fleet jobs: `days` (bit 0 Monday .. bit 6
@@ -129,6 +238,8 @@ struct FleetSelf: Decodable, Sendable, Equatable {
     var machine: Machine?
     var engine: String?
     var version: String?
+    /// A DiT may be split there (DESIGN §11c).
+    var splits: Bool?
 }
 
 /// A fleet found on the network, by its discoverable members.
@@ -154,6 +265,8 @@ struct FleetServing: Equatable {
     var from: String
     var title: String
     var op: String
+    /// Its half of a clip split with the member (DESIGN §11c).
+    var split = false
     var progress: Double?
     var phase: JobPhase?
 }
@@ -170,6 +283,9 @@ extension AppModel {
             as? [String: Any],
            let c = raw["config"] as? [String: Any] {
             fleet?.policies = FleetPolicies(config: c)
+            fleet?.thunderbolt = FleetThunderbolt(
+                raw["thunderbolt"] as? [String: Any] ?? [:])
+            fleet?.pair = FleetPair(raw["pair"] as? [String: Any], config: c)
         }
         // An offer waiting is asked for; one gone is not.
         let asking = fleet?.asking ?? []
@@ -183,6 +299,11 @@ extension AppModel {
     func fleetChanged() {
         reloadFleet()
         refreshRunnable()
+        // The members' models: Capabilities' Copy from … follows them.
+        if let core {
+            capabilityTree = DTO.decode(CapabilityTree.self,
+                                        core.capabilityTreeJSON())
+        }
     }
 
     /// This Mac in its fleet, changed: its name, discoverable or not, how
@@ -218,6 +339,20 @@ extension AppModel {
         configureFleet(["share": ["models": [id: on]]])
     }
 
+    /// Paired with a member over Thunderbolt (its id), or not ("").
+    func pairFleet(_ member: String) {
+        configureFleet(["pair": member])
+    }
+
+    /// How the pair splits: RDMA or TCP; this Mac's share (0: by the two
+    /// GPUs).
+    func setPair(rdma: Bool? = nil, share: Double? = nil) {
+        var r: [String: Any] = [:]
+        if let rdma { r["pair_rdma"] = rdma }
+        if let share { r["pair_share"] = share }
+        configureFleet(r)
+    }
+
     /// The network looked over for fleets to join (the Fleet page open).
     func browseFleets(_ on: Bool) {
         core?.fleetBrowse(on)
@@ -248,6 +383,7 @@ extension AppModel {
                         job: job, from: p["from"] as? String ?? "",
                         title: p["title"] as? String ?? "",
                         op: p["op"] as? String ?? "",
+                        split: p["split"] as? Bool ?? false,
                         progress: was?.progress, phase: was?.phase)
                 }
             } else if fleetServing?.job == job {
@@ -265,6 +401,15 @@ extension AppModel {
             }
         case "job.runner":
             reloadTasks()
+            // A clip split with the paired member, or why not this time
+            // (DESIGN §11c).
+            if let with = p["split"] as? String {
+                flash(String(localized: "Split with \(with) over Thunderbolt"),
+                      level: .info)
+            } else if let why = p["unsplit"] as? [String: Any] {
+                flash(String(localized: "Not split: \(L10n.coreMessage(why))"),
+                      level: .info)
+            }
         default:
             break
         }

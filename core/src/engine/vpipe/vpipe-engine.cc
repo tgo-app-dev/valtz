@@ -45,6 +45,8 @@
 #include "valtz/base/text.h"
 #include "valtz/base/url-fetch.h"
 #include "valtz/base/version.h"
+#include "valtz/fleet/model-share.h"
+#include "valtz/models/model-check.h"
 #include "valtz/cache/cache-store.h"
 #include "valtz/media/beats.h"
 #include "valtz/media/exif.h"
@@ -67,6 +69,9 @@
 #include "valtz-vpipe/exchange.h"
 
 #include "common/perf-flops.h"
+#include "generative-models/tensor-parallel.h"
+#include "plugin/plugin-abi.h"
+#include "plugin/plugin-context.h"
 #include "stages/model-catalog.h"
 #include "stages/model-source.h"
 #include "vpipe/system-monitor.h"
@@ -82,6 +87,7 @@
 #include <condition_variable>
 #include <cstdlib>
 #include <deque>
+#include <dlfcn.h>
 #include <format>
 #include <fstream>
 #include <functional>
@@ -164,6 +170,7 @@ public:
 
     const fs::path plugin = cfg.vpipe_plugin.empty() ? vp::find_plugin()
                                                      : cfg.vpipe_plugin;
+    _plugin_path = plugin;
     if (plugin.empty()) {
       VALTZ_LOG_ERROR("engine", "{} not found (looked in the app "
                       "bundle, beside the executable and in the build "
@@ -259,6 +266,21 @@ public:
         R"({"output_fps": 48, "method": "rife", "hf_dir": "probe"})");
     // A sound's beats (DESIGN §4v, §15 0zzzj): vpipe's beat-track.
     _tracks_beats = has_stage_("beat-track");
+    // RelayVSR (DESIGN §4f, §15 0zzzq): vpipe's relayvsr-upscale.
+    _relays = has_stage_("relayvsr-upscale");
+    // A DiT split with another Mac (DESIGN §11c, §15 0zzzm): vpipe's
+    // tensor-parallel/1 (weakly imported: an older libvpipe has none) and
+    // the plugin's transport registered in it.
+    _splits_dit = vpipe::genai::tp_transports_available() &&
+                  vpipe::genai::find_tp_transport(
+                      valtz::exchange::kTpTransport) != nullptr;
+    // ...and the clip's decode alike (§15 0zzzo: vae-decode's
+    // tensor_parallel), on a vpipe that says so.
+#ifdef VPIPE_FEATURE_TENSOR_PARALLEL_DECODE
+    _splits_decode = _splits_dit &&
+                     vpipe::host_has_feature(
+                         VPIPE_FEATURE_TENSOR_PARALLEL_DECODE);
+#endif
     // Each backend vpipe was given: loaded when every stage it says it
     // registers is there.
     for (std::size_t i = 0; i < _backends.size(); ++i) {
@@ -473,6 +495,128 @@ public:
             {"peak_tflops", r3(_flops_peak)}};
   }
 
+  // The plugin's counter, found once: the plugin is loaded by vpipe,
+  // so it is looked up in place (RTLD_NOLOAD), never loaded again here.
+  Json
+  split_traffic() override
+  {
+    std::call_once(_traffic_once, [this] {
+      if (_plugin_path.empty()) { return; }
+      void* h = ::dlopen(_plugin_path.c_str(), RTLD_LAZY | RTLD_NOLOAD);
+      if (h == nullptr) { return; }
+      _traffic = reinterpret_cast<valtz::exchange::TpTrafficFn>(
+          ::dlsym(h, valtz::exchange::kTpTrafficSymbol));
+      ::dlclose(h);  // vpipe's own reference keeps it loaded
+    });
+    if (_traffic == nullptr) { return Json::object(); }
+    unsigned long long t[3] = {0, 0, 0};
+    _traffic(t);
+    return {{"sent_bytes", t[0]}, {"received_bytes", t[1]},
+            {"channels", t[2]}};
+  }
+
+  bool
+  splits_dit() const override
+  {
+    return _splits_dit;
+  }
+
+  bool
+  splits_decode() const override
+  {
+    return _splits_decode;
+  }
+
+  Result<Json>
+  tp_bench(const Json& tp, const std::vector<std::size_t>& sizes,
+           int rounds) override
+  {
+    namespace g = vpipe::genai;
+    if (!_splits_dit) {
+      return make_error(Code::Unsupported,
+                        "vpipe has no tensor-parallel/1 or no valtz-tp");
+    }
+    g::TpTransport* tr = g::find_tp_transport(valtz::exchange::kTpTransport);
+    g::TpShare share;
+    std::string err;
+    // Any widths: the bench moves bytes, it holds no model.
+    if (tr == nullptr ||
+        !g::TpShare::from_flex(vp::to_flex(tp), 56, 14336, &share, &err)) {
+      return make_error(Code::InvalidArgument, "tensor_parallel: " + err);
+    }
+    using Clock = std::chrono::steady_clock;
+    const auto t0 = Clock::now();
+    std::shared_ptr<g::TpChannel> ch;
+    try {
+      ch = tr->open(vp::to_flex(jget(tp, "params", Json::object())), share,
+                    &err);
+    } catch (...) {
+      err = "the transport threw";
+    }
+    if (!ch) {
+      return make_error(Code::Engine, "valtz-tp: " + err);
+    }
+    std::size_t most = 0;
+    for (std::size_t b : sizes) { most = std::max(most, b); }
+    // Two buffers, kept for the channel's life (the exchange buffers'
+    // contract), forgotten before they go.
+    std::vector<std::uint8_t> mine(most), theirs(most);
+    for (std::size_t i = 0; i < most; ++i) {
+      mine[i] = static_cast<std::uint8_t>(i * 7 + share.rank);
+    }
+    std::uint64_t seq = 0;
+    Json out = Json::object();
+    Json rows = Json::array();
+    // The largest first, unmeasured: the buffers registered whole once,
+    // as a split's are (valtz-tp keeps a device's registrations; a
+    // larger one later registers the pages again), and the link made --
+    // its time the setup.
+    if (!ch->exchange(mine.data(), theirs.data(), most, g::TpDType::kBF16,
+                      seq++, &err)) {
+      ch->forget(mine.data(), most);
+      ch->forget(theirs.data(), most);
+      return make_error(Code::Engine, "valtz-tp: " + err);
+    }
+    out["setup_ms"] = std::chrono::duration<double, std::milli>(
+                          Clock::now() - t0).count();
+    bool first = false;
+    for (std::size_t b : sizes) {
+      for (int r = -1; r < rounds; ++r) {
+        if (r == 0) { rows.push_back(Json{{"bytes", b}}); }
+        const auto s0 = Clock::now();
+        if (!ch->exchange(mine.data(), theirs.data(), b,
+                          g::TpDType::kBF16, seq++, &err)) {
+          ch->forget(mine.data(), most);
+          ch->forget(theirs.data(), most);
+          return make_error(Code::Engine, "valtz-tp: " + err);
+        }
+        if (first) {
+          // The first exchange waits for the link to be made.
+          out["setup_ms"] = std::chrono::duration<double, std::milli>(
+                                Clock::now() - t0).count();
+          first = false;
+        }
+        if (r >= 0) {
+          Json& row = rows.back();
+          const double us = std::chrono::duration<double, std::micro>(
+                                Clock::now() - s0).count();
+          row["rounds"] = r + 1;
+          row["total_us"] = jget(row, "total_us", 0.0) + us;
+        }
+      }
+      Json& row = rows.back();
+      const double us = jget(row, "total_us", 0.0) / std::max(1, rounds);
+      row["us"] = us;
+      row["gbs"] = us > 0 ? static_cast<double>(b) / (us * 1e3) : 0.0;
+      row.erase("total_us");
+    }
+    ch->forget(mine.data(), most);
+    ch->forget(theirs.data(), most);
+    ch.reset();
+    out["sizes"] = std::move(rows);
+    return out;
+  }
+
   bool
   supports(std::string_view op) const override
   {
@@ -487,7 +631,8 @@ public:
            (op == kOpRegenerateVideo && _regenerates) ||
            (op == kOpRegenerateInContext && _regenerates_ic) ||
            (op == kOpInterpolateVideo && _interpolates) ||
-           (op == kOpTrackBeats && _tracks_beats);
+           (op == kOpTrackBeats && _tracks_beats) ||
+           (op == kOpUpscaleRelay && _relays);
   }
 
   Status
@@ -1273,12 +1418,75 @@ private:
     q.sink(done);
   }
 
+  // A model's files COPIED from a member of the fleet (DESIGN §11d): its
+  // model share's streams over each Thunderbolt cable, else the network,
+  // counted as a download is; stopped, its files part way kept as
+  // `.part`, a copy again keeping those already whole.
+  void
+  fetch_fleet_model_(Lane& lane, Queued& q)
+  {
+    const JobSpec& spec = q.spec;
+    const auto plan = fleet::copy_plan_from_json(
+        jget(spec.params, "fleet_source", Json::object()));
+    const auto label = jget<std::string>(spec.params, "label", "");
+    const auto from = jget<std::string>(spec.params, "from", "");
+    JobEvent started;
+    started.job = spec.id;
+    started.kind = JobEventKind::Started;
+    started.text = "fleet model share";
+    q.sink(started);
+    const auto progress = [&](std::uint64_t done, std::uint64_t total) {
+      if (lane.cancel.load()) {
+        return false;
+      }
+      JobEvent ev;
+      ev.job = spec.id;
+      ev.kind = JobEventKind::Progress;
+      ev.progress = total > 0 ? static_cast<float>(
+                                    static_cast<double>(done) / total)
+                              : -1.0f;
+      ev.data = {{"phase", kPhaseDownload}, {"done", done},
+                 {"total", total}, {"label", label}, {"from", from}};
+      q.sink(ev);
+      return true;
+    };
+    auto got = fleet::copy_model(plan, progress);
+    if (!got.ok()) {
+      if (got.code() == Code::Cancelled || lane.cancel.load()) {
+        JobEvent c;
+        c.job = spec.id;
+        c.kind = JobEventKind::Cancelled;
+        q.sink(c);
+      } else {
+        fail_(q, got.code(), got.error().message);
+      }
+      return;
+    }
+    VALTZ_LOG_INFO("engine", "{} copied from {}: {} of {} in {:.1f} s "
+                   "({:.2f} GB/s; {} files; {})", label, from,
+                   models::size_text(got->bytes),
+                   models::size_text(got->total), got->seconds,
+                   got->seconds > 0 ? got->bytes / got->seconds / 1e9 : 0.0,
+                   got->files, got->routes);
+    JobEvent done;
+    done.job = spec.id;
+    done.kind = JobEventKind::Finished;
+    done.progress = 1.0f;
+    done.data = {{"bytes", got->bytes}, {"seconds", got->seconds},
+                 {"routes", got->routes}};
+    q.sink(done);
+  }
+
   void
   run_job_(Lane& lane, Queued& q)
   {
     const JobSpec& spec = q.spec;
     if (spec.op == kOpFetchModel && spec.params.contains("url_source")) {
       fetch_url_model_(lane, q);
+      return;
+    }
+    if (spec.op == kOpFetchModel && spec.params.contains("fleet_source")) {
+      fetch_fleet_model_(lane, q);
       return;
     }
     if (spec.op == kOpExportMedia) {
@@ -1471,9 +1679,15 @@ private:
               : !last.ok() ? Result<vp::BuiltGraph>(last.error())
               : !refs.ok() ? Result<vp::BuiltGraph>(refs.error())
               : !guide.ok() ? Result<vp::BuiltGraph>(guide.error())
-                            : vp::build_video(spec, *first, *refs, *last,
-                                              enc,
-                                              *guide ? &**guide : nullptr);
+                            : [&] {
+                                // This Mac's keep rule for H3's DiT (a
+                                // split rank's share too), as a picture's.
+                                JobSpec here = spec;
+                                here.params["keep_models"] = _keep_models;
+                                return vp::build_video(
+                                    here, *first, *refs, *last, enc,
+                                    *guide ? &**guide : nullptr);
+                              }();
     } else if (spec.op == kOpMakeRefMod) {
       built = vp::build_make_refmod(spec);
     } else if (spec.op == kOpInterpolateVideo) {
@@ -1975,6 +2189,17 @@ private:
         q.sink(ev);
         return;
       }
+      // A stage that refused for memory stopped the feeding with it --
+      // RelayVSR's at its start, the tap it gates on finishing: that is
+      // the failure, with its numbers, not the tap's word.
+      if (spec.op != kOpFetchModel && spec.op != kOpExportMedia) {
+        if (Json m = memory_refusal_(reports_from); !m.is_null()) {
+          std::string why = memory_sentence_(m);
+          fail_(q, Code::OutOfMemory, std::move(why),
+                {{"memory", std::move(m)}});
+          return;
+        }
+      }
       std::string why;
       if (errors_end_it) {
         std::lock_guard lk(_err_mu);
@@ -2188,6 +2413,22 @@ private:
     const media::MadeFrom made = spec.op == kOpExportMedia
                                      ? export_made_(spec)
                                      : media::MadeFrom();
+    // A split DiT's rank that does not keep the clip: done once its
+    // denoise ran (its latent written), nothing else to hand over.
+    if (!g.denoised.empty()) {
+      const bool ran = fs::is_regular_file(g.denoised, ec);
+      fs::remove(g.denoised, ec);
+      if (!ran) {
+        fail_(q, Code::Engine, no_file_(lane, "its denoise"));
+        return;
+      }
+      JobEvent done;
+      done.job = spec.id;
+      done.kind = JobEventKind::Finished;
+      done.progress = 1.0f;
+      q.sink(done);
+      return;
+    }
     if (!g.video_part.empty()) {
       if (reports) {
         report(/*force=*/true);  // the reports are closed: finishing
@@ -3155,6 +3396,12 @@ private:
   bool                                  _regenerates_ic = false;
   bool                                  _interpolates = false;
   bool                                  _tracks_beats = false;
+  bool                                  _relays = false;
+  bool                                  _splits_dit = false;
+  fs::path                              _plugin_path;
+  std::once_flag                        _traffic_once;
+  valtz::exchange::TpTrafficFn          _traffic = nullptr;
+  bool                                  _splits_decode = false;
   std::uint64_t                         _flops_scanned = 0;
   // The wired limit (set_wired_limit_mb), under _mu: the one asked (0
   // vpipe's own), vpipe's own here, and whether a lower one waits.

@@ -26,7 +26,8 @@ const VpipePluginInfo kInfo = {
   "MPL-2.0",
   "Valtz host exchange: valtz-source / valtz-sink / valtz-tap, "
   "zero-copy buffers and flow control over stage commands; "
-  "valtz-video-summary, a clip told scene by scene",
+  "valtz-video-summary, a clip told scene by scene; valtz-tp, a "
+  "split DiT's partial sums between two Macs",
   kRequires,
 };
 
@@ -41,6 +42,9 @@ register_plugin(vpipe::VpipePluginContext* ctx)
   if (ctx->has_feature(VPIPE_FEATURE_VIDEO_TURN)) {
     valtz::plugin::register_summary(ctx);
   }
+  // The transport a DiT split across two Macs exchanges its partial sums
+  // through; a host without tensor parallelism goes on without it.
+  valtz::plugin::register_tp(ctx);
 }
 
 }

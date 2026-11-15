@@ -96,6 +96,8 @@ struct UpscalingView: View {
                             Text("Regenerates a clip at the size it is shown IN CONTEXT: the clip read at 768 at most and held clean beside it as a reference, its latent enlarged and regenerated in three steps of MiniMax H3 Ref2VA under HyperFlow, LMS Sharp and NVIDIA's IC LoRA, against the words that made it (else its summary). Faces, mouths, lettering and layout stay the clip's. Slower than Open-H3-Regenerate-2K: the clip's own rows ride every step. These also set its refine of a clip made past 768P, unless its Favor is Custom.")
                         } else if u.refines {
                             Text("Regenerates a clip at the size it is shown, as MiniMax H3 makes clips past 768 on their short side: the clip read at 768 at most, its latent enlarged, then three steps of MiniMax H3 FL2VA under NVIDIA's merged LoRA, against the words that made it (else its summary). Detail is made anew, not restored, and a 2K clip of five seconds takes hours on most Macs, so it runs only when chosen above. These also set the refine of a clip made past 768P, unless its Favor is Custom: Custom has them for the clip.")
+                        } else if u.family == "relayvsr" {
+                            Text("Makes every frame at exactly four times the size it reads: a one-step 5B model writes a keyframe every few frames, and a small decoder makes each frame against the keyframes around it. Its 8.4 GB of weights stay loaded through the clip, beside a working set that grows with the frames it reads.")
                         } else if u.kind == "video" {
                             Text("Restores a clip a group of frames at a time, in one step each. Its attention is already sparse by its own weights, so it takes no Sol-Attn.")
                         } else {
@@ -184,7 +186,7 @@ struct UpscalingView: View {
             Text(k.kind == "regenerate"
                  ? "A clip made past 768 on its short side is drafted at 768 and regenerated at its size by one of these. Auto runs Open-H3-Regenerate-2K where it is here, else its IC refine. The IC refine holds the draft beside the clip as a reference -- faces, mouths and lettering stay the draft's -- and runs on Ref2VA, more slowly."
                  : k.kind == "video"
-                 ? "Auto runs the best one downloaded: FlashVSR+ Turbo, then FlashVSR+ Base, then FlashVSR 1.1. Turbo is the faster, and its makers' pick for high resolutions; Base restores at a higher quality, more slowly and in more memory. Open-H3-Regenerate-2K and its IC refine are never Auto's: they run when chosen here."
+                 ? "Auto runs the best one downloaded: FlashVSR+ Turbo, then FlashVSR+ Base, then FlashVSR 1.1. Turbo is the faster, and its makers' pick for high resolutions; Base restores at a higher quality, more slowly and in more memory. RelayVSR, which makes exactly four times what it reads from a one-step 5B keyframe model in relay with a small decoder, runs when chosen here, or when it is the only one downloaded; Open-H3-Regenerate-2K and its IC refine are never Auto's: they run when chosen here."
                  : "Auto runs the best one downloaded.")
                 .foregroundStyle(.secondary)
         }

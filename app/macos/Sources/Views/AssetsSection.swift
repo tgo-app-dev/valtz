@@ -1617,6 +1617,9 @@ private struct AssetRow: View {
             } else if t.waits {
                 // Out of the line until what it needs has downloaded.
                 return AppModel.waitingCaption(t)
+            } else if let with = t.split {
+                // Split: waiting for the member's half to begin.
+                return String(localized: "Waiting for \(with) to start its half")
             } else if t.runner != "local" && t.position == 0 {
                 // Sent, not begun there yet.
                 return String(localized: "Sent to \(t.runner)")
@@ -1624,6 +1627,9 @@ private struct AssetRow: View {
                 doing = t.position <= 1
                     ? String(localized: "Queued · next")
                     : String(localized: "Queued · \(String(t.position)) ahead")
+            }
+            if let with = t.split {
+                return String(localized: "\(doing) · split with \(with)")
             }
             return t.runner == "local" ? doing
                 : String(localized: "\(doing) · on \(t.runner)")

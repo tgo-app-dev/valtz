@@ -94,6 +94,10 @@ inline constexpr std::string_view kOpQuantizeModel = "quantize-model";
 // generate-video's. The output is a movie of that format, the source's
 // sound over the span (PCM with ProRes).
 inline constexpr std::string_view kOpUpscaleVideo = "upscale-video";
+// ...by RELAYVSR (the `upscale` block's `kind` "relayvsr", DESIGN §4f):
+// no job of its own -- an upscale-video whose model is RelayVSR -- but a
+// newer vpipe's stage (relayvsr-upscale, §15 0zzzq): supports() says.
+inline constexpr std::string_view kOpUpscaleRelay = "upscale-relayvsr";
 // What an engine runs that is no job of its own: a clip REGENERATED at a
 // larger size (Open-H3-Regenerate-2K, DESIGN §4q) -- a generate-video
 // past 768P drafted and refined, or an upscale-video by the refiner
@@ -423,6 +427,29 @@ public:
   virtual std::string software() const { return {}; }
   virtual bool available() const = 0;
   virtual bool supports(std::string_view op) const = 0;
+  // A DiT may be SPLIT with another Mac here (DESIGN §11c): vpipe has
+  // tensor-parallel/1 and Valtz's plugin its transport, valtz-tp.
+  virtual bool splits_dit() const { return false; }
+  // ...and its clip's DECODE split alike, each Mac decoding its share of
+  // the chunks, the parts exchanged over the same link (vpipe's
+  // tensor-parallel-decode/1).
+  virtual bool splits_decode() const { return false; }
+  // A SPLIT's LINK MEASURED, no model loaded (valtzctl tp-bench; DESIGN
+  // §11c): valtz-tp opened as a rank opens it -- `tp` the request's
+  // tensor_parallel (rank, ranks, params) -- and `rounds` exchanges of
+  // each of `sizes` bytes timed, after one of each unmeasured; the
+  // other Mac runs the same as the other rank. {"setup_ms", "sizes":
+  // [{"bytes", "rounds", "us", "gbs"}]} -- `us` an exchange, `gbs` the
+  // bytes each way a second.
+  virtual Result<Json>
+  tp_bench(const Json& tp, const std::vector<std::size_t>& sizes,
+           int rounds)
+  {
+    (void)tp;
+    (void)sizes;
+    (void)rounds;
+    return make_error(Code::Unsupported, "this engine splits no DiT");
+  }
 
   // Queue a job. Returns once queued; the sink receives its events.
   virtual Status submit(JobSpec, JobSink) = 0;
@@ -465,6 +492,12 @@ public:
   // VAEs or text encoders). Empty from an engine without the meter.
   // Thread-safe.
   virtual Json throughput() { return Json::object(); }
+  // What a SPLIT's transport has carried in this process (the plugin's
+  // valtz-tp, DESIGN §11c): {"sent_bytes", "received_bytes" -- every
+  // exchange's partial out and the peer's in, since the process began --
+  // "channels" open now}. Empty where the plugin has no counter.
+  // Thread-safe.
+  virtual Json split_traffic() { return Json::object(); }
   // What it HOLDS in memory now, by what holds it -- the status bar's RAM
   // popover (vpipe's SessionIntf::memory_report, DESIGN §15 0zz):
   // {"warm": [{"kind" -- "language-model", "krea2-dit",

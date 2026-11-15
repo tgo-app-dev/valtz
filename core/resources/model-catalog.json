@@ -233,6 +233,7 @@
         {"model": "flashvsr-plus-turbo", "label": "FlashVSR+ Turbo (video)"},
         {"model": "flashvsr-plus-base", "label": "FlashVSR+ Base (video)"},
         {"model": "flashvsr", "label": "FlashVSR 1.1 (video)"},
+        {"model": "relayvsr", "label": "RelayVSR (video, 4x)"},
         {"model": "vosr", "label": "VOSR (image)"}
       ]
     },
@@ -802,7 +803,7 @@
                            "minimax-h3-ref2va"],
           "steps_fixed": true,
           "align": 32,
-          "max_edge": 6272,
+          "max_edge": 8192,
           "accel": ["sol_attn", "sage_attn", "sage_pv8", "i8_gemm", "i8_gemm_tier",
                     "ane_ffn", "ane_int8"],
           "options": [{"key": "generate_at", "type": "choice",
@@ -1013,6 +1014,7 @@
       "license": "minimax",
       "engine": {
         "vpipe": {
+          "tensor_parallel": {"heads": 56, "ffn": 14336},
           "config_stage": "minimax-h3-model-config",
           "config": {
             "video_shift": 12.0, "audio_shift": 3.0,
@@ -1144,6 +1146,7 @@
       "license": "minimax",
       "engine": {
         "vpipe": {
+          "tensor_parallel": {"heads": 56, "ffn": 14336},
           "config_stage": "minimax-h3-model-config",
           "config": {
             "video_shift": 12.0, "audio_shift": 3.0,
@@ -1716,6 +1719,35 @@
       "notes": "FlashVSR+ with sparse attention on every layer: slower than Turbo, a stream taking more memory, its makers' pick where the quality comes first. Shares Turbo's decoder and VAE (one download of them)."
     },
     {
+      "id": "relayvsr",
+      "name": "RelayVSR",
+      "family": "relayvsr",
+      "role": "upscale",
+      "hf_path": "kopper/RelayVSR",
+      "check": {"files": ["wan.safetensors", "flash.safetensors"]},
+      "capabilities": ["upscale-video"],
+      "engine": {"vpipe": {
+        "upscale": {"kind": "relayvsr", "scale": 4, "window": 16,
+                    "ahead": 1},
+        "accel": ["sage_attn", "sage_pv8", "i8_gemm", "i8_gemm_tier",
+                  "ane_ffn"],
+        "small_memory": {"below_gb": 32,
+                         "balanced": {"i8_gemm_tier": "token"}},
+        "options": [
+          {"key": "read_at", "type": "choice",
+           "choices": ["source", "quarter"], "default": "source",
+           "stage": "upscale"},
+          {"key": "window", "type": "int", "min": 2, "max": 64, "step": 1,
+           "default": 16, "stage": "upscale"}
+        ],
+        "steps_fixed": true, "defaults": {"steps": 1}
+      }},
+      "disk_gb": 10.2, "disk_measured": false,
+      "min_ram_gb": 16, "rank": 0,
+      "license": "apache-2.0",
+      "notes": "RelayVSR (kopper): two models in relay -- a one-step 5B keyframe DiT every 15 frames and a small decoder turning every frame into its 4x frame against the keyframes around it. Exactly four times what it reads: by default it reads the clip as it is and fits the 4x frames down to the size shown by lanczos; Read At's A Quarter of the Size reads a layer scaled 2x at half its clip's size, for the least memory. It needs more memory than FlashVSR+: 8.4 GB of weights (4.3 GB at int8's Fast or Per Token tier, on an M5) and a ring that grows with the frame read (about 12 GB in all at 480 x 270 read, 22 GB at 960 x 540): an upscale that does not fit is refused before it loads, its card offering A Quarter of the Size; a small clip -- VCD's 352 x 240 -- fits a 16 GB Mac. Its int8 GEMMs and tiers, SageAttention and its int8 P*V (M5) and the Neural Engine's feed-forward (M4) in Settings > Upscaling. Chosen there; Auto keeps FlashVSR+."
+    },
+    {
       "id": "vosr",
       "name": "VOSR 2.0",
       "family": "vosr",
@@ -2042,6 +2074,7 @@
       "hf_path": "Pika-Labs/Pika-H3-Flex",
       "check": {"tensors": ["lora"]},
       "file": "fl2va/adapter.safetensors",
+      "beside": ["manifest.json"],
       "fetch_variant": "Pika-Labs/Pika-H3-Flex-fl2va",
       "capabilities": [],
       "disk_gb": 2.8, "disk_measured": false, "min_ram_gb": 16, "rank": 0,
@@ -2054,6 +2087,7 @@
       "hf_path": "Pika-Labs/Pika-H3-Flex",
       "check": {"tensors": ["lora"]},
       "file": "ref2va/adapter.safetensors",
+      "beside": ["manifest.json"],
       "fetch_variant": "Pika-Labs/Pika-H3-Flex-ref2va",
       "capabilities": [],
       "disk_gb": 2.8, "disk_measured": false, "min_ram_gb": 16, "rank": 0,

@@ -143,6 +143,54 @@ derive_key(std::string_view fleet, std::string_view secret)
   return out;
 }
 
+std::string
+split_key(std::string_view fleet_key_hex, std::string_view job)
+{
+  std::vector<std::uint8_t> key;
+  auto nib = [](char c) {
+    return c >= '0' && c <= '9'   ? c - '0'
+           : c >= 'a' && c <= 'f' ? c - 'a' + 10
+           : c >= 'A' && c <= 'F' ? c - 'A' + 10
+                                  : -1;
+  };
+  for (std::size_t i = 0; i + 1 < fleet_key_hex.size(); i += 2) {
+    const int hi = nib(fleet_key_hex[i]);
+    const int lo = nib(fleet_key_hex[i + 1]);
+    if (hi < 0 || lo < 0) {
+      return {};
+    }
+    key.push_back(static_cast<std::uint8_t>(hi << 4 | lo));
+  }
+  if (key.empty()) {
+    return {};
+  }
+  const std::string msg = std::format("valtz-tp/1:{}", job);
+  std::uint8_t mac[CC_SHA256_DIGEST_LENGTH];
+  CCHmac(kCCHmacAlgSHA256, key.data(), key.size(), msg.data(), msg.size(),
+         mac);
+  static constexpr char hex[] = "0123456789abcdef";
+  std::string out;
+  for (std::uint8_t b : mac) {
+    out += hex[b >> 4];
+    out += hex[b & 15];
+  }
+  return out;
+}
+
+namespace {
+
+Json
+pair_json(const Config& c)
+{
+  return {{"member", c.pair_member},
+          {"name", c.pair_name},
+          {"rdma", c.pair_rdma},
+          {"share", c.pair_share},
+          {"decode", c.pair_decode}};
+}
+
+}  // namespace
+
 Json
 to_json(const Schedule& s)
 {
@@ -172,6 +220,8 @@ to_json(const Config& c)
           {"schedule", to_json(c.schedule)},
           {"offload", offload_json(c)},
           {"withheld", withheld_json(c)},
+          {"pair", pair_json(c)},
+          {"send_weights", c.send_weights},
           {"joined", c.joined()},
           {"accepting", c.accepting_at(std::time(nullptr))}};
 }
@@ -204,6 +254,16 @@ load_config(const fs::path& path)
     const Json held = jget(j, "withheld", Json::object());
     c.withheld_tasks = names_from_json(jget(held, "tasks", Json()));
     c.withheld_models = names_from_json(jget(held, "models", Json()));
+    const Json pair = jget(j, "pair", Json::object());
+    c.pair_member = jget<std::string>(pair, "member", "");
+    c.pair_name = jget<std::string>(pair, "name", "");
+    c.pair_rdma = jget(pair, "rdma", true);
+    c.pair_share = std::clamp(jget(pair, "share", 0.0), 0.0, 0.95);
+    c.pair_decode = jget<std::string>(pair, "decode", "auto");
+    if (c.pair_decode != "here" && c.pair_decode != "there") {
+      c.pair_decode = "auto";
+    }
+    c.send_weights = jget(j, "send_weights", false);
   }
   if (c.member_id.empty()) {
     c.member_id = Uuid::v7().str();
@@ -225,7 +285,9 @@ save_config(const fs::path& path, const Config& c)
             {"accept", c.accept},
             {"schedule", to_json(c.schedule)},
             {"offload", offload_json(c)},
-            {"withheld", withheld_json(c)}};
+            {"withheld", withheld_json(c)},
+            {"pair", pair_json(c)},
+            {"send_weights", c.send_weights}};
   std::error_code ec;
   fs::create_directories(path.parent_path(), ec);
   const fs::path tmp = path.string() + ".tmp";

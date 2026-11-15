@@ -85,6 +85,18 @@ inline constexpr char kCmdStats[] = "stats";
 // go on by reference, never copied; the tap's own port backpressures as
 // its consumer does.
 inline constexpr char kTapType[] = "valtz-tap";
+
+// The tensor-parallel transport the plugin registers (vpipe's
+// generative-models/tensor-parallel.h): a split DiT's partial sums
+// between two Macs, over TCP a link each (DESIGN §11c).
+inline constexpr char kTpTransport[] = "valtz-tp";
+// What the transport has carried in this process, read by the engine
+// for the status bar's Fleet popover: the plugin exports a C function of
+// this name and type (`dlsym` on the loaded plugin), filling
+// {bytes sent, bytes received, channels open}. Counted as each exchange
+// completes -- a partial out, the peer's in -- whichever rank this is.
+inline constexpr char kTpTrafficSymbol[] = "valtz_tp_traffic";
+using TpTrafficFn = void (*)(unsigned long long out[3]);
 inline constexpr char kTapMaxFrames[] = "max_frames";
 // `wait` {frames} -> replied once that many frames have gone by, or the
 // stream ended first (`eos`): {passed, cut, eos}. Never holds the

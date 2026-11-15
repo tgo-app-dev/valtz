@@ -883,6 +883,9 @@ struct TaskDTO: Decodable, Sendable, Hashable, Identifiable {
     var position: Int
     /// Where it runs: "local" -- one day, a peer.
     var runner: String
+    /// Its DiT split with this member (DESIGN §11c): the other half
+    /// runs there.
+    var split: String?
     var progress: Double
     var destination: String?
     /// What it waits for to download (none: it is in line).
@@ -1811,6 +1814,9 @@ struct MemoryFailure: Sendable, Equatable {
     let width: Int?
     let height: Int?
     let references: Int?
+    /// An upscaler read at its clip's own size (RelayVSR's Read At):
+    /// that upscaler's id, to read a quarter of the size shown instead.
+    let readQuarterOf: String?
 
     init?(_ p: [String: Any], message: String) {
         guard let memory = p["memory"] as? [String: Any] else { return nil }
@@ -1842,6 +1848,8 @@ struct MemoryFailure: Sendable, Equatable {
         height = (size?["height"] as? NSNumber)?.intValue
         references = ((suggest["references"] as? [String: Any])?["count"]
             as? NSNumber)?.intValue
+        readQuarterOf = (suggest["read_at"] as? [String: Any])?["model"]
+            as? String
     }
 
     /// "22.2 GB", "512 MB": as text, never grouped.
@@ -1855,6 +1863,8 @@ struct MemoryFailure: Sendable, Equatable {
     static func partName(_ n: String) -> String {
         switch n {
         case "transformer": String(localized: "Transformer")
+        case "weights": String(localized: "Weights")
+        case "frame_ring": String(localized: "Keyframes' keys and values")
         case "vdn_branch": String(localized: "VDN branch")
         case "sol_attn": String(localized: "Sol-Attn")
         case "sage_attn": String(localized: "SageAttention")

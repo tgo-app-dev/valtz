@@ -1490,6 +1490,8 @@ struct MemoryFailureCard: View {
             GridRow {
                 Text(failure.step == "decode"
                      ? String(localized: "Decoding asked for")
+                     : failure.step == "upscale"
+                     ? String(localized: "Upscaling asked for")
                      : String(localized: "Denoising asked for"))
                     .foregroundStyle(.secondary)
                 Text(MemoryFailure.size(failure.need))
@@ -1565,6 +1567,15 @@ struct MemoryFailureCard: View {
                 help: String(localized: "Size, in the generation card: the memory grows with the pixels of each frame"),
                 done: !model.suggestsSmallerSize,
                 action: model.showMemorySuggestion))
+        }
+        if let id = failure.readQuarterOf {
+            out.append(Suggestion(
+                title: String(localized: "Read a quarter of the size"),
+                now: String(localized: "was its own size"),
+                symbol: "rectangle.compress.vertical",
+                help: String(localized: "Settings › Upscaling › RelayVSR › Read At: the clip read at a quarter of the size shown, its 4x made at that size -- the memory grows with the frame read. Then Render Upscaled again."),
+                done: !model.suggestsReadingAQuarter,
+                action: { model.readAQuarter(id) }))
         }
         if let n = failure.references, n > 0 {
             out.append(Suggestion(

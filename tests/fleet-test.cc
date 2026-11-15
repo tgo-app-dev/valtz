@@ -8,6 +8,8 @@
 
 #include "valtz/base/hash.h"
 #include "valtz/fleet/fleet.h"
+#include "valtz/fleet/model-share.h"
+#include "valtz/fleet/thunderbolt.h"
 #include "valtz/project/records.h"
 
 #include <atomic>
@@ -164,6 +166,435 @@ TEST(fleet, offload_policies_and_sharing_are_kept)
   CHECK(hand->offload_tasks.size() == 1);
   CHECK(hand->offload("generate-image", "") == "never");
   fs::remove_all(d);
+}
+
+// THUNDERBOLT between members (thunderbolt.h, DESIGN §11c): a bridge's
+// ports and the addresses it learned on each, as ifconfig prints them;
+// the links an echo's answers make -- the ports facing each other, and
+// their RDMA devices -- through a bridge on both Macs, through unbridged
+// ports cable by cable, crossed; and the pair kept with the rest.
+TEST(fleet, thunderbolt_cables_are_found_port_to_port)
+{
+  // As the M5 Pro printed it, a cable in en1 to the other Mac's en6.
+  const std::string ifconfig =
+      "bridge0: flags=8863<UP,BROADCAST,SMART,RUNNING,SIMPLEX,MULTICAST> "
+      "mtu 1500\n"
+      "\tether 02:00:00:00:00:00\n"
+      "\tinet 169.254.245.114 netmask 0xffff0000 broadcast 169.254.255.255\n"
+      "\tConfiguration:\n"
+      "\t\tid 0:0:0:0:0:0 priority 0 hellotime 0 fwddelay 0\n"
+      "\tmember: en1 flags=3<LEARNING,DISCOVER>\n"
+      "\t        ifmaxaddr 0 port 10 priority 0 path cost 0\n"
+      "\tmember: en6 flags=3<LEARNING,DISCOVER>\n"
+      "\t        ifmaxaddr 0 port 11 priority 0 path cost 0\n"
+      "\tmember: en2 flags=3<LEARNING,DISCOVER>\n"
+      "\t        ifmaxaddr 0 port 12 priority 0 path cost 0\n"
+      "\tAddress cache:\n"
+      "\t\t36:5c:16:8d:fe:0 Vlan1 en1 1194 flags=0<>\n"
+      "\tnd6 options=201<PERFORMNUD,DAD>\n"
+      "\tmedia: autoselect\n"
+      "\tstatus: active\n";
+  const BridgeTable t = parse_bridge(ifconfig);
+  CHECK((t.members == std::vector<std::string>{"en1", "en6", "en2"}));
+  CHECK(t.learned.size() == 1);
+  CHECK(t.learned.at("36:5c:16:8d:fe:00") == "en1");
+  CHECK(normal_mac("36:5C:16:8d:fe:0") == "36:5c:16:8d:fe:00");
+  CHECK(normal_mac("bridge0").empty());
+  CHECK(normal_mac("1:2:3:4:5").empty());
+
+  // Both bridged, one cable: the bridge's addresses answer, its ports
+  // face each other by what the bridge learned, RDMA on both.
+  TbState pro;
+  pro.ports = {{"en1", "36:d6:9f:8a:76:c0", true, "", "rdma_en1", "", "", 0,
+                ""},
+               {"en2", "36:d6:9f:8a:76:c8", false, "", "", "", "", 0, ""},
+               {"en6", "36:d6:9f:8a:76:c4", false, "", "", "", "", 0, ""}};
+  pro.bridge = "bridge0";
+  pro.bridge_address = "169.254.245.114";
+  pro.bridged = {"en1", "en6", "en2"};
+  pro.rdma = true;
+  TbState ultra;
+  ultra.ports = {{"en1", "36:5c:16:8d:fe:04", false, "", "", "", "", 0, ""},
+                 {"en6", "36:5c:16:8d:fe:00", true, "", "rdma_en6", "", "", 0,
+                  ""}};
+  ultra.bridge = "bridge0";
+  ultra.bridge_address = "169.254.64.133";
+  ultra.bridged = {"en1", "en6"};
+  ultra.rdma = true;
+  CHECK(pro.linked() && ultra.linked());
+  auto links = tb_links(pro, ultra, {{"bridge0", "169.254.64.133", 0.21}},
+                        t.learned);
+  REQUIRE(links.size() == 1);
+  CHECK(links[0].local_interface == "bridge0");
+  CHECK(links[0].local_address == "169.254.245.114");
+  CHECK(links[0].remote_interface == "bridge0");
+  CHECK(links[0].local_port == "en1");
+  CHECK(links[0].remote_port == "en6");
+  CHECK(links[0].local_rdma == "rdma_en1");
+  CHECK(links[0].remote_rdma == "rdma_en6");
+  CHECK(links[0].rdma());
+  // Learned nowhere yet: the lone ports with a cable.
+  links = tb_links(pro, ultra, {{"bridge0", "169.254.64.133", 0.2}}, {});
+  REQUIRE(links.size() == 1);
+  CHECK(links[0].local_port == "en1" && links[0].remote_port == "en6");
+  // RDMA down at one end: the cable, over TCP.
+  TbState no_rdma = ultra;
+  no_rdma.ports[1].rdma.clear();
+  links = tb_links(pro, no_rdma, {{"bridge0", "169.254.64.133", 0.2}}, {});
+  REQUIRE(links.size() == 1);
+  CHECK(!links[0].rdma());
+
+  // Two Mac Studios, two cables, no bridge: each port its own address.
+  // Crossed -- a's en1 to b's en3, a's en2 to b's en1 -- and the echoes
+  // say so; a port answering for two addresses is one link.
+  TbState a, b;
+  a.ports = {{"en1", "aa:00:00:00:00:01", true, "169.254.1.1", "rdma_en1",
+              "", "", 0, ""},
+             {"en2", "aa:00:00:00:00:02", true, "169.254.1.2", "rdma_en2",
+              "", "", 0, ""}};
+  b.ports = {{"en1", "bb:00:00:00:00:01", true, "169.254.2.1", "rdma_en1",
+              "", "", 0, ""},
+             {"en3", "bb:00:00:00:00:03", true, "169.254.2.3", "rdma_en3",
+              "", "", 0, ""}};
+  links = tb_links(a, b,
+                   {{"en1", "169.254.2.3", 0.1},
+                    {"en2", "169.254.2.1", 0.1},
+                    {"en1", "169.254.2.1", 0.3}},
+                   {});
+  REQUIRE(links.size() == 2);
+  CHECK(links[0].local_port == "en1" && links[0].remote_port == "en3");
+  CHECK(links[0].local_rdma == "rdma_en1");
+  CHECK(links[0].remote_rdma == "rdma_en3");
+  CHECK(links[0].local_address == "169.254.1.1");
+  CHECK(links[1].local_port == "en2" && links[1].remote_port == "en1");
+  CHECK(links[1].remote_rdma == "rdma_en1");
+  // An address that is none of the member's Thunderbolt: no link.
+  CHECK(tb_links(a, b, {{"en1", "10.0.0.7", 0.1}}, {}).empty());
+
+  // Two cables between two Mac Studios, BOTH Macs' ports in their
+  // Thunderbolt Bridges (as macOS sets them up), one a TB5 cable at 80
+  // Gb/s and one at 20: the bridges answer as one route, and each port's
+  // Thunderbolt domains -- its own bus's, the Mac's at its other end --
+  // pair them cable by cable (as cabled 2026-11-12: here en3 to
+  // there en3 at 80, here en9 to there en2 at 20), the faster first,
+  // each with its RDMA devices and speed.
+  TbState m4, m3;
+  m4.ports = {{"en3", "36:aa:00:00:00:03", true, "", "rdma_en3",
+               "D-00E2", "D-9924", 80, ""},
+              {"en9", "36:aa:00:00:00:09", true, "", "rdma_en9",
+               "D-47CD", "D-B904", 20, ""},
+              {"en4", "36:aa:00:00:00:04", false, "", "", "D-9AE3", "",
+               0, ""}};
+  m4.bridge = "bridge0";
+  m4.bridge_address = "169.254.63.26";
+  m4.bridged = {"en3", "en9", "en4"};
+  m3.ports = {{"en2", "36:bb:00:00:00:02", true, "", "rdma_en2",
+               "D-B904", "D-47CD", 20, ""},
+              {"en3", "36:bb:00:00:00:03", true, "", "rdma_en3",
+               "D-9924", "D-00E2", 80, ""}};
+  m3.bridge = "bridge0";
+  m3.bridge_address = "169.254.191.72";
+  m3.bridged = {"en2", "en3"};
+  auto cl = tb_links(m4, m3, {{"bridge0", "169.254.191.72", 0.3}}, {});
+  REQUIRE(cl.size() == 2);
+  CHECK(cl[0].local_port == "en3" && cl[0].remote_port == "en3");
+  CHECK(cl[0].local_rdma == "rdma_en3");
+  CHECK(cl[0].remote_rdma == "rdma_en3");
+  CHECK(cl[0].gbps == 80);
+  CHECK(cl[1].local_port == "en9" && cl[1].remote_port == "en2");
+  CHECK(cl[1].gbps == 20);
+  for (const auto& l : cl) {
+    CHECK(l.local_interface == "bridge0");
+    CHECK(l.remote_address == "169.254.191.72");
+  }
+  // A member that tells no domains (before them): the bridge's one link,
+  // as before.
+  TbState old_m3 = m3;
+  for (auto& p : old_m3.ports) {
+    p.domain.clear();
+    p.peer.clear();
+  }
+  cl = tb_links(m4, old_m3, {{"bridge0", "169.254.191.72", 0.3}}, {});
+  CHECK(cl.size() == 1);
+  CHECK(tb_state_from_json(to_json(m4)) == m4);
+
+  // The 20 Gb/s cable's ports taken out of the Thunderbolt Bridges, each
+  // put by macOS in a bridge of its own (bridge1, as on 2026-11-13): that
+  // cable answers through those bridges' addresses, bound to bridge1.
+  TbState s4 = m4, s3 = m3;
+  s4.bridged = {"en3", "en4"};
+  s4.ports[1].address = "169.254.57.246";
+  s4.ports[1].via = "bridge1";
+  s3.bridged = {"en3"};
+  s3.ports[0].address = "169.254.199.65";
+  s3.ports[0].via = "bridge1";
+  cl = tb_links(s4, s3, {{"bridge0", "169.254.191.72", 0.3},
+                         {"bridge1", "169.254.199.65", 0.4}}, {});
+  REQUIRE(cl.size() == 2);
+  CHECK(cl[0].local_interface == "bridge0" && cl[0].gbps == 80);
+  CHECK(cl[1].local_interface == "bridge1");
+  CHECK(cl[1].local_address == "169.254.57.246");
+  CHECK(cl[1].remote_address == "169.254.199.65");
+  CHECK(cl[1].local_port == "en9" && cl[1].remote_port == "en2");
+  CHECK(cl[1].local_rdma == "rdma_en9" && cl[1].gbps == 20);
+  CHECK(tb_state_from_json(to_json(s4)) == s4);
+
+  // A cable whose port at the member's end shares a bridge of its own
+  // with ANOTHER port (as on 2026-11-13: the other Mac's en5 and en6 in
+  // bridge3, a cable in en6 alone): both ports hold that bridge's
+  // address, and the echo answering it pairs the cable to en6 -- it was
+  // read as en5's, which had none, and the cable was dropped.
+  TbState f4 = s4, f3 = s3;
+  f4.ports[2] = {"en4", "36:aa:00:00:00:04", true, "169.254.44.189",
+                 "rdma_en4", "D-9AE3", "D-6E06", 80, "bridge3"};
+  f3.ports.push_back({"en5", "36:bb:00:00:00:05", false, "169.254.57.69",
+                      "", "D-6E05", "", 0, "bridge3"});
+  f3.ports.push_back({"en6", "36:bb:00:00:00:06", true, "169.254.57.69",
+                      "rdma_en6", "D-6E06", "D-9AE3", 80, "bridge3"});
+  cl = tb_links(f4, f3, {{"bridge0", "169.254.191.72", 0.3},
+                         {"bridge1", "169.254.199.65", 0.4},
+                         {"bridge3", "169.254.57.69", 0.5}}, {});
+  REQUIRE(cl.size() == 3);
+  bool en4 = false;
+  for (const auto& l : cl) {
+    if (l.local_port == "en4") {
+      en4 = true;
+      CHECK(l.remote_port == "en6");
+      CHECK(l.remote_interface == "bridge3");
+      CHECK(l.local_interface == "bridge3");
+      CHECK(l.local_rdma == "rdma_en4" && l.remote_rdma == "rdma_en6");
+    }
+  }
+  CHECK(en4);
+
+  // What a member tells the others comes back as it was.
+  const TbState back = tb_state_from_json(to_json(pro));
+  CHECK(back == pro);
+  const TbLink lb = tb_link_from_json(to_json(links[1]));
+  CHECK(lb.remote_port == "en1" && lb.local_rdma == "rdma_en2");
+  CHECK(tb_link_from_json(to_json(tb_links(m4, m3,
+                              {{"bridge0", "169.254.191.72", 0.3}},
+                              {})[0])).gbps == 80);
+
+  // Each rank makes the split's key from its own fleet key and the job:
+  // the same on both, another job's another.
+  const std::string k = derive_key("Studio", "orchard-lantern-42");
+  CHECK(split_key(k, "job-1").size() == 64);
+  CHECK(split_key(k, "job-1") == split_key(k, "job-1"));
+  CHECK(split_key(k, "job-1") != split_key(k, "job-2"));
+  CHECK(split_key("zz", "job-1").empty());
+
+  // Each Mac's share by its GPU: its cores, a GPU before M5's a quarter
+  // each -- said, or read from its chip's name.
+  CHECK(std::abs(gpu_share(20, true, {{"gpu_cores", 80},
+                                      {"matrix_cores", true}}) -
+                 0.2) < 1e-9);
+  CHECK(std::abs(gpu_share(20, true, {{"gpu_cores", 40},
+                                      {"matrix_cores", false}}) -
+                 20.0 / 30.0) < 1e-9);
+  CHECK(std::abs(gpu_share(76, false, {{"gpu_cores", 20},
+                                       {"chip", "Apple M5 Pro"}}) -
+                 19.0 / 39.0) < 1e-9);
+  CHECK(std::abs(gpu_share(20, true, {{"gpu_cores", 60},
+                                      {"chip", "Apple M2 Ultra"}}) -
+                 20.0 / 35.0) < 1e-9);
+
+  // The pair kept with the configuration.
+  Config c;
+  c.fleet = "Studio";
+  c.key = k;
+  c.pair_member = "m-2";
+  c.pair_name = "studio";
+  c.pair_rdma = false;
+  c.pair_share = 0.25;
+  const fs::path d = temp_dir("pair");
+  REQUIRE_OK(save_config(d / "fleet.json", c));
+  auto kept = load_config(d / "fleet.json");
+  REQUIRE_OK(kept);
+  CHECK(kept->pair_member == "m-2" && kept->pair_name == "studio");
+  CHECK(!kept->pair_rdma);
+  CHECK(std::abs(kept->pair_share - 0.25) < 1e-9);
+  CHECK(jget<std::string>(jget(to_json(*kept), "pair", Json::object()),
+                          "name", "") == "studio");
+  fs::remove_all(d);
+}
+
+// A MODEL COPIED FROM A MEMBER (fleet/model-share.h, DESIGN §11d), over
+// the loopback: its files listed and fetched in pieces by several
+// streams, byte for byte; a Mac without the fleet's key answered
+// nothing; a copy again keeping what is whole and fetching what is not;
+// stopped part way, the files not whole left as `.part`; a member
+// sharing nothing of a model saying so.
+TEST(fleet, a_model_is_copied_from_a_member)
+{
+  const fs::path root = temp_dir("share");
+  const fs::path there = root / "there" / "Org" / "Model";
+  fs::create_directories(there / "text_encoder");
+  // A file of several pieces, one of none, small ones beside them.
+  std::vector<char> big(150u << 20);
+  for (std::size_t i = 0; i < big.size(); ++i) {
+    big[i] = static_cast<char>((i * 2654435761u) >> 13);
+  }
+  std::ofstream(there / "model.safetensors", std::ios::binary)
+      .write(big.data(), static_cast<std::streamsize>(big.size()));
+  std::ofstream(there / "config.json") << "{\"a\": 1}";
+  std::ofstream(there / "empty.txt");
+  std::ofstream(there / "text_encoder" / "w.safetensors") << "weights";
+  std::ofstream(there / "left.safetensors.part") << "a download's";
+  std::ofstream(there / "valtz-compressed.json") << "{}";
+  auto listed = list_model_files(there);
+  REQUIRE_OK(listed);
+  REQUIRE(listed->files.size() == 4);
+  CHECK(listed->files[0].path == "config.json");
+  CHECK(listed->files[3].path == "text_encoder/w.safetensors");
+  // A model that is ONE FILE of its repo (an adapter in a folder of its
+  // own: Pika H3 Flex's fl2va/adapter.safetensors) goes with what its
+  // download brings that is no weights -- its sampling manifest beside
+  // it, the repo's LICENSE at the top -- and not the other models' files
+  // there (fl2va's other adapter, ref2va's folder, the top's weights).
+  {
+    const fs::path repo = root / "there" / "Pika" / "Flex";
+    fs::create_directories(repo / "fl2va");
+    fs::create_directories(repo / "ref2va");
+    std::ofstream(repo / "fl2va" / "adapter.safetensors") << "fl2va";
+    std::ofstream(repo / "fl2va" / "other.safetensors") << "another";
+    std::ofstream(repo / "fl2va" / "manifest.json") << "{\"sampling\": 1}";
+    std::ofstream(repo / "ref2va" / "manifest.json") << "{}";
+    std::ofstream(repo / "LICENSE") << "license";
+    std::ofstream(repo / "top.safetensors") << "weights";
+    auto one = list_model_files(repo, "fl2va/adapter.safetensors");
+    REQUIRE_OK(one);
+    std::set<std::string> paths;
+    for (const auto& f : one->files) {
+      paths.insert(f.path);
+    }
+    CHECK(one->files.front().path == "fl2va/adapter.safetensors");
+    CHECK(paths == std::set<std::string>({"fl2va/adapter.safetensors",
+                                          "fl2va/manifest.json",
+                                          "LICENSE"}));
+  }
+
+  const std::string key = derive_key("Studio", "orchard-lantern-42");
+  std::string served_key = key;
+  auto server = ShareServer::start(
+      [&] { return served_key; },
+      [&](const std::string& model) -> Result<ShareList> {
+        if (model != "org-model") {
+          return make_error(Code::NotFound, "not shared");
+        }
+        return list_model_files(there);
+      });
+  REQUIRE_OK(server);
+  CopyPlan plan;
+  plan.routes = {{"127.0.0.1", "", 0}};
+  plan.port = (*server)->port();
+  plan.key = key;
+  plan.model = "org-model";
+  plan.dest = root / "here" / "Org" / "Model";
+  plan.streams = 3;
+  const auto same = [&](const fs::path& rel) {
+    std::ifstream a(there / rel, std::ios::binary);
+    std::ifstream b(plan.dest / rel, std::ios::binary);
+    return std::string(std::istreambuf_iterator<char>(a), {}) ==
+           std::string(std::istreambuf_iterator<char>(b), {});
+  };
+  std::uint64_t last = 0;
+  auto got = copy_model(plan, [&](std::uint64_t done, std::uint64_t total) {
+    CHECK(done <= total);
+    last = done;
+    return true;
+  });
+  REQUIRE_OK(got);
+  CHECK(got->files == 4);
+  CHECK(got->bytes == big.size() + 8 + 7);
+  CHECK(last == got->total);
+  for (const char* f : {"model.safetensors", "config.json", "empty.txt",
+                        "text_encoder/w.safetensors"}) {
+    CHECK(same(f));
+  }
+  CHECK(!fs::exists(plan.dest / "left.safetensors.part"));
+  CHECK(!fs::exists(plan.dest / "valtz-compressed.json"));
+  CHECK(!fs::exists(plan.dest / "model.safetensors.part"));
+
+  // Again: what is whole kept, nothing fetched; a file changed fetched.
+  fs::remove(plan.dest / "config.json");
+  got = copy_model(plan, {});
+  REQUIRE_OK(got);
+  CHECK(got->bytes == 8);
+  CHECK(same("config.json"));
+
+  // Stopped at its first report: the big file left as its `.part`.
+  fs::remove(plan.dest / "model.safetensors");
+  got = copy_model(plan, [](std::uint64_t, std::uint64_t) { return false; });
+  REQUIRE(!got.ok());
+  CHECK(got.code() == Code::Cancelled);
+  CHECK(fs::exists(plan.dest / "model.safetensors.part") ||
+        fs::exists(plan.dest / "model.safetensors"));
+
+  // Another fleet's key: refused before anything is asked.
+  CopyPlan stranger = plan;
+  stranger.key = derive_key("Studio", "another-secret-9");
+  got = copy_model(stranger, {});
+  REQUIRE(!got.ok());
+  CHECK(got.error().message.find("key") != std::string::npos);
+  // A model it does not share.
+  CopyPlan other = plan;
+  other.model = "org-other";
+  got = copy_model(other, {});
+  REQUIRE(!got.ok());
+  CHECK(got.code() == Code::NotFound);
+  // Out of the fleet (no key): nothing answered.
+  served_key.clear();
+  got = copy_model(plan, {});
+  REQUIRE(!got.ok());
+  served_key = key;
+
+  // A job's own weights PUSHED to a member (the sender connects: a member
+  // serving detached may not), from wherever they are, into the bundle's
+  // folder there; again, nothing sent; no room there, Busy.
+  const fs::path bundles = root / "bundles";
+  bool roomy = true;
+  auto member = ShareServer::start(
+      [&] { return key; },
+      [](const std::string&) -> Result<ShareList> {
+        return make_error(Code::NotFound, "none");
+      },
+      [&](const std::string& bundle,
+          std::uint64_t) -> Result<fs::path> {
+        if (!roomy) {
+          return make_error(Code::Busy, "no room");
+        }
+        return bundles / bundle;
+      });
+  REQUIRE_OK(member);
+  CopyPlan push;
+  push.routes = {{"127.0.0.1", "", 0}};
+  push.port = (*member)->port();
+  push.key = key;
+  push.model = "0123abcd";
+  push.streams = 2;
+  const std::vector<ShareFile> weights = {
+      {"lora_file/style.safetensors", big.size(),
+       there / "model.safetensors"},
+      {"vae_file/config.json", 8, there / "config.json"}};
+  got = push_files(push, weights, {});
+  REQUIRE_OK(got);
+  CHECK(got->bytes == big.size() + 8);
+  CHECK(fs::exists(bundles / "0123abcd" / ".valtz-whole"));
+  CHECK(fs::file_size(bundles / "0123abcd" / "lora_file" /
+                      "style.safetensors") == big.size());
+  got = push_files(push, weights, {});
+  REQUIRE_OK(got);
+  CHECK(got->bytes == 0);
+  roomy = false;
+  push.model = "4567ef";
+  got = push_files(push, weights, {});
+  REQUIRE(!got.ok());
+  CHECK(got.code() == Code::Busy);
+  // Not a bundle's name: refused.
+  push.model = "../x";
+  CHECK(!push_files(push, weights, {}).ok());
+  fs::remove_all(root);
 }
 
 TEST(fleet, messages_are_framed_and_read_whole)

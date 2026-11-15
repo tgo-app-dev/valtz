@@ -140,8 +140,8 @@ public:
 //
 // A conversation outgrowing what its model holds -- the helper's context
 // as this Mac gives it (Controller::helper_context_: Qwen3.8 27B's
-// 262,144 on tgo-m5-3), a cloud model's window -- goes on COMPACTED, as
-// notes stand in for a long meeting. Before a turn that would not fit
+// 262,144 on a 256 GB Mac), a cloud model's window -- goes on COMPACTED,
+// as notes stand in for a long meeting. Before a turn that would not fit
 // (with room for a reply and for the notes), the model is asked, the
 // conversation as it is -- its kept K/V all reused, only the question
 // prefilled -- to write what it needs to carry on: the request and what

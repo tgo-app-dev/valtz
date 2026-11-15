@@ -600,47 +600,87 @@ private struct MemberRow: View {
             ? String(localized: "Needs a Mac with more memory")
             : m.isGated && from == "huggingface"
             ? String(localized: "Gated on Hugging Face: accept its license there, then download it with your access token")
+            : m.isGated && from == "hf-mirror"
+            ? String(localized: "Gated on Hugging Face: hf-mirror.com serves it only with a token given for the mirror (HF_MIRROR_TOKEN) -- Valtz never sends your Hugging Face token to it")
             : from != chosen
             ? String(localized: "Not on \(sourceTitle(chosen)): downloads from \(sourceTitle(from)) into the models folder Valtz manages")
             : sources.count > 1
             ? String(localized: "Download from \(sourceTitle(from)) into the models folder Valtz manages")
             : String(localized: "Download into the models folder Valtz manages")
-        if let host = m.host, !host.isEmpty {
+        let copies = m.fleet ?? []
+        if let host = m.host, !host.isEmpty, copies.isEmpty {
             // Its makers' own file, not a hub's: no source to choose.
             Button(resume ? "Resume" : "Download") {
                 model.startDownload(m, from: from)
             }
             .disabled(!m.fits)
             .help(String(localized: "Download from \(host), where its makers publish it -- not a model hub: Valtz fetches their file, checks it is the one it knows and keeps the weights in the models folder it manages"))
-        } else if sources.count > 1 {
+        } else if sources.count > 1 || !copies.isEmpty {
             Menu {
-                ForEach(sources) { s in
-                    if let there = m.path(on: s.name) {
-                        Button(resume ? "Resume from \(s.title)"
-                                      : "Download from \(s.title)") {
-                            model.startDownload(m, from: s.name)
+                if let host = m.host, !host.isEmpty {
+                    Button(resume ? "Resume from \(host)"
+                                  : "Download from \(host)") {
+                        model.startDownload(m, from: from)
+                    }
+                } else {
+                    hubSources(m, resume: resume)
+                }
+                if !copies.isEmpty {
+                    Divider()
+                    ForEach(copies) { c in
+                        Button(resume ? "Resume from \(c.name)"
+                                      : "Copy from \(c.name)") {
+                            model.startDownload(m, from: "fleet:\(c.member)")
                         }
-                        .help(there == m.hfPath ? "" : String(localized: "There as \(there)"))
-                    } else {
-                        Button("Not on \(s.title)") {}
-                            .disabled(true)
+                        .help(copyHelp(c))
                     }
                 }
             } label: {
                 Text(resume ? "Resume" : "Download")
             } primaryAction: {
-                model.startDownload(m, from: from)
+                // A cable to a member that has it: the copy, faster than
+                // any download.
+                if let c = copies.first(where: \.thunderbolt) {
+                    model.startDownload(m, from: "fleet:\(c.member)")
+                } else {
+                    model.startDownload(m, from: from)
+                }
             }
             .menuStyle(.button)
             .fixedSize()
             .disabled(!m.fits)
-            .help(help)
+            .help(copies.first(where: \.thunderbolt).map(copyHelp) ?? help)
         } else {
             Button(resume ? "Resume" : "Download") {
                 model.startDownload(m, from: from)
             }
             .disabled(!m.fits)
             .help(help)
+        }
+    }
+
+    /// What a copy from a member does, and over what.
+    private func copyHelp(_ c: CapabilityTree.FleetCopy) -> String {
+        c.thunderbolt
+            ? String(localized: "Copy its files from \(c.name), a member of your fleet, over Thunderbolt (\(String(c.cables)) cable(s), \(String(c.gbps)) Gb/s) into the models folder Valtz manages")
+            : String(localized: "Copy its files from \(c.name), a member of your fleet, over the network into the models folder Valtz manages")
+    }
+
+    /// The download sources carrying the model, as menu items.
+    @ViewBuilder
+    private func hubSources(_ m: CapabilityTree.Member,
+                            resume: Bool) -> some View {
+        ForEach(sources) { s in
+            if let there = m.path(on: s.name) {
+                Button(resume ? "Resume from \(s.title)"
+                              : "Download from \(s.title)") {
+                    model.startDownload(m, from: s.name)
+                }
+                .help(there == m.hfPath ? "" : String(localized: "There as \(there)"))
+            } else {
+                Button("Not on \(s.title)") {}
+                    .disabled(true)
+            }
         }
     }
 

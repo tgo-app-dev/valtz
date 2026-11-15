@@ -155,6 +155,16 @@
         }
       }
     },
+    "%@ MB/s" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "%@ MB/s"
+          }
+        }
+      }
+    },
     "%@ Queued" : {
       "localizations" : {
         "zh-Hans" : {
@@ -181,6 +191,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "%@ 秒"
+          }
+        }
+      }
+    },
+    "%@ TFLOP/s" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "%@ TFLOP/s"
           }
         }
       }
@@ -587,6 +607,22 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "%1$@ / %2$@"
+          }
+        }
+      }
+    },
+    "%@ of %@ TFLOP/s" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "%1$@ of %2$@ TFLOP/s"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "%1$@ / %2$@ TFLOP/s"
           }
         }
       }
@@ -1059,6 +1095,22 @@
         }
       }
     },
+    "%@ · split with %@" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "%1$@ · split with %2$@"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "%1$@ · 与 %2$@ 拆分"
+          }
+        }
+      }
+    },
     "%@ — %@ × %@" : {
       "localizations" : {
         "en" : {
@@ -1370,6 +1422,16 @@
         }
       }
     },
+    "%lld cables" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "%lld 根线缆"
+          }
+        }
+      }
+    },
     "%lld cores" : {
       "localizations" : {
         "zh-Hans" : {
@@ -1587,6 +1649,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "（不在内置固态硬盘上！）"
+          }
+        }
+      }
+    },
+    "1 cable" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "1 根线缆"
           }
         }
       }
@@ -1863,6 +1935,16 @@
         }
       }
     },
+    "A Quarter of the Size" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "四分之一尺寸"
+          }
+        }
+      }
+    },
     "A RefMod is a reference: drop it in the prompt's row" : {
       "localizations" : {
         "zh-Hans" : {
@@ -1910,6 +1992,26 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "片段逐帧读取（横向或纵向，均摆正），在画面变化处切分为场景，每个场景用几句话描述，最后概括全片。帧越多、越大，看到的越多，耗时也越长：每帧在标准尺寸下约为模型要读的 180 个词元，高约 400 个，最高约 720 个。"
+          }
+        }
+      }
+    },
+    "A clip is split now. The cables' speed is not known, so the bars show nothing." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "正在拆分生成一段视频。线缆速率未知，因此进度条不显示。"
+          }
+        }
+      }
+    },
+    "A clip is split now: its partial sums, each way, of what the cables carry that way." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "正在拆分生成一段视频：每个方向的部分和流量，占线缆该方向带宽的比例。"
           }
         }
       }
@@ -2026,12 +2128,32 @@
         }
       }
     },
+    "A job using Custom's own LoRAs, DiT or VAE goes to a member too: their files are copied there first -- over Thunderbolt where a cable is -- if it has the disk for them, and kept a week for the next job. Off, such a job runs on this Mac." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "使用自定义 LoRA、DiT 或 VAE 的任务也会交给成员：只要它有足够的磁盘空间，就先把这些文件复制过去（有雷雳线缆时经由雷雳），并保留一周供下一个任务使用。关闭时，这类任务在这台 Mac 上运行。"
+          }
+        }
+      }
+    },
     "A key is kept in your Keychain." : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "钥匙串中已存有密钥。"
+          }
+        }
+      }
+    },
+    "A keyframe every this many frames, less one" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "每隔这么多帧减一出一个关键帧"
           }
         }
       }
@@ -3482,6 +3604,16 @@
         }
       }
     },
+    "As a New Layer on the Current Page" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "作为当前页面上的新图层"
+          }
+        }
+      }
+    },
     "As it is" : {
       "localizations" : {
         "zh-Hans" : {
@@ -4100,11 +4232,22 @@
       }
     },
     "Auto runs the best one downloaded: FlashVSR+ Turbo, then FlashVSR+ Base, then FlashVSR 1.1. Turbo is the faster, and its makers' pick for high resolutions; Base restores at a higher quality, more slowly and in more memory. Open-H3-Regenerate-2K and its IC refine are never Auto's: they run when chosen here." : {
+      "extractionState" : "stale",
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "“自动”运行已下载中最好的一个：先 FlashVSR+ Turbo，再 FlashVSR+ Base，再 FlashVSR 1.1。Turbo 更快，也是其作者为高分辨率推荐的版本；Base 修复质量更高，但更慢、占用内存更多。Open-H3-Regenerate-2K 及其 IC 精修不会被“自动”选中：只有在这里选中时才运行。"
+          }
+        }
+      }
+    },
+    "Auto runs the best one downloaded: FlashVSR+ Turbo, then FlashVSR+ Base, then FlashVSR 1.1. Turbo is the faster, and its makers' pick for high resolutions; Base restores at a higher quality, more slowly and in more memory. RelayVSR, which makes exactly four times what it reads from a one-step 5B keyframe model in relay with a small decoder, runs when chosen here, or when it is the only one downloaded; Open-H3-Regenerate-2K and its IC refine are never Auto's: they run when chosen here." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "“自动”运行已下载中最好的一个：先 FlashVSR+ Turbo，再 FlashVSR+ Base，再 FlashVSR 1.1。Turbo 更快，也是其作者为高分辨率推荐的版本；Base 修复质量更高，但更慢、占用内存更多。RelayVSR 由一个单步 5B 关键帧模型与一个小解码器接力工作，输出恰好是读取尺寸的四倍，在这里选中它、或它是唯一已下载的放大器时运行；Open-H3-Regenerate-2K 及其 IC 精修不会被“自动”选中：只有在这里选中时才运行。"
           }
         }
       }
@@ -5277,6 +5420,16 @@
         }
       }
     },
+    "Click it for each member's arithmetic and, paired over Thunderbolt, the split's link." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "点按可查看每个成员的算力，以及通过雷雳配对时拆分所用的链路。"
+          }
+        }
+      }
+    },
     "Click its corners; click the first to close it, or press Return. A corner placed on a shape's connector stays joined to the shape." : {
       "localizations" : {
         "zh-Hans" : {
@@ -5430,6 +5583,32 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "在此制作的片段（生成、放大、渲染）以中间格式保存。"
+          }
+        }
+      }
+    },
+    "Clips split over %@ cables, %@" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Clips split over %1$@ cables, %2$@"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "片段经 %1$@ 根线缆拆分，%2$@"
+          }
+        }
+      }
+    },
+    "Clips split over 1 cable, %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "片段经 1 根线缆拆分，%@"
           }
         }
       }
@@ -6234,6 +6413,42 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "拷贝"
+          }
+        }
+      }
+    },
+    "Copy from %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "从%@复制"
+          }
+        }
+      }
+    },
+    "Copy its files from %@, a member of your fleet, over Thunderbolt (%@ cable(s), %@ Gb/s) into the models folder Valtz manages" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Copy its files from %1$@, a member of your fleet, over Thunderbolt (%2$@ cable(s), %3$@ Gb/s) into the models folder Valtz manages"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "通过雷雳（%2$@ 根线缆，%3$@ Gb/s）从舰队成员 %1$@ 复制它的文件到 Valtz 管理的模型文件夹"
+          }
+        }
+      }
+    },
+    "Copy its files from %@, a member of your fleet, over the network into the models folder Valtz manages" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "通过网络从舰队成员 %@ 复制它的文件到 Valtz 管理的模型文件夹"
           }
         }
       }
@@ -8246,6 +8461,26 @@
         }
       }
     },
+    "Each new picture gets a page of its own, added after the last page, and the stage goes to it. Layers that ran to the last page stop before it." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "每张新图片都有自己的页面，添加在最后一页之后，舞台随之跳转。原本延续到最后一页的图层会在它之前结束。"
+          }
+        }
+      }
+    },
+    "Each new picture is laid as a new layer on top of the page you are looking at." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "每张新图片都作为新图层放在你正在查看的页面最上层。"
+          }
+        }
+      }
+    },
     "Each of the frames redone is restored by an image edit, its own tones kept, and they are shown in place of the clip's last frames, the noise built up over continuations fading out. Its sound carries on as before." : {
       "localizations" : {
         "zh-Hans" : {
@@ -8463,6 +8698,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "椭圆"
+          }
+        }
+      }
+    },
+    "Enabled" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "已启用"
           }
         }
       }
@@ -9822,6 +10067,22 @@
         }
       }
     },
+    "GPU %@ · ANE %@" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "GPU %1$@ · ANE %2$@"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "GPU %1$@ · ANE %2$@"
+          }
+        }
+      }
+    },
     "GPU Throttled" : {
       "localizations" : {
         "zh-Hans" : {
@@ -9868,6 +10129,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "在 Hugging Face 上受限：先在那里接受其许可，再用你的访问令牌下载"
+          }
+        }
+      }
+    },
+    "Gated on Hugging Face: hf-mirror.com serves it only with a token given for the mirror (HF_MIRROR_TOKEN) -- Valtz never sends your Hugging Face token to it" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "在 Hugging Face 上受限：hf-mirror.com 只凭为该镜像提供的令牌（HF_MIRROR_TOKEN）提供它——Valtz 从不把你的 Hugging Face 令牌发给它"
           }
         }
       }
@@ -10394,6 +10665,16 @@
         }
       }
     },
+    "HF-Mirror (hf-mirror.com)" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "HF-Mirror 镜像站（hf-mirror.com）"
+          }
+        }
+      }
+    },
     "Half" : {
       "localizations" : {
         "zh-Hans" : {
@@ -10410,6 +10691,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "步数减半"
+          }
+        }
+      }
+    },
+    "Heads" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "注意力头"
           }
         }
       }
@@ -10916,11 +11207,22 @@
       }
     },
     "How Render Upscaled restores a layer at the size it is shown — FlashVSR+ or FlashVSR 1.1 for clips, or Open-H3-Regenerate-2K to regenerate one; VOSR for pictures: which one, and the arithmetic each runs with." : {
+      "extractionState" : "stale",
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "“渲染放大版本”如何按图层显示的尺寸还原它——视频片段用 FlashVSR+ 或 FlashVSR 1.1，或用 Open-H3-Regenerate-2K 重新生成；图片用 VOSR：用哪一个，以及各自运行时采用的运算方式。"
+          }
+        }
+      }
+    },
+    "How Render Upscaled restores a layer at the size it is shown — FlashVSR+, FlashVSR 1.1 or RelayVSR for clips, or Open-H3-Regenerate-2K to regenerate one; VOSR for pictures: which one, and the arithmetic each runs with." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "“渲染放大版本”如何按图层显示的尺寸还原它——视频片段用 FlashVSR+、FlashVSR 1.1 或 RelayVSR，或用 Open-H3-Regenerate-2K 重新生成；图片用 VOSR：用哪一个，以及各自运行时采用的运算方式。"
           }
         }
       }
@@ -11685,6 +11987,16 @@
         }
       }
     },
+    "Its Own Size" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "原始尺寸"
+          }
+        }
+      }
+    },
     "Its P·V in int8 too: attention about 1.18×" : {
       "localizations" : {
         "zh-Hans" : {
@@ -12281,12 +12593,32 @@
         }
       }
     },
+    "Keyframe window" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "关键帧窗口"
+          }
+        }
+      }
+    },
     "Keyframes" : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "关键帧"
+          }
+        }
+      }
+    },
+    "Keyframes' keys and values" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "关键帧的键与值"
           }
         }
       }
@@ -13568,6 +13900,16 @@
         }
       }
     },
+    "Makes every frame at exactly four times the size it reads: a one-step 5B model writes a keyframe every few frames, and a small decoder makes each frame against the keyframes around it. Its 8.4 GB of weights stay loaded through the clip, beside a working set that grows with the frames it reads." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "每一帧都恰好是读取尺寸的四倍：一个单步 5B 模型每隔几帧写一个关键帧，小解码器参照前后的关键帧生成每一帧。它的 8.4 GB 权重在整个片段期间保持加载，另有随读取帧尺寸增长的工作内存。"
+          }
+        }
+      }
+    },
     "Making the soundtrack" : {
       "localizations" : {
         "zh-Hans" : {
@@ -14593,6 +14935,16 @@
         }
       }
     },
+    "New Page" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "新页面"
+          }
+        }
+      }
+    },
     "New Picture Generation" : {
       "localizations" : {
         "zh-Hans" : {
@@ -14824,6 +15176,16 @@
         }
       }
     },
+    "No Thunderbolt cable to %@ has been found: a clip is made here whole." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "未找到连接 %@ 的雷雳线缆：视频将在本机完整生成。"
+          }
+        }
+      }
+    },
     "No Tools" : {
       "localizations" : {
         "zh-Hans" : {
@@ -14850,6 +15212,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "还没有素材"
+          }
+        }
+      }
+    },
+    "No clip is split now. While one is, its partial sums cross here, each way at most what the cables carry." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "当前没有拆分生成的视频。拆分时，部分和会经此传输，每个方向至多为线缆的带宽。"
           }
         }
       }
@@ -14942,6 +15314,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "无匹配项"
+          }
+        }
+      }
+    },
+    "No member is connected." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "没有已连接的成员。"
           }
         }
       }
@@ -15256,6 +15638,16 @@
         }
       }
     },
+    "Not enabled" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "未启用"
+          }
+        }
+      }
+    },
     "Not for a clip continued through its end: TaoMate streams from the prompt alone" : {
       "localizations" : {
         "zh-Hans" : {
@@ -15332,6 +15724,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "未获准加入：它持有不同的密钥"
+          }
+        }
+      }
+    },
+    "Not now" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "现在不行"
           }
         }
       }
@@ -15422,6 +15824,16 @@
         }
       }
     },
+    "Not split: %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "未拆分：%@"
+          }
+        }
+      }
+    },
     "Not taking jobs now." : {
       "localizations" : {
         "zh-Hans" : {
@@ -15468,6 +15880,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "跳过这一步：会连同你的备注告诉它"
+          }
+        }
+      }
+    },
+    "Not told" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "未报告"
           }
         }
       }
@@ -15750,6 +16172,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "在每一页上"
+          }
+        }
+      }
+    },
+    "On a New Page" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "在新页面上"
           }
         }
       }
@@ -16315,6 +16747,16 @@
         }
       }
     },
+    "Over RDMA" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "使用 RDMA"
+          }
+        }
+      }
+    },
     "Own Size" : {
       "localizations" : {
         "zh-Hans" : {
@@ -16413,6 +16855,36 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "绘制"
+          }
+        }
+      }
+    },
+    "Pair" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "配对"
+          }
+        }
+      }
+    },
+    "Pair this Mac with a member a Thunderbolt cable joins it to: a MiniMax H3 clip made without a LoRA or the Neural Engine (Favor’s Fine, or Custom) is then split between the two — each holds part of every block, their partial sums crossing the cable, RDMA where both Macs have it enabled (rdma_ctl, from recoveryOS). Other clips run as before." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "将这台 Mac 与一根雷雳线缆连接的成员配对：不使用 LoRA 或神经网络引擎生成的 MiniMax H3 片段（偏好的“精”，或自定义）会在两台 Mac 之间拆分——每台持有每个模块的一部分，它们的部分和经线缆交换；两台 Mac 都已启用 RDMA（在恢复模式下用 rdma_ctl 启用）时走 RDMA。其他片段照旧运行。"
+          }
+        }
+      }
+    },
+    "Paired With" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "已配对"
           }
         }
       }
@@ -16893,6 +17365,16 @@
         }
       }
     },
+    "Place a generated picture on a still" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "将生成的图片放到静帧上"
+          }
+        }
+      }
+    },
     "Place on Stage" : {
       "localizations" : {
         "zh-Hans" : {
@@ -17129,6 +17611,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "纵向"
+          }
+        }
+      }
+    },
+    "Ports" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "端口"
           }
         }
       }
@@ -17797,6 +18289,16 @@
         }
       }
     },
+    "RDMA" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "RDMA"
+          }
+        }
+      }
+    },
     "RIFE" : {
       "localizations" : {
         "zh-Hans" : {
@@ -17883,6 +18385,16 @@
         }
       }
     },
+    "Read a quarter of the size" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "读取四分之一尺寸"
+          }
+        }
+      }
+    },
     "Read and edit the suggestion beside the prompt, in the Prompt Editor (⇧⌘E)" : {
       "localizations" : {
         "zh-Hans" : {
@@ -17893,12 +18405,42 @@
         }
       }
     },
+    "Read as it is, the result fitted down: more memory" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "按原样读取，结果缩小适配：内存更多"
+          }
+        }
+      }
+    },
     "Read as plain files, not as the engine loads the model" : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "作为普通文件读取，而非按引擎加载模型的方式"
+          }
+        }
+      }
+    },
+    "Read at" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "读取尺寸"
+          }
+        }
+      }
+    },
+    "Read at a quarter of the size shown: the least memory" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "按显示尺寸的四分之一读取：内存最少"
           }
         }
       }
@@ -17989,6 +18531,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "Rec. 709"
+          }
+        }
+      }
+    },
+    "Received from %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "从 %@ 接收"
           }
         }
       }
@@ -18249,6 +18801,37 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "拒绝"
+          }
+        }
+      }
+    },
+    "RelayVSR makes exactly four times the frames it reads. A Quarter of the Size reads the clip at a quarter of the size it is shown at, so a layer scaled 2x is read at half its clip's size: the least memory and time. Its Own Size reads the clip as it is wherever that is larger, then fits the four-times frames down to the size shown: more of the clip's detail read, at more memory and time. Its memory grows with the frames it reads: about 12 GB at 480 × 270 read, 22 GB at 960 × 540, 32 GB at 1280 × 720." : {
+      "extractionState" : "stale",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "RelayVSR 输出的帧恰好是它读取的帧的四倍大小。“四分之一尺寸”按片段显示尺寸的四分之一读取，因此放大 2 倍的图层会以其片段一半的尺寸读取：内存和时间最少。“原始尺寸”在片段本身更大时按原样读取，再把四倍大小的帧缩小到显示尺寸：读到更多细节，但需要更多内存和时间。它的内存随读取的帧尺寸增长：读取 480 × 270 时约 12 GB，960 × 540 时 22 GB，1280 × 720 时 32 GB。"
+          }
+        }
+      }
+    },
+    "RelayVSR makes exactly four times the frames it reads. Its Own Size, the default, reads the clip as it is wherever four times that reaches the size shown, then fits the four-times frames down to it by lanczos: all of the clip's detail read, at more memory and time. A Quarter of the Size reads the clip at a quarter of the size it is shown at, so a layer scaled 2x is read at half its clip's size: the least memory and time. Its memory grows with the frames it reads: about 12 GB at 480 × 270 read, 22 GB at 960 × 540, 32 GB at 1280 × 720." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "RelayVSR 生成的帧恰好是读入帧的四倍大小。“原始尺寸”（默认）在四倍能达到显示尺寸时按片段原样读入，再用 Lanczos 将四倍帧缩小到显示尺寸：读入片段的全部细节，占用更多内存和时间。“四分之一尺寸”按显示尺寸的四分之一读入片段，因此放大 2 倍的图层按其片段一半的尺寸读入：内存和时间最少。内存随读入的帧增长：读入 480 × 270 约 12 GB，960 × 540 约 22 GB，1280 × 720 约 32 GB。"
+          }
+        }
+      }
+    },
+    "RelayVSR's large model writes a keyframe every this many frames less one (16: every 15th, as released), and its small decoder makes every frame against the two keyframes around it. Larger is faster, leaning more on the small decoder; smaller runs the large model more often. A frame comes out at most this many frames after it went in." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "RelayVSR 的大模型每隔这么多帧减一写一个关键帧（16：每 15 帧一个，与发布版相同），小解码器参照前后两个关键帧生成每一帧。数值越大越快，更依赖小解码器；越小则大模型运行得越频繁。一帧最多在输入后这么多帧才输出。"
           }
         }
       }
@@ -19803,6 +20386,16 @@
         }
       }
     },
+    "Send Custom Weights With a Job" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "随任务发送自定义权重"
+          }
+        }
+      }
+    },
     "Send: it reads your words at its next turn (Return)" : {
       "localizations" : {
         "zh-Hans" : {
@@ -20054,6 +20647,16 @@
         }
       }
     },
+    "Settings › Upscaling › RelayVSR › Read At: the clip read at a quarter of the size shown, its 4x made at that size -- the memory grows with the frame read. Then Render Upscaled again." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "设置 › 放大 › RelayVSR › 读取尺寸：以显示尺寸的四分之一读取片段，并在该尺寸下生成 4 倍画面——所需内存随读取的画面增大。然后再次执行“渲染放大”。"
+          }
+        }
+      }
+    },
     "Shadow" : {
       "localizations" : {
         "zh-Hans" : {
@@ -20100,6 +20703,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "共享"
+          }
+        }
+      }
+    },
+    "Share by GPU" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "按 GPU 分配"
           }
         }
       }
@@ -21118,6 +21731,26 @@
         }
       }
     },
+    "Split MiniMax H3 clips with this Mac over the Thunderbolt cable" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "经雷雳线缆与这台 Mac 拆分 MiniMax H3 片段"
+          }
+        }
+      }
+    },
+    "Split with %@ over Thunderbolt" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "经雷雳与 %@ 拆分"
+          }
+        }
+      }
+    },
     "Spot" : {
       "localizations" : {
         "zh-Hans" : {
@@ -21786,6 +22419,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "系统默认（%@）"
+          }
+        }
+      }
+    },
+    "TCP" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "TCP"
           }
         }
       }
@@ -23483,6 +24126,22 @@
         }
       }
     },
+    "This Mac %@ · %@ %@" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "This Mac %1$@ · %2$@ %3$@"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "这台 Mac %1$@ · %2$@ %3$@"
+          }
+        }
+      }
+    },
     "This Mac Gives It" : {
       "localizations" : {
         "zh-Hans" : {
@@ -23513,6 +24172,16 @@
         }
       }
     },
+    "This Mac's Share" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "这台 Mac 的份额"
+          }
+        }
+      }
+    },
     "This Mac's memory moves %@ GB/s, under 200, so Auto reads about 40 frames of a short clip: 8 a second up to 5 seconds, 4 up to 10, 2 up to 20, 1 up to 40, then one every 2 seconds." : {
       "localizations" : {
         "zh-Hans" : {
@@ -23539,6 +24208,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "这台 Mac、Valtz 存放项目、模型和缓存的位置，以及当前打开的项目。"
+          }
+        }
+      }
+    },
+    "This Valtz cannot split a DiT: its vpipe has no tensor parallelism." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "这个 Valtz 无法拆分 DiT：它的 vpipe 不支持张量并行。"
           }
         }
       }
@@ -23689,6 +24368,46 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "缩略图与预览"
+          }
+        }
+      }
+    },
+    "Thunderbolt" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "雷雳"
+          }
+        }
+      }
+    },
+    "Thunderbolt Bridge" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "雷雳网桥"
+          }
+        }
+      }
+    },
+    "Thunderbolt Split" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "雷雳拆分"
+          }
+        }
+      }
+    },
+    "Thunderbolt × %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "雷雳 × %@"
           }
         }
       }
@@ -24522,6 +25241,16 @@
         }
       }
     },
+    "Unpair" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "取消配对"
+          }
+        }
+      }
+    },
     "Unused" : {
       "localizations" : {
         "zh-Hans" : {
@@ -24618,6 +25347,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "放大"
+          }
+        }
+      }
+    },
+    "Upscaling asked for" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "放大所需"
           }
         }
       }
@@ -25415,6 +26154,16 @@
         }
       }
     },
+    "Waiting for %@ to start its half" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "等待 %@ 开始它的那一半"
+          }
+        }
+      }
+    },
     "Waiting for generations…" : {
       "localizations" : {
         "zh-Hans" : {
@@ -25512,6 +26261,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "小波"
+          }
+        }
+      }
+    },
+    "Weights" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "权重"
           }
         }
       }
@@ -25632,6 +26391,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "仍在开发中的功能：在这里打开即可试用。它们可能会改变，也可能被移除。"
+          }
+        }
+      }
+    },
+    "What it reads: it makes exactly four times that" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "读取的尺寸：输出恰好是它的四倍"
           }
         }
       }
@@ -26207,6 +26976,16 @@
         }
       }
     },
+    "Working on half of a clip for %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "正在为 %@ 生成片段的一半"
+          }
+        }
+      }
+    },
     "Working…" : {
       "localizations" : {
         "zh-Hans" : {
@@ -26678,6 +27457,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "bf16 权重"
+          }
+        }
+      }
+    },
+    "cable" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "线缆"
           }
         }
       }
@@ -28276,6 +29065,40 @@
         }
       }
     },
+    "core.fleet_copy_away" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "{member} is not connected: {model} cannot be copied from it."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "{member} 未连接：无法从它复制 {model}。"
+          }
+        }
+      }
+    },
+    "core.fleet_copy_not_shared" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "{member} does not share {model}."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "{member} 未共享 {model}。"
+          }
+        }
+      }
+    },
     "core.fleet_declined" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -28340,6 +29163,40 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "加入舰队需要它的密钥。"
+          }
+        }
+      }
+    },
+    "core.fleet_no_room" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "{member} has no room for the job's weights."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "{member} 没有空间存放这个任务的权重。"
+          }
+        }
+      }
+    },
+    "core.fleet_no_such_member" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "No member “{name}” is connected."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "没有名为“{name}”的已连接成员。"
           }
         }
       }
@@ -30146,6 +31003,74 @@
         }
       }
     },
+    "core.split_busy_here" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "This Mac is busy: the clip waits its turn here, whole."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "这台 Mac 正忙：该片段在这里排队，整体生成。"
+          }
+        }
+      }
+    },
+    "core.split_cannot_here" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "This Valtz cannot split a DiT: its vpipe has no tensor parallelism."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "这个 Valtz 无法拆分 DiT：它的 vpipe 不支持张量并行。"
+          }
+        }
+      }
+    },
+    "core.split_cannot_there" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "{member} cannot split a DiT: its Valtz or vpipe has no tensor parallelism."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "{member} 无法拆分 DiT：它的 Valtz 或 vpipe 不支持张量并行。"
+          }
+        }
+      }
+    },
+    "core.split_continued" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Not a clip continued from its kept latents, or cleaned, yet."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "暂不支持从保留的潜变量延续或经过清理的片段。"
+          }
+        }
+      }
+    },
     "core.split_needs_clip" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -30163,6 +31088,57 @@
         }
       }
     },
+    "core.split_neural_engine" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Not with the Neural Engine's share yet."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "暂不支持神经网络引擎分担。"
+          }
+        }
+      }
+    },
+    "core.split_no_link" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "No Thunderbolt cable joins this Mac and {member} now."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "现在没有雷雳线缆连接这台 Mac 与 {member}。"
+          }
+        }
+      }
+    },
+    "core.split_no_model_there" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "{member} does not have {model}."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "{member} 没有 {model}。"
+          }
+        }
+      }
+    },
     "core.split_outside" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -30176,6 +31152,91 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "请在片段内部剪开，距两端至少一帧。"
+          }
+        }
+      }
+    },
+    "core.split_own_files" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Not with Custom's own DiT, VAE or text encoder: {member} does not have them."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "不支持自定义自带的 DiT、VAE 或文本编码器：{member} 没有它们。"
+          }
+        }
+      }
+    },
+    "core.split_own_loras" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Not with LoRAs of this Mac's own unless they go with the job: turn on Send Custom Weights With a Job (Settings › Fleet › Offload Policies) -- {member} must take them and have room for them."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "不支持这台 Mac 自有的 LoRA，除非随任务发送：打开“随任务发送自定义权重”（设置 › 舰队 › 分流策略）——{member} 须接收它们并有足够空间。"
+          }
+        }
+      }
+    },
+    "core.split_pair_away" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "{member} is not connected."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "{member} 未连接。"
+          }
+        }
+      }
+    },
+    "core.split_peer_failed" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "{member} failed its half of the clip: {reason}"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "{member} 未能完成它那一半片段：{reason}"
+          }
+        }
+      }
+    },
+    "core.split_vdn_taomate" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Not with VDN or TaoMate."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "不支持 VDN 或 TaoMate。"
           }
         }
       }
@@ -31361,6 +32422,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "原为 %1$@ × %2$@"
+          }
+        }
+      }
+    },
+    "was its own size" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "原为原始尺寸"
           }
         }
       }

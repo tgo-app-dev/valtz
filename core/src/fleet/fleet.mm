@@ -47,7 +47,11 @@ default_member_name()
 
 namespace {
 
-constexpr std::size_t kChunk = 256 * 1024;
+constexpr std::size_t kChunk = 1024 * 1024;
+// How many sends a link keeps in flight. One at a time -- each waiting
+// for the one before to be taken -- carried a clip back from a member at
+// 8 MB/s over gigabit Ethernet: 2.5 s of every clip a member made.
+constexpr int kInFlight = 8;
 constexpr const char kIdentity[] = "valtz-fleet";
 // An answer asked of the person ("ask"): declined after this long.
 constexpr double kAskSeconds = 60;
@@ -178,7 +182,7 @@ struct Link {
   std::optional<std::pair<double, double>> load;  // GPU, ANE TFLOP/s
   std::chrono::steady_clock::time_point     load_at;
   std::deque<Outgoing> outbox;
-  bool            sending = false;
+  int             sending = 0;   // sends in flight
 };
 
 // A file coming in: an input of a job served, or an output of one sent.
@@ -191,6 +195,8 @@ struct Incoming {
   ContentHash  hash;
   Json         info;
   Json         data;
+  std::uint64_t bytes = 0;
+  std::chrono::steady_clock::time_point began;
 };
 
 // A job this Mac sent.
@@ -905,7 +911,7 @@ private:
       return;
     }
     Link& l = *it->second;
-    if (l.sending || l.outbox.empty()) {
+    if (l.sending >= kInFlight || l.outbox.empty()) {
       return;
     }
     Outgoing& o = l.outbox.front();
@@ -938,7 +944,7 @@ private:
     if (last) {
       l.outbox.pop_front();
     }
-    l.sending = true;
+    ++l.sending;
     auto alive = _alive;
     nw_connection_send(l.conn, data_of(frame(m)),
                        NW_CONNECTION_DEFAULT_MESSAGE_CONTEXT, true,
@@ -950,13 +956,14 @@ private:
                          if (lt == _links.end()) {
                            return;
                          }
-                         lt->second->sending = false;
+                         --lt->second->sending;
                          if (e) {
                            drop_(key, "lost");
                            return;
                          }
                          pump_(key);
                        });
+    pump_(key);   // the next, while this one is on its way
   }
 
   Json
@@ -1522,6 +1529,7 @@ private:
       return;
     }
     in.tmp = in.final.string() + ".part";
+    in.began = std::chrono::steady_clock::now();
     in.f = std::fopen(in.tmp.c_str(), "wb");
     if (!in.f) {
       VALTZ_LOG_WARN("fleet", "cannot write {}", in.tmp.string());
@@ -1543,12 +1551,22 @@ private:
     if (d.is_binary()) {
       const auto& b = d.get_binary();
       std::fwrite(b.data(), 1, b.size(), in.f);
+      in.bytes += b.size();
     }
     if (!jget(m, "end", false)) {
       return;
     }
     std::fclose(in.f);
     in.f = nullptr;
+    {
+      const double s = std::chrono::duration<double>(
+                           std::chrono::steady_clock::now() - in.began)
+                           .count();
+      VALTZ_LOG_INFO("fleet", "{} from {}: {} bytes in {:.3f} s ({:.0f} "
+                      "MB/s)", in.output ? "an output" : "an input",
+                      l.name, in.bytes, s,
+                      s > 0 ? (double)in.bytes / 1e6 / s : 0.0);
+    }
     Incoming done = std::move(in);
     _incoming.erase(it);
     std::error_code ec;

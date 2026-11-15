@@ -23,7 +23,7 @@
 //                    [--seconds s]] [--partial]   the suggestion as it
 //                    is written
 //   valtzctl intent <text> [--image name]...
-//   valtzctl download <model-id> [--from huggingface|modelscope]
+//   valtzctl download <model-id> [--from <source>|fleet:<member>]
 //   valtzctl sources [<name>]       where downloads come from
 //   valtzctl wired [auto|<GB>]      the wired memory limit
 //   valtzctl ext [list] | enable <id> | disable <id>
@@ -71,6 +71,9 @@ usage()
   std::fputs(
       "usage: valtzctl <command> [args]\n"
       "  hw | caps | models\n"
+      "  tp-bench '<tensor_parallel json>' [--mb 1,16,64] [--rounds 20]\n"
+      "         (a split's link measured, no model: the other Mac runs\n"
+      "         the other rank)\n"
       "  families             (Settings > Capabilities: each model family,\n"
       "         its features -- [x] made here -- and every resource it\n"
       "         runs with, where it is: valtz, vpipe or a link)\n"
@@ -185,12 +188,14 @@ usage()
       "         project's composition -- above L, or in L when blank; at\n"
       "         timeline frame F; refused into itself)\n"
       "  land <project.valtz> <asset-id> [onto-comp-id] [--at L]\n"
-      "         [--offset F | --end]\n"
+      "         [--offset F | --end | --new-page]\n"
       "         (a result landing, as the app places a generation's: a new\n"
       "         layer of onto -- the composition active at Start -- else\n"
       "         a composition of its own, the project's when it has none;\n"
       "         --end: a clip on a timeline after its content, as\n"
-      "         Settings' At the End)\n"
+      "         Settings' At the End; --new-page: a picture on a still on\n"
+      "         a page of its own after the last, as Settings' On a New\n"
+      "         Page)\n"
       "  compose <project.valtz> still|timeline <W>x<H> [--rate N[/D]]\n"
       "         [--project] [name]  (a new composition -- 0x0: sound\n"
       "         alone; --project, or none yet: the project's)\n"
@@ -289,7 +294,7 @@ usage()
       "           later ones as the app makes them, kernels tuned)\n"
       "  video <project.valtz> <prompt> [--model id] [--size WxH]\n"
       "        [--frames n | --seconds s] [--fps n] [--steps n]\n"
-      "        [--speed|--quality] [--seed n] [--no-turbo]\n"
+      "        [--speed|--quality] [--seed n] [--no-turbo] [--repeat n]\n"
       "        [--first <file|asset-id>] [--last <file|asset-id>]\n"
       "        [--tune k=v,...]\n"
       "        [--ref <file|asset-id> [--whole|--latents-only]]...\n"
@@ -608,11 +613,24 @@ usage()
       "        | fleet set [name=N] [discoverable=on|off]\n"
       "            [accept=always|ask|never]\n"
       "            [schedule=mon-fri@09:00-18:00|off]\n"
+      "            [send_weights=on|off]\n"
+      "            (send_weights: a job with Custom's own LoRAs, DiT or\n"
+      "            VAE goes to a member too, its files copied there\n"
+      "            first where it has the disk; off: such jobs run here)\n"
       "        | fleet offload [<task|model> never|local-first|\n"
       "            fleet-first|always|default]\n"
       "        | fleet share [<task|model> on|off]\n"
       "        | fleet leave | fleet connect <host:port>\n"
       "        | fleet serve [--seconds N]\n"
+      "        | fleet thunderbolt [--json]\n"
+      "        | fleet pair <member>|off [rdma=on|off]\n"
+      "            [share=auto|<0..0.95>] [decode=auto|here|there]\n"
+      "         (pair: a MiniMax H3 clip that may be split runs half on\n"
+      "         the member over the Thunderbolt cables between them --\n"
+      "         thunderbolt shows the cables found; VALTZ_SPLIT=0 for\n"
+      "         one run whole. decode=auto: both Macs decode it, each\n"
+      "         its share, where both can (else, as past 768P, the\n"
+      "         faster GPU); here / there: one Mac alone)\n"
       "         (the FLEET: Valtz on the Macs of one network as one --\n"
       "         a fleet's name and secret (asked for unechoed, or\n"
       "         $VALTZ_FLEET_SECRET), discoverable or not, taking jobs\n"
@@ -658,7 +676,10 @@ usage()
       "          came down kept -- `download` again goes on from there;\n"
       "          --cancel-after: stopped and deleted; --cancel alone: what\n"
       "          a paused download left, deleted. --from: where from,\n"
-      "          one of `sources` -- the one chosen without it)\n"
+      "          one of `sources` -- the one chosen without it -- or\n"
+      "          fleet:<member>: COPIED from that member of the fleet,\n"
+      "          over each Thunderbolt cable to it, several streams a\n"
+      "          cable (else its network address))\n"
       "  sources [<name>]   where downloads come from -- vpipe's sources,\n"
       "          the one chosen (Settings > Capabilities' Download From);\n"
       "          a name chooses it for later downloads, the app's too\n"
@@ -1152,6 +1173,11 @@ print_out_of_memory(const Json& d)
     tries += std::format("  fewer references: {} now\n",
                          jget(f, "count", 0));
   }
+  if (const Json r = jget(s, "read_at", Json()); r.is_object()) {
+    tries += std::format(
+        "  a quarter of the size read: upscaler {} read_at=quarter\n",
+        jget<std::string>(r, "model", ""));
+  }
   if (!tries.empty()) {
     std::fprintf(stderr, "try:\n%s", tries.c_str());
   }
@@ -1471,6 +1497,101 @@ parse_schedule(const std::string& spec)
               {"to", h1 * 60 + m1}};
 }
 
+// THUNDERBOLT between the members (DESIGN §11c): this Mac's ports, the
+// cables found to each member, the pair.
+void
+print_thunderbolt(const Json& s)
+{
+  const Json tb = jget(s, "thunderbolt", Json::object());
+  const Json me = jget(tb, "self", Json::object());
+  const Json ports = jget(me, "ports", Json::array());
+  if (ports.empty()) {
+    std::printf("thunderbolt  none\n");
+  } else {
+    std::string list;
+    for (const auto& p : ports) {
+      const int gbps = jget(p, "gbps", 0);
+      list += std::format(
+          "{}{}{}{}{}", list.empty() ? "" : "  ",
+          jget<std::string>(p, "name", ""),
+          !jget(p, "active", false) ? ""
+          : gbps > 0                ? std::format(" (cable, {} Gb/s)", gbps)
+                                    : std::string(" (cable)"),
+          jget<std::string>(p, "address", "").empty()
+              ? std::string()
+              : " " + jget<std::string>(p, "address", ""),
+          jget<std::string>(p, "rdma", "").empty()
+              ? std::string()
+              : " " + jget<std::string>(p, "rdma", ""));
+    }
+    std::printf("thunderbolt  %s\n", list.c_str());
+    if (const auto b = jget<std::string>(me, "bridge", ""); !b.empty()) {
+      std::string in;
+      for (const auto& x : jget(me, "bridged", Json::array())) {
+        in += (in.empty() ? "" : " ") + x.get<std::string>();
+      }
+      std::printf("  bridge  %s %s (%s)\n", b.c_str(),
+                  jget<std::string>(me, "bridge_address", "").c_str(),
+                  in.c_str());
+    }
+    std::printf("  RDMA    %s; a DiT %s split here\n",
+                jget(me, "rdma", false) ? "enabled" : "not enabled",
+                jget(tb, "splits", false) ? "may be" : "cannot be");
+  }
+  std::map<std::string, std::string> names;
+  for (const auto& m : jget(s, "members", Json::array())) {
+    names[jget<std::string>(m, "id", "")] = jget<std::string>(m, "name", "");
+  }
+  const Json cables = jget(tb, "links", Json::object());
+  for (const auto& [id, links] : cables.items()) {
+    for (const auto& l : links) {
+      const auto lr = jget<std::string>(l, "local_rdma", "");
+      const auto rr = jget<std::string>(l, "remote_rdma", "");
+      const int gbps = jget(l, "gbps", 0);
+      std::printf("  cable to %s: %s %s -> %s %s  (ports %s <-> %s%s)  "
+                  "%.2f ms%s\n",
+                  names.contains(id) ? names[id].c_str() : id.c_str(),
+                  jget<std::string>(l, "local_interface", "").c_str(),
+                  jget<std::string>(l, "local_address", "").c_str(),
+                  jget<std::string>(l, "remote_interface", "").c_str(),
+                  jget<std::string>(l, "remote_address", "").c_str(),
+                  jget<std::string>(l, "local_port", "?").c_str(),
+                  jget<std::string>(l, "remote_port", "?").c_str(),
+                  gbps > 0 ? std::format(", {} Gb/s", gbps).c_str() : "",
+                  jget(l, "rtt_ms", 0.0),
+                  !lr.empty() && !rr.empty()
+                      ? std::format("  RDMA {} <-> {}", lr, rr).c_str()
+                      : "");
+    }
+  }
+  const Json pair = jget(s, "pair", Json());
+  if (!pair.is_object()) {
+    std::printf("pair      none\n");
+    return;
+  }
+  const Json heads = jget(pair, "heads", Json::array());
+  std::printf("pair      %s: %s%s\n",
+              jget<std::string>(pair, "name", "").c_str(),
+              jget(pair, "ready", false)
+                  ? std::format("clips split -- {} cable(s), {}",
+                                jget(pair, "links", 0),
+                                jget(pair, "rdma", false) ? "RDMA" : "TCP")
+                        .c_str()
+                  : ("not now: " +
+                     jget<std::string>(jget(pair, "why", Json::object()),
+                                       "message", ""))
+                        .c_str(),
+              heads.size() == 2
+                  ? std::format("; heads {} here, {} there{}; decoded {}",
+                                heads[0].get<int>(), heads[1].get<int>(),
+                                jget(pair, "auto_share", true)
+                                    ? " (by their GPUs)"
+                                    : "",
+                                jget<std::string>(pair, "decode", "here"))
+                        .c_str()
+                  : "");
+}
+
 // The fleet as a person reads it.
 void
 print_fleet(const Json& s)
@@ -1481,8 +1602,9 @@ print_fleet(const Json& s)
               jget<std::string>(c, "member_name", "").c_str(),
               jget<std::string>(c, "member_id", "").c_str());
   const auto fleet = jget<std::string>(c, "fleet", "");
-  std::printf("fleet     %s%s\n", fleet.empty() ? "(none)" : fleet.c_str(),
-              jget(c, "discoverable", false) ? "  discoverable" : "");
+  std::printf("fleet     %s%s%s\n", fleet.empty() ? "(none)" : fleet.c_str(),
+              jget(c, "discoverable", false) ? "  discoverable" : "",
+              jget(c, "send_weights", false) ? "  sends weights" : "");
   std::string when;
   if (jget(sch, "on", false)) {
     const int from = jget(sch, "from", 0), to = jget(sch, "to", 0);
@@ -1527,6 +1649,7 @@ print_fleet(const Json& s)
                 jget<std::string>(sv, "title", "").c_str(),
                 jget<std::string>(sv, "from", "").c_str());
   }
+  print_thunderbolt(s);
 }
 
 // The offload policies: each task's, then each model set apart.
@@ -1625,6 +1748,8 @@ fleet_command(Controller& c, std::vector<std::string>& args)
         j["member_name"] = v;
       } else if (k == "discoverable") {
         j["discoverable"] = v == "on" || v == "true" || v == "1";
+      } else if (k == "send_weights") {
+        j["send_weights"] = v == "on" || v == "true" || v == "1";
       } else if (k == "accept") {
         j["accept"] = v;
       } else if (k == "schedule") {
@@ -1702,6 +1827,48 @@ fleet_command(Controller& c, std::vector<std::string>& args)
   }
   if (sub == "leave") {
     return configure({{"fleet", ""}});
+  }
+  if (sub == "thunderbolt") {
+    // The cables to the members probed (in the background, a moment).
+    std::this_thread::sleep_for(std::chrono::seconds(seconds(3)));
+    (void)c.fleet_status();
+    std::this_thread::sleep_for(std::chrono::seconds(1));
+    const Json s = c.fleet_status();
+    if (as_json) {
+      std::cout << to_text(jget(s, "thunderbolt", Json::object()), 2)
+                << "\n";
+    } else {
+      print_thunderbolt(s);
+    }
+    return 0;
+  }
+  if (sub == "pair") {
+    // pair <member> | pair off | pair rdma=on|off share=auto|<0..0.95>
+    //   decode=auto|here|there
+    if (args.size() < 2) {
+      return usage();
+    }
+    // The member found first.
+    std::this_thread::sleep_for(std::chrono::seconds(seconds(3)));
+    Json j = Json::object();
+    for (std::size_t i = 1; i < args.size(); ++i) {
+      const std::string& a = args[i];
+      if (a == "--seconds") {
+        ++i;
+      } else if (a == "off" || a == "none") {
+        j["pair"] = "";
+      } else if (a.starts_with("rdma=")) {
+        j["pair_rdma"] = a.substr(5) == "on";
+      } else if (a.starts_with("decode=")) {
+        j["pair_decode"] = a.substr(7);
+      } else if (a.starts_with("share=")) {
+        j["pair_share"] =
+            a.substr(6) == "auto" ? 0.0 : std::atof(a.c_str() + 6);
+      } else {
+        j["pair"] = a;
+      }
+    }
+    return configure(j);
   }
   if (sub == "connect") {
     // host:port -- a member reached without Bonjour.
@@ -2370,7 +2537,7 @@ main(int argc, char** argv)
                     cmd == "intent" || cmd == "download" || cmd == "caps" ||
                     cmd == "sources" || cmd == "wired" ||
                     // Read as the engine reads a checkpoint.
-                    cmd == "read-speed" ||
+                    cmd == "read-speed" || cmd == "tp-bench" ||
                     cmd == "auto" || cmd == "agent" ||
                     (cmd == "micro" && !args.empty() && args[0] == "ask") ||
                     // A generate node run.
@@ -2403,11 +2570,17 @@ main(int argc, char** argv)
   std::sort(memory_at.begin(), memory_at.end());
   // "--fleet": a member of its fleet for this run (DESIGN §11) -- what
   // this Mac cannot run, or not now, goes to a member that can.
-  const bool in_fleet = std::erase(args, std::string("--fleet")) > 0;
+  // A model COPIED from a member (`download <id> --from fleet:<member>`):
+  // in the fleet for it, as --fleet is.
+  const bool copying = cmd == "download" && std::ranges::any_of(
+      args, [](const std::string& a) { return a.starts_with("fleet:"); });
+  const bool in_fleet = std::erase(args, std::string("--fleet")) > 0 ||
+                        copying;
   cfg.fleet = in_fleet || cmd == "fleet";
   if (cmd == "fleet") {
     cfg.with_engine = args.empty() || args[0] == "serve" ||
-                      args[0] == "status" || args[0] == "connect";
+                      args[0] == "status" || args[0] == "connect" ||
+                      args[0] == "thunderbolt" || args[0] == "pair";
   }
   auto cr = Controller::create(cfg);
   if (!cr.ok()) {
@@ -2858,6 +3031,46 @@ main(int argc, char** argv)
       return linked ? 0 : 1;
     }
     return jget(*r, "usable", false) ? 0 : 1;
+  }
+  if (cmd == "tp-bench") {
+    // tp-bench '<tensor_parallel json>' [--mb 1,16,64] [--rounds 20]:
+    // a split's link measured with no model, the other Mac running the
+    // other rank (DESIGN §11c).
+    if (args.empty()) {
+      return usage();
+    }
+    const Json tp = Json::parse(args[0], nullptr, false);
+    if (tp.is_discarded() || !tp.is_object()) {
+      return usage();
+    }
+    std::vector<std::size_t> sizes = {64u << 10, 1u << 20, 4u << 20,
+                                      16u << 20, 64u << 20};
+    int rounds = 20;
+    for (std::size_t i = 1; i + 1 < args.size(); ++i) {
+      if (args[i] == "--rounds") {
+        rounds = std::max(1, std::atoi(args[i + 1].c_str()));
+      } else if (args[i] == "--mb") {
+        sizes.clear();
+        std::stringstream ss(args[i + 1]);
+        for (std::string t; std::getline(ss, t, ',');) {
+          sizes.push_back(static_cast<std::size_t>(std::atof(t.c_str()) *
+                                                   (1 << 20)));
+        }
+      }
+    }
+    auto r = c.tp_bench(tp, sizes, rounds);
+    if (!r.ok()) {
+      return fail(r.error());
+    }
+    std::cout << std::format("setup {:.0f} ms\n",
+                             jget(*r, "setup_ms", 0.0));
+    for (const Json& row : jget(*r, "sizes", Json::array())) {
+      std::cout << std::format(
+          "{:>10} bytes  {:>9.1f} us  {:>6.2f} GB/s each way\n",
+          jget<std::uint64_t>(row, "bytes", 0), jget(row, "us", 0.0),
+          jget(row, "gbs", 0.0));
+    }
+    return 0;
   }
   if (cmd == "read-speed") {
     if (args.empty()) {
@@ -4722,8 +4935,11 @@ main(int argc, char** argv)
       std::optional<std::string> at;
       std::int64_t offset = 0;
       bool at_end = false;
+      bool new_page = false;
       for (std::size_t i = 2; i < args.size(); ++i) {
-        if (args[i] == "--at" && i + 1 < args.size()) {
+        if (args[i] == "--new-page" && cmd == "land") {
+          new_page = true;
+        } else if (args[i] == "--at" && i + 1 < args.size()) {
           at = layer_id(args[++i]);
         } else if (args[i] == "--offset" && i + 1 < args.size()) {
           offset = std::atoll(args[++i].c_str());
@@ -4738,7 +4954,7 @@ main(int argc, char** argv)
       }
       auto put = cmd == "land"
                      ? c.place_result(*pid, *aid, onto, at, offset,
-                                      std::nullopt, at_end)
+                                      std::nullopt, at_end, new_page)
                      : c.instantiate(*pid, *aid, onto, at, offset);
       if (!put.ok()) {
         return fail(put.error());
@@ -5489,6 +5705,7 @@ main(int argc, char** argv)
     }
     GenerateVideoRequest req;
     req.project = *pid;
+    int repeat = 1;
     if (auto st = prompt_arg(c, *pid, args[1], &req.prompt,
                              &req.prompt_asset);
         !st.ok()) {
@@ -5513,6 +5730,10 @@ main(int argc, char** argv)
         req.fps = std::atof(next().c_str());
       } else if (a == "--steps") {
         req.steps = std::atoi(next().c_str());
+      } else if (a == "--repeat") {
+        // Made again in this process, as the app makes a clip after the
+        // first: the DiT kept warm (a split rank's share too) found.
+        repeat = std::max(1, std::atoi(next().c_str()));
       } else if (a == "--speed") {
         req.preference = "speed";
       } else if (a == "--quality") {
@@ -5565,6 +5786,15 @@ main(int argc, char** argv)
         req.clean_guide = true;
       } else if (a == "--keep-latents") {
         req.keep_latents = true;
+      } else if (a == "--tp") {
+        // One rank of a DiT split with another Mac (DESIGN §11c), as
+        // JSON: {"rank", "ranks", "heads", "ffn", "params": {"role",
+        // "links", "interfaces", "key", "wait_ms"}}.
+        req.tensor_parallel = Json::parse(next(), nullptr, false);
+        if (!req.tensor_parallel.is_object()) {
+          std::fprintf(stderr, "--tp takes a JSON object\n");
+          return usage();
+        }
       } else if (a == "--song-sound") {
         req.reference_sound = true;
       } else if (a == "--regenerate") {
@@ -5581,11 +5811,39 @@ main(int argc, char** argv)
       req.frames = static_cast<int>(
           seconds * (req.fps > 0 ? req.fps : 24.0) + 0.5);
     }
-    auto j = c.generate_video(req);
-    if (!j.ok()) {
-      return fail(j.error());
+    if (repeat == 1) {
+      auto j = c.generate_video(req);
+      if (!j.ok()) {
+        return fail(j.error());
+      }
+      return named(c, follow(c, *j));
     }
-    return named(c, follow(c, *j));
+    for (int run = 1; run <= repeat; ++run) {
+      auto j = c.generate_video(req);
+      if (!j.ok()) {
+        return fail(j.error());
+      }
+      std::string made;
+      if (const int rc = follow(c, *j, &made); rc != 0) {
+        return rc;
+      }
+      std::string line;
+      if (const auto aid = AssetId::parse(made)) {
+        if (auto v = c.project(*pid)->version(*aid); v.ok()) {
+          line = std::format("{:.2f} s", jget(v->timing, "seconds", 0.0));
+          for (const auto& ph : jget(v->timing, "sequence",
+                                     Json::array())) {
+            if (ph.is_array() && ph.size() == 2) {
+              line += std::format(" · {} {:.2f}", ph[0].get<std::string>(),
+                                  ph[1].get<double>());
+            }
+          }
+        }
+      }
+      std::fprintf(stderr, "  run %d of %d: %s\n", run, repeat,
+                   line.c_str());
+    }
+    return 0;
   }
   if (cmd == "audio") {
     if (args.size() < 2) {

@@ -750,6 +750,13 @@ build_h3_image(const JobSpec& job, const std::vector<RefImage>& refs,
   gen_cfg = merged(gen_cfg, declared_of(job, "generate"));
   gen_cfg = merged(gen_cfg, jget(job.params, "vpipe_generate",
                                  Json::object()));
+  // One rank of a DiT split with another Mac (DESIGN §11c): the partial
+  // sums through the plugin's transport.
+  if (const Json tp = jget(job.params, "tensor_parallel", Json());
+      tp.is_object()) {
+    gen_cfg["tensor_parallel"] =
+        merged(tp, {{"transport", ex::kTpTransport}});
+  }
   stages.push_back(stage("generate-video", "generate-video", gen_in,
                          gen_cfg));
   if (!g.preview_sink.empty()) {
@@ -1303,7 +1310,8 @@ regenerate_spec(const JobSpec& job)
 std::string
 regenerate_stages(const JobSpec& job, const Json& cond, const Json& latent,
                   int width, int height, int frames, double fps,
-                  const Json& t, Json& stages, const Json& draft)
+                  const Json& t, Json& stages, const Json& draft,
+                  bool decode = true)
 {
   const Json spec = regenerate_spec(job);
   const std::string cfg_stage = jget<std::string>(
@@ -1439,6 +1447,13 @@ regenerate_stages(const JobSpec& job, const Json& cond, const Json& latent,
       !dit.empty()) {
     gen_cfg["dit_dir"] = dit.string();
   }
+  // A rank of a split clip (DESIGN §11c) is the refine's rank too: its
+  // channel the refine's own, opened as the draft's let go.
+  if (const Json tp = jget(job.params, "tensor_parallel", Json());
+      tp.is_object()) {
+    gen_cfg["tensor_parallel"] =
+        merged(tp, {{"transport", ex::kTpTransport}});
+  }
   // generate-video: 0 cond, 2 model, 7 / 8 the references' rows (in
   // context), 9 model_config, 11 init_latent.
   Json gen_in = Json::array();
@@ -1453,9 +1468,16 @@ regenerate_stages(const JobSpec& job, const Json& cond, const Json& latent,
   }
   stages.push_back(stage("regenerate", "generate-video", std::move(gen_in),
                          std::move(gen_cfg)));
+  if (!decode) {
+    return "regenerate";
+  }
   // The released decoder, or -- its Fast Decoder on -- the release's
   // fast one, with the tier the refine runs.
   Json dec = with_vae({{"dtype", "f16"}}, job);
+  // The decoder kept built for the next clip, by the Mac's rule.
+  if (const double keep = keep_models_s(job); keep > 0) {
+    dec["keep_loaded"] = keep;
+  }
   if (!job.model.fast_decoder.empty()) {
     dec["fast_decoder"] = job.model.fast_decoder.string();
     dec = merged(dec, tiered);
@@ -2213,6 +2235,26 @@ build_video(const JobSpec& job, const std::optional<RefImage>& first,
   gen_cfg = merged(gen_cfg, declared_of(job, "generate"));
   gen_cfg = merged(gen_cfg, jget(job.params, "vpipe_generate",
                                  Json::object()));
+  // One rank of a DiT split with another Mac (DESIGN §11c): the partial
+  // sums through the plugin's transport -- and, with a `decode_share`,
+  // its decode split alike (vae-decode's tensor_parallel).
+  Json split_decode_tp;
+  if (const Json tp = jget(job.params, "tensor_parallel", Json());
+      tp.is_object()) {
+    gen_cfg["tensor_parallel"] =
+        merged(tp, {{"transport", ex::kTpTransport}});
+    if (tp.contains("decode_share")) {
+      split_decode_tp = gen_cfg["tensor_parallel"];
+      gen_cfg["tensor_parallel"].erase("decode_share");
+    }
+  }
+  // Its DiT kept BUILT for the next clip (DESIGN §4n), by this Mac's
+  // rule -- a split rank's share too -- where vpipe finds room beside the
+  // decode. Not a draft a 2K refine follows: the refine builds a DiT of
+  // its own, which the draft's must make room for.
+  if (const double keep = keep_models_s(job); keep > 0 && !regen) {
+    gen_cfg["keep_loaded"] = keep;
+  }
   stages.push_back(stage("generate-video", "generate-video", gen_in,
                          gen_cfg));
   if (!g.preview_sink.empty()) {
@@ -2240,17 +2282,10 @@ build_video(const JobSpec& job, const std::optional<RefImage>& first,
     }
   }
 
-  // The picture: decoded in F16 and written in the project's intermediate
-  // format -- ProRes (12 bits in 4444, 10 in 422) or HEVC Main10, never
-  // the eight the FFmpeg path rounds to -- tagged BT.709, which is what
-  // the model's sRGB-encoded BT.709 samples are taken as in video. A
-  // draft is not decoded: its latent is regenerated at the size asked,
-  // and that is decoded.
-  std::string decoded = "vae-decode";
-  if (regen) {
-    // In context, the draft's pixels too: decoded whole, as one clip --
-    // its stage preview read from that decode -- for the reference
-    // encoder's vision tower.
+  // In context, the draft's pixels too: decoded whole, as one clip --
+  // its stage preview read from that decode -- for the reference
+  // encoder's vision tower.
+  const auto draft_clip_of = [&]() {
     Json draft_clip;
     if (jget(regenerate_spec(job), "in_context", false)) {
       const std::string vae = vae_source(job, stages);
@@ -2268,6 +2303,60 @@ build_video(const JobSpec& job, const std::optional<RefImage>& first,
                               3 / (1 << 20) + 64}}));
       draft_clip = port("draft-clip");
     }
+    return draft_clip;
+  };
+
+  // One RANK of a DiT split with another Mac that does not keep the clip
+  // (DESIGN §11c): its denoise alone -- the latent written, the proof it
+  // ran -- nothing decoded, no sound, no file; the other rank makes the
+  // clip (the soundtrack's port left unread, as a song's clip leaves it).
+  // A clip past 768P: the draft and its refine, both split, the refine's
+  // latent the one written (in context, the draft decoded for its
+  // reference encoder, as the other rank's is).
+  if (jget(job.params, "denoise_only", false)) {
+    std::string last = "generate-video";
+    if (regen) {
+      last = regenerate_stages(job, cond, port("generate-video"), width,
+                               height, frames, fps,
+                               jget(job.params, "regenerate_tuning",
+                                    Json::object()),
+                               stages, draft_clip_of(), /*decode=*/false);
+    }
+    g.denoised = job.output_dir / std::format("{}-denoised.vpt", jid);
+    g.video_part.clear();
+    g.audio_part.clear();
+    stages.push_back(stage("denoised", "save-tensor",
+                           Json::array({port(last, 0)}),
+                           {{"path", g.denoised.string()}}));
+    // Its share of the DECODE too, where the two split it: its chunks
+    // decoded and handed to the other rank, nothing emitted here.
+    if (!regen && split_decode_tp.is_object()) {
+      const std::string vae = vae_source(job, stages);
+      Json dec = with_vae({{"dtype", "f16"}}, job);
+      if (const double keep = keep_models_s(job); keep > 0) {
+        dec["keep_loaded"] = keep;
+      }
+      dec["tensor_parallel"] = split_decode_tp;
+      stages.push_back(stage("vae-decode", "vae-decode",
+                             Json::array({port("generate-video"),
+                                          port(vae)}),
+                             std::move(dec)));
+    }
+    g.spec = {{"id", "valtz-" + jid},
+              {"stages", stages},
+              {"subpipelines", Json::array()}};
+    return g;
+  }
+
+  // The picture: decoded in F16 and written in the project's intermediate
+  // format -- ProRes (12 bits in 4444, 10 in 422) or HEVC Main10, never
+  // the eight the FFmpeg path rounds to -- tagged BT.709, which is what
+  // the model's sRGB-encoded BT.709 samples are taken as in video. A
+  // draft is not decoded: its latent is regenerated at the size asked,
+  // and that is decoded.
+  std::string decoded = "vae-decode";
+  if (regen) {
+    const Json draft_clip = draft_clip_of();
     decoded = regenerate_stages(job, cond, port("generate-video"), width,
                                 height, frames, fps,
                                 jget(job.params, "regenerate_tuning",
@@ -2280,9 +2369,18 @@ build_video(const JobSpec& job, const std::optional<RefImage>& first,
     }
   } else {
     const std::string vae = vae_source(job, stages);
+    // The video decoder kept built for the next clip, by the Mac's rule
+    // (DESIGN §4n), as its DiT is.
+    Json dec = with_vae({{"dtype", "f16"}}, job);
+    if (const double keep = keep_models_s(job); keep > 0) {
+      dec["keep_loaded"] = keep;
+    }
+    if (split_decode_tp.is_object()) {
+      dec["tensor_parallel"] = split_decode_tp;
+    }
     stages.push_back(stage("vae-decode", "vae-decode",
                            Json::array({port("generate-video"), port(vae)}),
-                           with_vae({{"dtype", "f16"}}, job)));
+                           std::move(dec)));
   }
   // A continuation's SEAM: its frames matched to the tail the model was
   // given -- the step in tone (the shadows most) and in framing it came
@@ -3324,6 +3422,170 @@ build_export(const JobSpec& job)
   return g;
 }
 
+namespace {
+
+// upscale-video by RelayVSR (the `upscale` block's `kind` "relayvsr";
+// vpipe's relayvsr-upscale, DESIGN §4f): frames in, the same frames at
+// exactly four times their size out, one for one. Read at the clip's
+// own size where four times it reaches the size asked (`read_at`
+// "source", the default: all of its detail read, the 4x frames fitted
+// down by lanczos -- the ring of keys and values, what grows with the
+// frame, larger), or at a quarter of the size asked ("quarter": the
+// made frames that size, the least memory); fitted to the size where
+// four times the read is not it. The frames go in 8-bit through a
+// valtz-source GATED by a valtz-tap before the writer: a frame leaves at
+// most `window` - 1 frames after it came in, its window complete.
+Result<BuiltGraph>
+build_relayvsr_video(const JobSpec& job, const Json& up)
+{
+  const JobInput& in = job.inputs.front();
+  const int W = jget(job.params, "width", 0);
+  const int H = jget(job.params, "height", 0);
+  const int scale = std::max(2, jget(up, "scale", 4));
+  const Json t = jget(job.params, "tuning", Json::object());
+  const int window = std::clamp(
+      jget(t, "window", jget(up, "window", 16)), 2, 64);
+  const bool own = jget<std::string>(t, "read_at", "source") != "quarter";
+  const int SW = in.info.frame.width;
+  const int SH = in.info.frame.height;
+  int IW = std::max(8, static_cast<int>(std::lround(
+                           static_cast<double>(W) / scale)));
+  int IH = std::max(8, static_cast<int>(std::lround(
+                           static_cast<double>(H) / scale)));
+  if (own && SW >= IW && SH >= IH) {
+    IW = SW;
+    IH = SH;
+  }
+  const Rational rate = in.info.frame_rate.num > 0 ? in.info.frame_rate
+                                                   : Rational{24, 1};
+  const double fps = rate.to_double();
+  const std::int64_t total = in.info.frame_count;
+  const std::int64_t first = std::max<std::int64_t>(
+      0, jget<std::int64_t>(job.params, "first", 0));
+  std::int64_t count = jget<std::int64_t>(job.params, "count", -1);
+  if (count <= 0) {
+    count = total > first ? total - first : 0;
+  }
+  if (total > 0) {
+    count = std::min(count, total - first);
+  }
+  if (count <= 0) {
+    return make_error(Code::InvalidArgument, "the clip has no frames there");
+  }
+
+  BuiltGraph g;
+  const std::string jid = job.id.str();
+  const ClipFormat kept = clip_format(job);
+  g.output = job.output_dir / std::format("{}.{}", jid, kept.ext);
+  g.sound = kept.sound;
+  fs::path written = g.output;
+  if (in.info.has_audio) {
+    g.video_part = job.output_dir / std::format("{}-picture.{}", jid,
+                                                kept.ext);
+    g.audio_part = in.path;
+    g.audio_is_source = true;
+    g.audio_start = static_cast<double>(first) / fps;
+    g.audio_duration = static_cast<double>(count) / fps;
+    written = g.video_part;
+  }
+  g.width = W;
+  g.height = H;
+  g.frames = count;
+
+  MovieFeed m;
+  m.stage = "read";
+  m.path = in.path;
+  m.rate = rate;
+  m.first = first;
+  m.count = count;
+  m.size = {SW, SH};
+  m.sample = media::Sample::U8;
+  const auto& c = in.info.frame.color;
+  m.tags = {{"color_primaries", static_cast<int>(c.primaries)},
+            {"color_transfer", static_cast<int>(c.transfer)},
+            {"color_matrix", static_cast<int>(c.matrix)},
+            {"color_full_range", true},
+            {"fps", fps},
+            {"fps_num", rate.num},
+            {"fps_den", rate.den}};
+  // A group is a keyframe's span (window - 1 frames); the stage holds
+  // back at most that and the keyframe closing it. One group more in
+  // flight holds its frames read and made (the ring and the models are
+  // the stage's own booking).
+  const int G = window - 1;
+  const std::uint64_t group_bytes =
+      static_cast<std::uint64_t>(G) * 3 *
+      (static_cast<std::uint64_t>(SW) * SH +
+       static_cast<std::uint64_t>(IW) * IH +
+       2 * static_cast<std::uint64_t>(scale * IW) * (scale * IH));
+  m.gate = {"tap", G, window,
+            std::max(0, jget(job.params, "ahead", jget(up, "ahead", 0))),
+            group_bytes};
+  g.movie = std::move(m);
+
+  Json stages = Json::array();
+  stages.push_back(stage("read", ex::kSourceType, Json::array(),
+                         Json::object()));
+  std::string last = "read";
+  if (IW != SW || IH != SH) {
+    // Bicubic, as its makers degrade their training clips' frames.
+    stages.push_back(stage("fit-in", "image-resample",
+                           Json::array({port("read")}),
+                           {{"width", IW}, {"height", IH},
+                            {"fit", "stretch"},
+                            {"algorithm", "bicubic"}}));
+    last = "fit-in";
+  }
+  const auto seed = jget<std::int64_t>(job.params, "seed", 0);
+  Json up_cfg = {{"hf_dir", job.model.dir.string()},
+                 {"window", window},
+                 // The release's own seed where none is asked.
+                 {"seed", seed > 0 ? seed : 42},
+                 {"output_dtype", "u8"},
+                 // The 4x frames it makes, so vpipe's plan books the ring
+                 // at their read -- a VCD clip planned small on a 16 GB
+                 // Mac, one too big refused before anything loads. (A vpipe
+                 // from before the key books 960 x 544 whatever comes.)
+                 {"output_width", scale * IW},
+                 {"output_height", scale * IH}};
+  // Settings › Upscaling's arithmetic (vpipe 81891d62): the int8 tiers,
+  // SageAttention and its int8 P*V, the ANE's feed-forward and its share.
+  {
+    const Json all = accel_of(job);
+    for (const char* k : {"i8_gemm", "i8_gemm_tier", "sage_attn",
+                          "sage_pv8", "ane_ffn", "ane_rows"}) {
+      if (all.contains(k)) {
+        up_cfg[k] = all[k];
+      }
+    }
+  }
+  stages.push_back(stage("upscale", "relayvsr-upscale",
+                         Json::array({port(last)}), std::move(up_cfg)));
+  last = "upscale";
+  if (scale * IW != W || scale * IH != H) {
+    stages.push_back(stage("fit", "image-resample",
+                           Json::array({port(last)}),
+                           {{"width", W}, {"height", H}, {"fit", "stretch"},
+                            {"algorithm", "lanczos"}}));
+    last = "fit";
+  }
+  stages.push_back(stage("tap", ex::kTapType, Json::array({port(last)}),
+                         {{ex::kTapMaxFrames, count}}));
+  stages.push_back(stage("write", "avf-save-video",
+                         Json::array({port("tap")}),
+                         {{"path", written.string()},
+                          {"codec", kept.codec},
+                          {"alpha", "drop"},
+                          {"fps", fps},
+                          {"frames", count}}));
+  g.spec = {{"id", "valtz-" + jid},
+            {"stages", stages},
+            {"subpipelines", Json::array()}};
+  return g;
+}
+
+}
+
 Result<BuiltGraph>
 build_upscale_video(const JobSpec& job)
 {
@@ -3342,6 +3604,9 @@ build_upscale_video(const JobSpec& job)
   // the restored frames are fitted back to the size asked for.
   const Json up = jget(jget(job.model.engine, "vpipe", Json::object()),
                        "upscale", Json::object());
+  if (jget<std::string>(up, "kind", "") == "relayvsr") {
+    return build_relayvsr_video(job, up);
+  }
   const int grid = std::max(16, jget(up, "grid", 128));
   const int PW = ceil_to(W, grid);
   const int PH = ceil_to(H, grid);
@@ -4414,6 +4679,7 @@ untune_stages(const JobSpec& job, Json& graph)
       "generate-image",  "generate-video",        "generate-audio",
       "text-to-speech",  "vae-decode",            "vae-encode",
       "latent-upscale",  "diffusion-conditioner", "video-ref-encoder",
+      "relayvsr-upscale",
   };
   // A graph's stages, and those of the subpipelines it holds.
   auto walk = [&](auto& self, Json& g) -> void {

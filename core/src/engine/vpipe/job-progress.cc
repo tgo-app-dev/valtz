@@ -28,6 +28,8 @@ phase_of(std::string_view desc)
     {"audio vae decode", kPhaseSound},
     {"encoding references", kPhaseReferences},
     {"restore", kPhaseRestore},
+    // RelayVSR's frames made, uncounted, before its writer counts them.
+    {"relayvsr upscale", kPhaseDenoise},
     {"quantize", kPhaseQuantize},
     {"calibrate", kPhaseCalibrate},
   };

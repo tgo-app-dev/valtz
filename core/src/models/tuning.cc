@@ -126,6 +126,18 @@ preset_table(const Json& vp, std::string_view preference,
   if (!ctx.matrix_cores) {
     lay("without_matrix_cores");
   }
+  // ...and on a Mac of less memory than its `small_memory` table's
+  // `below_gb`, that table's (RelayVSR's: its weights held in int8 at Per
+  // Token, 4.3 GB against 8.4, so a small clip fits a 16 GB Mac).
+  const Json sm = jget(vp, "small_memory", Json());
+  if (sm.is_object() && ctx.ram_gb > 0 &&
+      ctx.ram_gb < jget(sm, "below_gb", 0.0)) {
+    const Json c = jget(sm, std::string(preference).c_str(),
+                        Json::object());
+    for (auto it = c.begin(); c.is_object() && it != c.end(); ++it) {
+      t[it.key()] = it.value();
+    }
+  }
   return t;
 }
 
@@ -453,8 +465,8 @@ offers(const ModelEntry& m, const TuningContext& ctx,
   // keeps the draft's faces and lettering and adds detail; RELEASE is
   // NVIDIA's own grid, from 0.909 -- about 9% of the draft kept, which
   // drew a 768P draft's Japanese-looking woman as another and garbled its
-  // sign's words (measured 2026-10-31, tgo-m5-3, 1920 x 1088 x 22). The
-  // draft's at every preference: what changes there is the arithmetic.
+  // sign's words (measured 2026-10-31 on an M5 Ultra, 1920 x 1088 x 22).
+  // The draft's at every preference: what changes there is the arithmetic.
   // A refiner without one (in context: HyperFlow's grid its start) has
   // no choice.
   if (upscale && jget(jget(vp, "regenerate", Json::object()),

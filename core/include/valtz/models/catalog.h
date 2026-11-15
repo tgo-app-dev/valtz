@@ -92,6 +92,12 @@ struct ModelEntry {
   // of a repo's models a download pulls -- required where one repo
   // publishes several.
   std::string              fetch_variant;
+  // What a one-file model needs BESIDE its file (catalog `beside`, paths
+  // from the file's folder): Pika H3 Flex's manifest.json, its sampling
+  // contract -- without it the adapter runs as a plain LoRA, and a split
+  // clip's two ranks sample apart. Missing, the model reads as a download
+  // not finished (partial), never installed.
+  std::vector<std::string> beside;
   // A CoreML archive's (vpipe-supplement's: `file` the .tar): the folder
   // model-fetch unpacks it into, beside it, which holds the package the
   // stage loads (catalog `package`).

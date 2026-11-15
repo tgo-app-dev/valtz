@@ -1529,7 +1529,8 @@ Core::asset_op(const std::string& request_json)
       }
       auto put = c.place_result(*pid, *aid, onto, at,
                                 jget<std::int64_t>(*j, "offset", 0), job,
-                                jget(*j, "at_end", false));
+                                jget(*j, "at_end", false),
+                                jget(*j, "new_page", false));
       return put.ok() ? ok({{"asset", put->first.str()},
                             {"layer", put->second}})
                       : err(put.error());

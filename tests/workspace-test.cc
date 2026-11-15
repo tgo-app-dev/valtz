@@ -233,6 +233,90 @@ TEST(workspace, undo_redo_coalesce_and_join)
   CHECK(w.dirty());
 }
 
+// A command TAKEN UP AGAIN by a join -- a job's result, then the micro
+// agent's name for it -- is out of the history's list while it records,
+// yet still where the project stands: read without it, a project made by
+// `valtzctl new` read clean while a clip's naming joined its request, and
+// valtzctl's save as it ended was skipped -- the clip left in the
+// working copy. Dirty while it writes, clean where a save stands at it,
+// its blobs held; a save made while it records holds what it had then.
+TEST(workspace, a_command_taken_up_again_is_where_the_project_stands)
+{
+  const fs::path root = test::temp_dir("ws-rejoin");
+  auto made = Workspace::create(root / "J.valtz", "J", root / "work");
+  REQUIRE_OK(made);
+  Workspace& w = **made;
+  Project& p = w.project();
+  CHECK(!w.dirty());
+  std::uint64_t job = 0;
+  AssetId c;
+  {
+    auto cmd = w.undo().command("generate.video", {{"name", "c"}});
+    auto m = p.add_text("c", "requested");
+    REQUIRE_OK(m);
+    c = m->id;
+    job = cmd.seq();
+  }
+  CHECK(w.dirty());
+  {
+    auto cmd = w.undo().join(job);
+    CHECK(cmd.seq() == job);
+    CHECK(w.dirty());                   // read clean here before
+    REQUIRE_OK(p.rename_asset(c, "c, made"));
+    CHECK(w.dirty());
+  }
+  CHECK(w.dirty());
+  REQUIRE_OK(w.save());
+  CHECK(!w.dirty());
+  {
+    // Taken up again after the save: clean until it writes, and what it
+    // writes is held.
+    auto cmd = w.undo().join(job);
+    CHECK(cmd.seq() == job);
+    CHECK(!w.dirty());                  // read dirty here before
+    const std::size_t held = w.undo().held_blobs().size();
+    REQUIRE_OK(p.add_text("d", "named"));
+    CHECK(w.dirty());
+    CHECK(w.undo().held_blobs().size() == held + 1);
+  }
+  CHECK(w.dirty());
+  REQUIRE_OK(w.save());
+  CHECK(!w.dirty());
+  {
+    // Saved while it records: what it had is saved, what it writes
+    // after is not -- though its seq is the saved one.
+    auto cmd = w.undo().join(job);
+    REQUIRE_OK(p.rename_asset(c, "c, named"));
+    CHECK(w.dirty());
+    REQUIRE_OK(w.save());
+    CHECK(!w.dirty());
+    REQUIRE_OK(p.rename_asset(c, "c, renamed"));
+    CHECK(w.dirty());
+  }
+  CHECK(w.dirty());
+  REQUIRE_OK(w.save());
+  CHECK(!w.dirty());
+  {
+    // A new command saved while it records, nothing after: the save
+    // stands at it.
+    auto cmd = w.undo().command("asset.rename", {}, c.str());
+    REQUIRE_OK(p.rename_asset(c, "c, kept"));
+    REQUIRE_OK(w.save());
+    CHECK(!w.dirty());
+  }
+  CHECK(!w.dirty());
+  REQUIRE_OK(w.undo().undo());
+  CHECK(p.asset(c)->name == "c, renamed");
+  CHECK(w.dirty());
+  // Resumed as left: dirty.
+  REQUIRE_OK(w.close(false));
+  made->reset();
+  WorkspaceReport report;
+  auto again = Workspace::open(root / "J.valtz", root / "work", &report);
+  REQUIRE_OK(again);
+  CHECK(report.recovered);
+}
+
 // A LARGE record's history kept COMPACT (project/undo.h): a markup of
 // 3000 objects moved one at a time keeps, for each command but the last,
 // the bytes that changed -- the undo table a fraction of whole copies --
