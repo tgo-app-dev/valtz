@@ -19,9 +19,11 @@ struct FleetServingOverlay: View {
             VStack(spacing: 16) {
                 MarkView(animating: false, sweep: sweeps, blue: true)
                     .frame(width: 200, height: 200)
-                Text(serving.split
+                Text(!serving.split
+                     ? String(localized: "Working on a fleet job for \(serving.from)")
+                     : serving.op == "generate-video"
                      ? String(localized: "Working on half of a clip for \(serving.from)")
-                     : String(localized: "Working on a fleet job for \(serving.from)"))
+                     : String(localized: "Working on half of a picture for \(serving.from)"))
                     .font(.title3.weight(.semibold))
                 if !serving.title.isEmpty {
                     Text(verbatim: serving.title)

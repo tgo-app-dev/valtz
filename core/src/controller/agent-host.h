@@ -199,6 +199,9 @@ public:
     // The person's question it asked (ask_user), and the answer.
     std::optional<std::string>          answer;
     std::string                         writing;
+    // The helper's live speed, the last it told (agent::Backend::
+    // set_live_speed): the status row's meter. Null until one is told.
+    Json                                live_speed;
     std::string                         error;
     // Its message as the app words it: {message, key, args}.
     Json                                error_fields = Json::object();

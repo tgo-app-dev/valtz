@@ -1226,6 +1226,20 @@ public:
     it->sink(ev);
   }
 
+  // A job's streamed words as its chat writes them -- `data` beside them
+  // (a chat's live "speed"), the words empty while a prompt is read.
+  void
+  text(JobId id, const std::string& words, Json data = Json())
+  {
+    auto it = find(id);
+    engine::JobEvent ev;
+    ev.job = id;
+    ev.kind = engine::JobEventKind::Text;
+    ev.text = words;
+    ev.data = std::move(data);
+    it->sink(ev);
+  }
+
   // Its result, `file` -- and what it made beside it, `data` (a
   // transcript's lines) -- then the end.
   void
@@ -1379,7 +1393,7 @@ public:
         installed.push_back(m.id);
       }
     }
-    return {{"ops", {"generate-image", "chat"}},
+    return {{"ops", ops},
             {"installed", installed},
             {"runs", {"image/generate/krea2-turbo"}},
             {"assistant", "qwen3.5-9b"},
@@ -1416,6 +1430,8 @@ public:
     return offered.size();
   }
 
+  // What it says it runs.
+  Json                     ops = Json::array({"generate-image", "chat"});
   std::mutex               mu;
   std::vector<std::string> offered;
 };
@@ -12355,9 +12371,12 @@ struct RegenBench {
   HeldEngine* engine = nullptr;
   ProjectId pid;
 
+  // `fleet_config`: in that fleet (its configuration's file), else none.
   explicit RegenBench(const char* name, bool refiner, bool pika = false,
-                      bool ref2va = false, bool edit = false)
-      : root(test::temp_dir(name))
+                      bool ref2va = false, bool edit = false,
+                      const fs::path& fleet_config = {})
+      : root(fleet_config.empty() ? test::temp_dir(name)
+                                  : fleet_config.parent_path())
   {
     auto install = [&](const std::string& f) {
       const fs::path file = root / "models" / f;
@@ -12404,6 +12423,10 @@ struct RegenBench {
     cfg.model_roots = {root / "models"};
     cfg.with_engine = false;
     cfg.extensions = false;
+    if (!fleet_config.empty()) {
+      cfg.fleet = true;
+      cfg.fleet_config = fleet_config;
+    }
     cfg.engine_factory = [this] {
       auto e = std::make_unique<HeldEngine>();
       engine = e.get();
@@ -13173,6 +13196,97 @@ TEST(controller, a_continuation_through_its_end_is_cleaned)
 // by one reply, a later one named at once -- and writes a Ref2VA clip's
 // words for its 2K pass, the build held for it and going on with the
 // rule's words when it says nothing usable or is stopped.
+// A CLIP HELD FOR THE MICRO AGENT'S WORDS IS THIS MAC'S WORK (reported
+// 2026-11-15: a Ref2VA clip past 768P with a picture, paired, ran whole on
+// the member, "this Mac is busy" -- it was not). Its build is held for the
+// 2K pass's words, the micro agent's naming of the new prompt queued
+// behind them; released as the words land, the build found this Mac
+// "busy": itself, listed since it was asked, and the naming chat. Local
+// first, a free member took it whole (and a paired split was refused). A
+// background chat, and the build being placed, are not this Mac's work:
+// it runs here.
+TEST(controller, a_clip_held_for_its_words_runs_here_not_on_a_member)
+{
+  if (!std::getenv("VALTZ_TEST_FLEET")) {
+    SKIP("set VALTZ_TEST_FLEET=1 (two members on this Mac's loopback)");
+  }
+  const fs::path root = test::temp_dir("held-here");
+  const std::string key = fleet::derive_key("Held", "a-long-test-secret");
+  auto conf = [&](const char* name, bool discoverable) {
+    fleet::Config c;
+    c.member_id = Uuid::v7().str();
+    c.member_name = name;
+    c.fleet = "Held";
+    c.key = key;
+    c.discoverable = discoverable;
+    (void)fleet::save_config(root / (std::string(name) + ".json"), c);
+  };
+  conf("member", true);
+  conf("here", false);
+  OfferedHost host;
+  host.ops = Json::array({"generate-video", "chat"});
+  auto member = fleet::make_fleet(root / "member.json",
+                                  root / "member-files", host);
+  RegenBench b("held-here", true, false, true, false, root / "here.json");
+  REQUIRE(b.ctl && b.engine);
+  // The micro agent here (LFM3's files).
+  const fs::path lfm = b.root / "models" / "LiquidAI" / "LFM3-VL-2B";
+  fs::create_directories(lfm);
+  std::ofstream(lfm / "config.json") << R"({"model_type": "lfm3_vl"})";
+  std::ofstream(lfm / "model.safetensors") << "w";
+  std::ofstream(lfm / "tokenizer.json") << "{}";
+  b.ctl->rescan_models();
+  REQUIRE(b.ctl->micro_model() != nullptr);
+  int port = 0;
+  REQUIRE(eventually([&] {
+    port = jget(member->status(), "port", 0);
+    return port > 0;
+  }, 10));
+  b.ctl->fleet_connect("127.0.0.1", port);
+  REQUIRE(eventually([&] {
+    const Json ms = jget(b.ctl->fleet_status(), "members", Json::array());
+    return ms.size() == 1 &&
+           jget(jget(ms[0], "self", Json::object()), "accepting", false);
+  }, 15));
+  // A Ref2VA clip past 768P with a picture, a new prompt: held for its
+  // words, the naming queued behind them.
+  REQUIRE(write_png(b.root / "woman.png", 16, 16, {0xc0, 0x30, 0x30, 0xff}));
+  auto pic = import_and_wait(*b.ctl, b.pid, b.root / "woman.png");
+  REQUIRE(pic);
+  GenerateVideoRequest ref;
+  ref.project = b.pid;
+  ref.model = "minimax-h3-ref2va";
+  ref.references = {*pic};
+  ref.row = {*pic};
+  ref.prompt = "<valtz_ref_img_0> walks along the shore at dusk.";
+  ref.width = 2560;
+  ref.height = 1440;
+  ref.frames = 39;
+  auto r1 = b.ctl->generate_video(ref);
+  REQUIRE_OK(r1);
+  CHECK(b.engine->held_of(engine::kOpGenerateVideo).empty());
+  REQUIRE(eventually([&] {
+    return b.engine->held_of(engine::kOpChat).size() == 2;
+  }, 10));
+  const engine::JobSpec* words = b.job(engine::kOpChat, 1);
+  REQUIRE(words != nullptr);
+  b.engine->turn(words->id,
+                 {{"text", "Picture 1: woman with short grey hair in a red "
+                           "coat"}});
+  // Released, the naming still queued: run here, never offered.
+  const engine::JobSpec* s = b.job(engine::kOpGenerateVideo, 1);
+  REQUIRE(s != nullptr);
+  CHECK(s->id == *r1);
+  CHECK(host.count() == 0);
+  // A free member still takes a clip while one really runs here.
+  ref.prompt = "<valtz_ref_img_0> waves from the pier.";
+  ref.width = 832;
+  ref.height = 480;
+  auto r2 = b.ctl->generate_video(ref);
+  REQUIRE_OK(r2);
+  CHECK(eventually([&] { return host.count() == 1; }, 15));
+}
+
 TEST(controller, the_micro_agent_names_prompts_and_writes_2k_words)
 {
   RegenBench b("micro", true, false, true);
@@ -19933,6 +20047,108 @@ TEST(controller, ternary_bonsai_helps_at_f16_without_a_drafter)
 // "done" on it (2026-11-05, Ternary-Bonsai 2 27B) -- and one cut off at
 // its budget, well inside its context, is kept and said: the chat, the
 // transcript, the state; not a context full.
+// THE LIVE SPEED (the chat's meter): the helper's turn asks text-chat for
+// it (stream_speed), and what its stream says -- a prefill piece's beat of
+// no words, then the decode's beside its words -- is the session's state's
+// `live_speed` and an "agent.speed" event, the decode's at most every
+// quarter of a second; the words go on as before.
+TEST(agent, a_turns_live_speed_is_told_as_it_goes)
+{
+  auto root = test::temp_dir("agent-live-speed");
+  const fs::path dir =
+      root / "models" / "prism-ml" / "Ternary-Bonsai-2-27B-gguf";
+  fs::create_directories(dir);
+  for (const char* f : {"Ternary-Bonsai-2-27B-PTQ1_0.gguf",
+                        "Ternary-Bonsai-2-27B-mmproj-BF16.gguf"}) {
+    std::ofstream(dir / f) << "GGUF";
+  }
+  ControllerConfig cfg;
+  cfg.support_root = root / "support";
+  cfg.model_roots = {root / "models"};
+  cfg.with_engine = false;
+  cfg.extensions = false;
+  HeldEngine* engine = nullptr;
+  cfg.engine_factory = [&engine] {
+    auto e = std::make_unique<HeldEngine>();
+    engine = e.get();
+    return std::unique_ptr<engine::Engine>(std::move(e));
+  };
+  auto made = Controller::create(cfg);
+  REQUIRE_OK(made);
+  REQUIRE(engine != nullptr);
+  Controller& ctl = **made;
+  REQUIRE_OK(ctl.choose_assistant("ternary-bonsai-2-27b"));
+  auto pid = ctl.create_project(root / "S.valtz", "speed");
+  REQUIRE_OK(pid);
+  AgentRequest req;
+  req.project = *pid;
+  req.prompt = "Say hello";
+  req.review = false;
+  req.skills = "none";
+  auto id = ctl.agent_start(req);
+  REQUIRE_OK(id);
+  std::vector<JobId> turns;
+  REQUIRE(eventually([&] {
+    turns = engine->held_of(std::string(engine::kOpAgentTurn));
+    return !turns.empty();
+  }, 15));
+  // A prompt read in two pieces, then the reply written.
+  engine->text(turns[0], "",
+               {{"speed", {{"phase", "prefill"}, {"prefill_tps", 1800.0},
+                           {"prefill_tokens", 1024},
+                           {"prefill_done", 1024},
+                           {"prefill_total", 2048}}}});
+  engine->text(turns[0], "",
+               {{"speed", {{"phase", "prefill"}, {"prefill_tps", 1700.0},
+                           {"prefill_tokens", 1024},
+                           {"prefill_done", 2048},
+                           {"prefill_total", 2048}}}});
+  for (int k = 1; k <= 20; ++k) {
+    engine->text(turns[0], "hi ",
+                 {{"speed", {{"phase", "decode"}, {"prefill_tps", 1700.0},
+                             {"decode_tps", 40.0 + k}, {"decoded", k}}}});
+  }
+  const Json mid = ctl.agent_state(*id);
+  const Json live = jget(mid, "live_speed", Json());
+  CHECK(jget<std::string>(live, "phase", "") == "decode");
+  CHECK(jget(live, "decode_tps", 0.0) == 60.0);
+  CHECK(jget(live, "decoded", 0) == 20);
+  std::vector<Json> speeds;
+  std::string words;
+  {
+    Event ev;
+    while (ctl.events().wait(ev, 50)) {
+      if (ev.kind == "agent.speed") {
+        speeds.push_back(jget(ev.data, "speed", Json()));
+      } else if (ev.kind == "agent.text") {
+        words += jget<std::string>(ev.data, "text", "");
+      }
+    }
+  }
+  REQUIRE(!speeds.empty());
+  {
+    // Both prefill pieces told; the twenty decode beats within a quarter
+    // of a second told once (or twice), not twenty times.
+    int reads = 0, writes = 0;
+    for (const auto& sp : speeds) {
+      (jget<std::string>(sp, "phase", "") == "prefill" ? reads : writes)++;
+    }
+    CHECK(reads == 2);
+    CHECK(writes >= 1 && writes <= 3);
+    CHECK(jget(speeds.front(), "prefill_tps", 0.0) == 1800.0);
+    CHECK(words.find("hi hi") != std::string::npos);
+  }
+  engine->turn(turns[0], {{"text", "hi"}, {"content", "hi"},
+                          {"finish", "stop"}, {"prefilled", 2048},
+                          {"decoded", 20}, {"ctx_pos", 2068}});
+  REQUIRE(eventually([&] {
+    return jget<std::string>(ctl.agent_state(*id), "state", "") == "done";
+  }, 15));
+  // The last told stays for the row, after the turn.
+  CHECK(jget(jget(ctl.agent_state(*id), "live_speed", Json()), "decoded",
+             0) == 20);
+}
+
 TEST(agent, a_reply_cut_off_at_its_limit_is_said)
 {
   auto root = test::temp_dir("agent-cut-off");

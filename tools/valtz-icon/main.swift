@@ -6,7 +6,8 @@
 //   valtz-icon --size 1024 --out icon.png [--mark | --fit] [--glass]
 //              [--width w --height h] [--supersample n]
 //              [--motion 0..1 --phase p] [--sweep 0..1] [--flat]
-//              [--light-ground] [--shadow]
+//              [--light-ground] [--shadow] [--blue]   (--blue: a fleet
+//              job's colour)
 
 import CoreGraphics
 import Foundation
@@ -25,6 +26,7 @@ var sweep: Float = -1
 var flat = false
 var lightGround = false
 var shadow = false
+var blue: Float = 0
 var args = CommandLine.arguments.dropFirst().makeIterator()
 while let a = args.next() {
     switch a {
@@ -42,6 +44,7 @@ while let a = args.next() {
     case "--flat": flat = true
     case "--light-ground": lightGround = true
     case "--shadow": shadow = true
+    case "--blue": blue = 1
     default:
         FileHandle.standardError.write(Data("valtz-icon: unknown \(a)\n".utf8))
         exit(2)
@@ -70,6 +73,7 @@ MainActor.assumeIsolated {
     r.flat = flat
     r.lightGround = lightGround
     r.shadow = shadow
+    r.blue = blue
     guard let img = r.image(width: width > 0 ? width : size,
                             height: height > 0 ? height : size,
                             style: style, supersample: supersample)

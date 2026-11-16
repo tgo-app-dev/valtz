@@ -927,6 +927,10 @@ TEST(graph_builder, a_video_summary_reads_sparse)
     const Json tc = config_of(find_stage(tg->spec, "text-chat"));
     CHECK(jget(tc, "page_tokens", 0) == jget(cc, "page_tokens", -1));
     CHECK(jget(tc, "max_pages", 0) == 16384);
+    // Its live speed asked for (the chat's meter: stream_speed); an
+    // Enhance's chat does not.
+    CHECK(jget(tc, "stream_speed", false));
+    CHECK(!jget(cc, "stream_speed", false));
     // No limit on what it holds unless the agent's Memory sets one; then
     // vpipe's memory_limit_mb, a summary's stage alike (DESIGN §15 0zzd).
     CHECK(!tc.contains("memory_limit_mb"));
@@ -3125,6 +3129,186 @@ TEST(graph_builder, a_split_dits_rank_names_its_transport)
   CHECK(find_stage(m->spec, "denoised") != nullptr);
   for (const char* gone : {"save-video", "audio-vae-decode", "save-audio"}) {
     CHECK(find_stage(m->spec, gone) == nullptr);
+  }
+}
+
+// A MiniMax H3 PICTURE split (DESIGN §11c): MiniMax-H3-Image's one
+// latent frame is the same forward, so a rank names the transport on
+// its generate-video as a clip's does; this Mac's rank decodes and
+// writes the picture, the member's writes its latent alone -- nothing
+// decoded, no PNG. P-H3-Image on FL2VA's DiT alike. The catalog gives
+// both the split's widths.
+TEST(graph_builder, a_split_h3_picture_is_decoded_on_one_rank)
+{
+  auto cat = models::Catalog::builtin();
+  REQUIRE_OK(cat);
+  for (const char* id : {"minimax-h3-image", "p-h3-image"}) {
+    const auto* e = cat->find(id);
+    REQUIRE(e);
+    const Json w = jget(jget(e->engine, "vpipe", Json::object()),
+                        "tensor_parallel", Json());
+    CHECK(jget(w, "heads", 0) == 56 && jget(w, "ffn", 0) == 14336);
+  }
+  auto j = job_for("minimax-h3-image", kOpGenerateImage);
+  j.model.encoder = "/models/MiniMaxAI/MiniMax-H3/FL2VA";
+  j.params["width"] = 1024;
+  j.params["height"] = 1024;
+  j.params["tensor_parallel"] = {
+      {"rank", 0}, {"ranks", 2}, {"heads", {0, 28}},
+      {"ffn", {0, 7168}},
+      {"params", {{"role", "connect"}, {"links", Json::array()}}}};
+  auto here = vp::build_text_to_image(j);
+  REQUIRE_OK(here);
+  const Json* gen = find_stage(here->spec, "generate-video");
+  REQUIRE(gen);
+  const Json tp = jget(config_of(gen), "tensor_parallel", Json());
+  CHECK(jget<std::string>(tp, "transport", "") == "valtz-tp");
+  CHECK(jget(tp, "heads", Json()) == Json({0, 28}));
+  CHECK(find_stage(here->spec, "vae-decode") != nullptr);
+  CHECK(find_stage(here->spec, "save-image") != nullptr);
+  CHECK(here->denoised.empty());
+  j.params["tensor_parallel"]["rank"] = 1;
+  j.params["tensor_parallel"]["heads"] = {28, 56};
+  j.params["denoise_only"] = true;
+  auto there = vp::build_text_to_image(j);
+  REQUIRE_OK(there);
+  const Json* saved = find_stage(there->spec, "denoised");
+  REQUIRE(saved);
+  CHECK(jget<std::string>(*saved, "type", "") == "save-tensor");
+  CHECK(src_of(saved, 0) == "generate-video");
+  CHECK(!there->denoised.empty());
+  for (const char* gone : {"vae-decode", "save-image"}) {
+    CHECK(find_stage(there->spec, gone) == nullptr);
+  }
+}
+
+// A FLUX.3 picture split (DESIGN §11c; vpipe's tensor-parallel-flux3/1):
+// its rank's share on generate-image through the plugin's transport,
+// this Mac's rank decoding and writing the picture, the member's writing
+// its latent alone. The catalog gives FLUX.3's widths, the feature it
+// needs, no adapters on a rank and the size it is split up to.
+TEST(graph_builder, a_split_flux3_picture_is_decoded_on_one_rank)
+{
+  auto cat = models::Catalog::builtin();
+  REQUIRE_OK(cat);
+  const auto* e = cat->find("flux3-klein");
+  REQUIRE(e);
+  const Json w = jget(jget(e->engine, "vpipe", Json::object()),
+                      "tensor_parallel", Json());
+  CHECK(jget(w, "heads", 0) == 24 && jget(w, "ffn", 0) == 9216);
+  CHECK(jget<std::string>(w, "needs", "") == "flux3");
+  CHECK(!jget(w, "adapters", true));
+  CHECK(!w.contains("max_pixels") && !w.contains("above_pixels"));
+  auto j = job_for("flux3-klein", kOpGenerateImage);
+  j.params["width"] = 1024;
+  j.params["height"] = 1024;
+  j.params["tensor_parallel"] = {
+      {"rank", 0}, {"ranks", 2}, {"heads", {0, 8}}, {"ffn", {0, 3072}},
+      {"params", {{"role", "connect"}, {"links", Json::array()}}}};
+  auto here = vp::build_text_to_image(j);
+  REQUIRE_OK(here);
+  const Json* gen = find_stage(here->spec, "generate-image");
+  REQUIRE(gen);
+  const Json tp = jget(config_of(gen), "tensor_parallel", Json());
+  CHECK(jget<std::string>(tp, "transport", "") == "valtz-tp");
+  CHECK(jget(tp, "heads", Json()) == Json({0, 8}));
+  CHECK(find_stage(here->spec, "vae-decode") != nullptr);
+  CHECK(find_stage(here->spec, "save-image") != nullptr);
+  CHECK(here->denoised.empty());
+  j.params["tensor_parallel"]["rank"] = 1;
+  j.params["tensor_parallel"]["heads"] = {8, 24};
+  j.params["denoise_only"] = true;
+  auto there = vp::build_text_to_image(j);
+  REQUIRE_OK(there);
+  const Json* saved = find_stage(there->spec, "denoised");
+  REQUIRE(saved);
+  CHECK(src_of(saved, 0) == "generate-image");
+  CHECK(!there->denoised.empty());
+  for (const char* gone : {"vae-decode", "save-image"}) {
+    CHECK(find_stage(there->spec, gone) == nullptr);
+  }
+  // Unsplit: nothing of it.
+  j.params.erase("tensor_parallel");
+  j.params.erase("denoise_only");
+  auto plain = vp::build_text_to_image(j);
+  REQUIRE_OK(plain);
+  CHECK(!config_of(find_stage(plain->spec, "generate-image"))
+             .contains("tensor_parallel"));
+}
+
+// Krea 2, MOSS-Image, Z-Image and Fibo 2.0 split as FLUX.3 and Qwen-Image
+// 2.1 do (DESIGN §11c, §15 0zzzv): each by its vpipe feature, no adapter
+// on a rank, at any size (the person's pair decides: a pair of equal Macs
+// gains at 1024², one Mac twice the other's maybe not). Krea 2's
+// shares are whole groups of four heads (GQA), and a feed-forward whose
+// rows are not a whole number a head is cut in whole grains.
+TEST(graph_builder, the_picture_families_split_at_any_size)
+{
+  auto cat = models::Catalog::builtin();
+  REQUIRE_OK(cat);
+  struct Want { const char* id; const char* needs; int heads, ffn, grain; };
+  for (const Want& m : {Want{"krea2-turbo", "krea2", 48, 16384, 256},
+                        Want{"moss-image-sft", "moss-image", 24, 8192, 256},
+                        Want{"moss-image-base", "moss-image", 24, 8192, 256},
+                        Want{"z-image-turbo", "z-image", 30, 10240, 256},
+                        Want{"fibo2-edit-turbo", "fibo2", 28, 9536, 64}}) {
+    const auto* e = cat->find(m.id);
+    REQUIRE(e);
+    const Json w = jget(jget(e->engine, "vpipe", Json::object()),
+                        "tensor_parallel", Json());
+    CHECK(jget(w, "heads", 0) == m.heads && jget(w, "ffn", 0) == m.ffn);
+    CHECK(jget<std::string>(w, "needs", "") == m.needs);
+    CHECK(!jget(w, "adapters", true));
+    CHECK(jget(w, "ffn_grain", 1) == m.grain);
+    CHECK(!w.contains("max_pixels") && !w.contains("above_pixels"));
+    CHECK(m.ffn % m.grain == 0);
+  }
+  const auto* k = cat->find("krea2-turbo");
+  CHECK(jget(jget(jget(k->engine, "vpipe", Json::object()),
+                  "tensor_parallel", Json()),
+             "head_group", 0) == 4);
+  // No picture family's split row bounds its size.
+  for (const auto& e : cat->models()) {
+    const Json w = jget(jget(e.engine, "vpipe", Json::object()),
+                        "tensor_parallel", Json());
+    CHECK(!w.contains("max_pixels") && !w.contains("above_pixels"));
+  }
+}
+
+// A Qwen-Image 2.1 picture split (DESIGN §11c; vpipe's
+// tensor-parallel-qwen-image-21/1), the base model and the Turbo alike:
+// the catalog's widths, the feature it needs, no adapters on a rank; its
+// share on generate-image, the member's rank writing its latent alone.
+TEST(graph_builder, a_split_qwen_image_picture_is_decoded_on_one_rank)
+{
+  auto cat = models::Catalog::builtin();
+  REQUIRE_OK(cat);
+  for (const char* id : {"qwen-image-2.1", "qwen-image-2.1-turbo"}) {
+    const auto* e = cat->find(id);
+    REQUIRE(e);
+    const Json w = jget(jget(e->engine, "vpipe", Json::object()),
+                        "tensor_parallel", Json());
+    CHECK(jget(w, "heads", 0) == 32 && jget(w, "ffn", 0) == 12288);
+    CHECK(jget<std::string>(w, "needs", "") == "qwen-image-21");
+    CHECK(!jget(w, "adapters", true));
+    CHECK(!w.contains("max_pixels") && !w.contains("above_pixels"));
+    auto j = job_for(id, kOpGenerateImage);
+    j.params["width"] = 1024;
+    j.params["height"] = 1024;
+    j.params["tensor_parallel"] = {
+        {"rank", 1}, {"ranks", 2}, {"heads", {12, 32}},
+        {"ffn", {4608, 12288}},
+        {"params", {{"role", "listen"}, {"links", Json::array()}}}};
+    j.params["denoise_only"] = true;
+    auto g = vp::build_text_to_image(j);
+    REQUIRE_OK(g);
+    const Json* gen = find_stage(g->spec, "generate-image");
+    REQUIRE(gen);
+    const Json tp = jget(config_of(gen), "tensor_parallel", Json());
+    CHECK(jget<std::string>(tp, "transport", "") == "valtz-tp");
+    CHECK(jget(tp, "heads", Json()) == Json({12, 32}));
+    CHECK(find_stage(g->spec, "denoised") != nullptr);
+    CHECK(find_stage(g->spec, "vae-decode") == nullptr);
   }
 }
 

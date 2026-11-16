@@ -419,6 +419,44 @@ TEST(fleet, thunderbolt_cables_are_found_port_to_port)
   fs::remove_all(d);
 }
 
+// A SPLIT'S ROWS (fleet/thunderbolt.h, DESIGN §11c): the heads in whole
+// groups -- Krea 2's four query heads a key head -- and the feed-forward's
+// rows a whole number a head where they are, else whole grains.
+TEST(fleet, a_splits_rows_take_whole_groups)
+{
+  using fleet::split_rows;
+  // H3: 56 heads, 256 rows a head.
+  CHECK((split_rows(56, 14336, 0.2, 1, 1) == std::pair<int, int>{11, 2816}));
+  // What does not divide evenly goes to the faster Mac: the slower one's
+  // share rounded down, the faster one's up -- the two agree.
+  CHECK((split_rows(56, 14336, 0.2, 4, 1) == std::pair<int, int>{8, 2048}));
+  CHECK((split_rows(56, 14336, 0.8, 4, 1) ==
+         std::pair<int, int>{48, 12288}));
+  // An M5 Ultra beside an M5 Max (2:1): 40 heads to 16, not 36 to 20.
+  CHECK((split_rows(56, 14336, 2.0 / 3, 4, 1) ==
+         std::pair<int, int>{40, 10240}));
+  CHECK((split_rows(56, 14336, 1.0 / 3, 4, 1) ==
+         std::pair<int, int>{16, 4096}));
+  // Exact stays exact.
+  CHECK((split_rows(56, 14336, 0.75, 1, 1) ==
+         std::pair<int, int>{42, 10752}));
+  // Krea 2: 48 heads in groups of 4, 16384 rows (341.3 a head) in 256s.
+  const auto k = split_rows(48, 16384, 0.3, 4, 256);
+  CHECK(k.first % 4 == 0 && k.first == 12);
+  CHECK(k.second % 256 == 0 && k.second == 4096);
+  const auto k7 = split_rows(48, 16384, 0.7, 4, 256);
+  CHECK(k7.first == 36 && k7.second == 12288);
+  // Fibo 2.0: 9536 rows, 149 groups of 64.
+  const auto f = split_rows(28, 9536, 0.5, 1, 64);
+  CHECK(f.first == 14 && f.second % 64 == 0 && f.second == 4800);
+  // Never all to one Mac.
+  const auto z = split_rows(30, 10240, 0.99, 1, 256);
+  CHECK(z.first == 29 && z.second > 0 && z.second < 10240 &&
+        z.second % 256 == 0);
+  const auto m = split_rows(24, 8192, 0.01, 4, 256);
+  CHECK(m.first == 4 && m.second >= 256);
+}
+
 // A MODEL COPIED FROM A MEMBER (fleet/model-share.h, DESIGN §11d), over
 // the loopback: its files listed and fetched in pieces by several
 // streams, byte for byte; a Mac without the fleet's key answered

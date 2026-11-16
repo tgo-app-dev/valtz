@@ -61,6 +61,7 @@
 #include "engine/vpipe/checkpoint-reader.h"
 #include "engine/vpipe/encoding-cache.h"
 #include "engine/vpipe/flex-json.h"
+#include "engine/vpipe/flops-hold.h"
 #include "engine/vpipe/graph-builder.h"
 #include "engine/vpipe/guide-clean.h"
 #include "engine/vpipe/host-exchange.h"
@@ -108,11 +109,10 @@ struct Queued {
 };
 
 // The FLOP/s reading (throughput()): an average over two seconds, which
-// stands as far back as three -- a block's arithmetic is credited when
-// it retires, and the blocks that report take well under that. The peak
-// looks back an hour at most (the meter's ring holds minutes).
+// stands past the newest credit as long as FlopsHold says (flops-hold.h:
+// three seconds, longer while a job's blocks retire further apart). The
+// peak looks back an hour at most (the meter's ring holds minutes).
 constexpr std::uint64_t kFlopsWindowNs = 2'000'000'000;
-constexpr std::uint64_t kFlopsHoldNs = 3'000'000'000;
 constexpr std::size_t   kFlopsScanWindows = 1800;
 
 // A queue of jobs and the control thread that runs them, one at a time.
@@ -280,6 +280,83 @@ public:
     _splits_decode = _splits_dit &&
                      vpipe::host_has_feature(
                          VPIPE_FEATURE_TENSOR_PARALLEL_DECODE);
+#endif
+    // ...and the picture families (generate-image's tensor_parallel),
+    // each by its own feature.
+#ifdef VPIPE_FEATURE_TENSOR_PARALLEL_FLUX3
+    if (_splits_dit &&
+        vpipe::host_has_feature(VPIPE_FEATURE_TENSOR_PARALLEL_FLUX3)) {
+      _split_families.emplace_back("flux3");
+    }
+#endif
+#ifdef VPIPE_FEATURE_TENSOR_PARALLEL_QI21
+    if (_splits_dit &&
+        vpipe::host_has_feature(VPIPE_FEATURE_TENSOR_PARALLEL_QI21)) {
+      _split_families.emplace_back("qwen-image-21");
+    }
+#endif
+    // A picture family whose rank reads a band floor (`min_band_rows`:
+    // its blocks' rows in bands, each band's partials crossing under the
+    // next band's work) says so as "<family>-bands": FLUX.3's and
+    // Qwen-Image-2.1's from their /2, the families below from their /1.
+#ifdef VPIPE_FEATURE_TENSOR_PARALLEL_FLUX3_2
+    if (_splits_dit &&
+        vpipe::host_has_feature(VPIPE_FEATURE_TENSOR_PARALLEL_FLUX3_2)) {
+      _split_families.emplace_back("flux3-bands");
+    }
+#endif
+#ifdef VPIPE_FEATURE_TENSOR_PARALLEL_QI21_2
+    if (_splits_dit &&
+        vpipe::host_has_feature(VPIPE_FEATURE_TENSOR_PARALLEL_QI21_2)) {
+      _split_families.emplace_back("qwen-image-21-bands");
+    }
+#endif
+    // ...Krea 2, Z-Image, MOSS-Image and Fibo 2.0 alike (§15 0zzzv).
+#ifdef VPIPE_FEATURE_TENSOR_PARALLEL_KREA2
+    if (_splits_dit &&
+        vpipe::host_has_feature(VPIPE_FEATURE_TENSOR_PARALLEL_KREA2)) {
+      _split_families.emplace_back("krea2");
+      _split_families.emplace_back("krea2-bands");
+    }
+#endif
+#ifdef VPIPE_FEATURE_TENSOR_PARALLEL_Z_IMAGE
+    if (_splits_dit &&
+        vpipe::host_has_feature(VPIPE_FEATURE_TENSOR_PARALLEL_Z_IMAGE)) {
+      _split_families.emplace_back("z-image");
+      _split_families.emplace_back("z-image-bands");
+    }
+#endif
+#ifdef VPIPE_FEATURE_TENSOR_PARALLEL_MOSS_IMAGE
+    if (_splits_dit &&
+        vpipe::host_has_feature(VPIPE_FEATURE_TENSOR_PARALLEL_MOSS_IMAGE)) {
+      _split_families.emplace_back("moss-image");
+      _split_families.emplace_back("moss-image-bands");
+    }
+#endif
+#ifdef VPIPE_FEATURE_TENSOR_PARALLEL_FIBO2
+    if (_splits_dit &&
+        vpipe::host_has_feature(VPIPE_FEATURE_TENSOR_PARALLEL_FIBO2)) {
+      _split_families.emplace_back("fibo2");
+      _split_families.emplace_back("fibo2-bands");
+    }
+#endif
+    // ...and a MiniMax H3 rank under the Neural Engine's share (§15
+    // 0zzzu: its modules the share's), said as a family of its own.
+#ifdef VPIPE_FEATURE_TENSOR_PARALLEL_ANE
+    if (_splits_dit &&
+        vpipe::host_has_feature(VPIPE_FEATURE_TENSOR_PARALLEL_ANE)) {
+      _split_families.emplace_back("h3-ane");
+    }
+#endif
+    // ...and an H3 rank that bands a prompt longer than its band (§15
+    // 0zzzw: Ref2VA's and an in-context refine's presentations -- a long
+    // video reference read by the conditioner -- pass a rank's band of
+    // 1-2k rows), when both ranks are told `prompt_bands`.
+#ifdef VPIPE_FEATURE_TENSOR_PARALLEL_PROMPT_BANDS
+    if (_splits_dit &&
+        vpipe::host_has_feature(VPIPE_FEATURE_TENSOR_PARALLEL_PROMPT_BANDS)) {
+      _split_families.emplace_back("h3-long-prompts");
+    }
 #endif
     // Each backend vpipe was given: loaded when every stage it says it
     // registers is there.
@@ -457,9 +534,14 @@ public:
     // A unit's window ends where its credits reach -- the newest work is
     // credited when it retires -- but never further back than the hold,
     // so a unit that stopped falls to zero.
-    const std::uint64_t floor = now > kFlopsHoldNs ? now - kFlopsHoldNs : 0;
+    const bool running = _work.busy.load() || _exports.busy.load();
     auto end_of = [&](pf::Unit u) {
-      return std::clamp(pf::totals(u).latest_ns, floor, now);
+      const std::uint64_t latest = pf::totals(u).latest_ns;
+      FlopsHold& h = _flops_hold[u == pf::kAne ? 1 : 0];
+      h.note(latest);
+      const std::uint64_t hold = h.hold(running);
+      const std::uint64_t floor = now > hold ? now - hold : 0;
+      return std::clamp(latest, floor, now);
     };
     const double per = 1e12 * (double)kFlopsWindowNs / 1e9;
     auto rate = [&](pf::Unit u, std::uint64_t end) {
@@ -525,6 +607,12 @@ public:
   splits_decode() const override
   {
     return _splits_decode;
+  }
+
+  std::vector<std::string>
+  split_families() const override
+  {
+    return _split_families;
   }
 
   Result<Json>
@@ -1803,7 +1891,12 @@ private:
       ev.job = spec.id;
       ev.kind = JobEventKind::Text;
       ev.text = jget<std::string>(b.meta, "text", "");
-      if (!ev.text.empty()) {
+      // A chat's live speed (text-chat's stream_speed): beside its words,
+      // or alone while a prompt is read.
+      if (const Json sp = jget(b.meta, "speed", Json()); sp.is_object()) {
+        ev.data = {{"speed", sp}};
+      }
+      if (!ev.text.empty() || !ev.data.is_null()) {
         q.sink(ev);
       }
     };
@@ -3392,6 +3485,7 @@ private:
   // throughput(): the highest reading, and how far its scan has gone.
   std::mutex                            _flops_mu;
   double                                _flops_peak = 0;
+  std::array<FlopsHold, 2>              _flops_hold;  // the GPU's, the ANE's
   bool                                  _regenerates = false;
   bool                                  _regenerates_ic = false;
   bool                                  _interpolates = false;
@@ -3402,6 +3496,7 @@ private:
   std::once_flag                        _traffic_once;
   valtz::exchange::TpTrafficFn          _traffic = nullptr;
   bool                                  _splits_decode = false;
+  std::vector<std::string>              _split_families;
   std::uint64_t                         _flops_scanned = 0;
   // The wired limit (set_wired_limit_mb), under _mu: the one asked (0
   // vpipe's own), vpipe's own here, and whether a lower one waits.

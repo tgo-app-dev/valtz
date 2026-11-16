@@ -935,6 +935,16 @@
         }
       }
     },
+    "%@ tok/s" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "%@ 词元/秒"
+          }
+        }
+      }
+    },
     "%@ voices" : {
       "localizations" : {
         "zh-Hans" : {
@@ -6417,6 +6427,22 @@
         }
       }
     },
+    "Copy %@-bit Compressed from %@" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Copy %1$@-bit Compressed from %2$@"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "从 %2$@ 拷贝 %1$@ 位压缩副本"
+          }
+        }
+      }
+    },
     "Copy from %@" : {
       "localizations" : {
         "zh-Hans" : {
@@ -6449,6 +6475,38 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "通过网络从舰队成员 %@ 复制它的文件到 Valtz 管理的模型文件夹"
+          }
+        }
+      }
+    },
+    "Copy the %@-bit compressed copy %@ made of it (%@) over Thunderbolt (%@ cable(s), %@ Gb/s) -- it runs here as that copy, Download brings the original" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Copy the %1$@-bit compressed copy %2$@ made of it (%3$@) over Thunderbolt (%4$@ cable(s), %5$@ Gb/s) -- it runs here as that copy, Download brings the original"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "经雷雳（%4$@ 根线缆，%5$@ Gb/s）拷贝 %2$@ 制作的 %1$@ 位压缩副本（%3$@）——本机将以该副本运行，“下载”可取回原版"
+          }
+        }
+      }
+    },
+    "Copy the %@-bit compressed copy %@ made of it (%@) over the network -- it runs here as that copy, Download brings the original" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Copy the %1$@-bit compressed copy %2$@ made of it (%3$@) over the network -- it runs here as that copy, Download brings the original"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "经网络拷贝 %2$@ 制作的 %1$@ 位压缩副本（%3$@）——本机将以该副本运行，“下载”可取回原版"
           }
         }
       }
@@ -7013,6 +7071,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "拒绝"
+          }
+        }
+      }
+    },
+    "Decode" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "解码"
           }
         }
       }
@@ -17655,6 +17723,26 @@
         }
       }
     },
+    "Prefill" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "预填充"
+          }
+        }
+      }
+    },
+    "Prefill: the last piece of the prompt it read, in tokens a second. Decode: the reply's last 128 tokens, or this round's while it has fewer." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "预填充：它读入的最后一段提示词，每秒词元数。解码：回复的最后 128 个词元，不足时为本轮至今的。"
+          }
+        }
+      }
+    },
     "Preparing" : {
       "localizations" : {
         "zh-Hans" : {
@@ -18355,6 +18443,22 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "码率："
+          }
+        }
+      }
+    },
+    "Read %@ of %@ tokens." : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Read %1$@ of %2$@ tokens."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "已读 %1$@ / %2$@ 个词元。"
           }
         }
       }
@@ -26986,6 +27090,16 @@
         }
       }
     },
+    "Working on half of a picture for %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "正在为 %@ 生成图片的一半"
+          }
+        }
+      }
+    },
     "Working…" : {
       "localizations" : {
         "zh-Hans" : {
@@ -27102,6 +27216,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "正在撰写…"
+          }
+        }
+      }
+    },
+    "Written %@ tokens this round." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "本轮已写 %@ 个词元。"
           }
         }
       }
@@ -29082,6 +29206,40 @@
         }
       }
     },
+    "core.fleet_copy_compressed_here" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "{model} is here already: its {bits}-bit copy is made here by Compress."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "{model} 已在本机：其 {bits} 位副本请在本机用“压缩”制作。"
+          }
+        }
+      }
+    },
+    "core.fleet_copy_no_compressed" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "{member} shares no {bits}-bit copy of {model}."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "{member} 未共享 {model} 的 {bits} 位副本。"
+          }
+        }
+      }
+    },
     "core.fleet_copy_not_shared" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -31009,13 +31167,13 @@
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "This Mac is busy: the clip waits its turn here, whole."
+            "value" : "This Mac is busy: made whole -- on a free member where there is one, else here in its turn."
           }
         },
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "needs_review",
-            "value" : "这台 Mac 正忙：该片段在这里排队，整体生成。"
+            "value" : "这台 Mac 正忙：整体生成——有空闲成员时在成员上，否则在这里排队。"
           }
         }
       }
@@ -31071,6 +31229,40 @@
         }
       }
     },
+    "core.split_model_here" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "This Valtz's vpipe cannot split {model}."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "这台 Valtz 的 vpipe 无法拆分 {model}。"
+          }
+        }
+      }
+    },
+    "core.split_model_there" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "{member}'s Valtz or vpipe cannot split {model}."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "{member} 的 Valtz 或 vpipe 无法拆分 {model}。"
+          }
+        }
+      }
+    },
     "core.split_needs_clip" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -31094,13 +31286,47 @@
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Not with the Neural Engine's share yet."
+            "value" : "With the Neural Engine's share only where both Macs run an engine that splits it."
           }
         },
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "needs_review",
-            "value" : "暂不支持神经网络引擎分担。"
+            "value" : "仅当两台 Mac 的引擎都支持拆分时，才可使用神经网络引擎分担。"
+          }
+        }
+      }
+    },
+    "core.split_neural_engine_model" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Not with the Neural Engine's share for {model}."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "{model} 暂不支持神经网络引擎分担。"
+          }
+        }
+      }
+    },
+    "core.split_no_adapters" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Not with a LoRA on {model} yet."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "暂不支持在 {model} 上使用 LoRA。"
           }
         }
       }
@@ -31213,13 +31439,13 @@
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "{member} failed its half of the clip: {reason}"
+            "value" : "{member} failed its half: {reason}"
           }
         },
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "needs_review",
-            "value" : "{member} 未能完成它那一半片段：{reason}"
+            "value" : "{member} 未能完成它那一半：{reason}"
           }
         }
       }

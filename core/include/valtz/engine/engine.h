@@ -434,6 +434,11 @@ public:
   // the chunks, the parts exchanged over the same link (vpipe's
   // tensor-parallel-decode/1).
   virtual bool splits_decode() const { return false; }
+  // ...and the picture families its vpipe splits besides H3, by the
+  // name the catalog's `tensor_parallel.needs` gives each: "flux3"
+  // (vpipe's tensor-parallel-flux3/1), "qwen-image-21"
+  // (tensor-parallel-qwen-image-21/1).
+  virtual std::vector<std::string> split_families() const { return {}; }
   // A SPLIT's LINK MEASURED, no model loaded (valtzctl tp-bench; DESIGN
   // §11c): valtz-tp opened as a rank opens it -- `tp` the request's
   // tensor_parallel (rank, ranks, params) -- and `rounds` exchanges of

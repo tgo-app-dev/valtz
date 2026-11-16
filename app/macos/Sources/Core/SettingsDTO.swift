@@ -79,7 +79,14 @@ struct CapabilityTree: Decodable, Sendable {
         var thunderbolt: Bool
         var cables: Int
         var gbps: Int
-        var id: String { member }
+        /// Its COMPRESSED copy (8 or 4 bits), its size; nil the original.
+        var bits: Int?
+        var bytes: Int64?
+        var id: String { bits.map { "\(member)@\($0)" } ?? member }
+        /// The download source naming it: "fleet:<member>[@<bits>bit]".
+        var source: String {
+            bits.map { "fleet:\(member)@\($0)bit" } ?? "fleet:\(member)"
+        }
     }
 
     struct Family: Decodable, Sendable, Identifiable {

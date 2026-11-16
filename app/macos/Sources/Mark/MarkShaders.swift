@@ -92,28 +92,36 @@ struct SceneOut {
     float4 glow  [[color(1)]];
 };
 
-// BLUE (u.ground.y): the colour's hue turned 205 degrees -- the reds,
-// oranges and yellows of the ribbon, its warm edges and glow, into the
-// sky's blues and teals -- its luminance kept (the CSS hue-rotate
-// matrix, on linear light).
+// BLUE (u.ground.y): the colour made a copper sulphate blue -- its
+// luminance kept, its hue taken from a pair of azure tints by how warm
+// it was: the ribbon's yellows and its warm edges and glow the lighter,
+// its reds and pinks the deeper; the brightest whitened. (It
+// turned the hue 205 degrees until 2026-11-15: the yellows came out
+// violet, a purple cast over the edges and glow.) Linear light.
 static float3 cool(float3 c, float k) {
     if (k <= 0.0) {
         return c;
     }
-    const float a = 205.0 * M_PI_F / 180.0;
-    const float co = cos(a);
-    const float si = sin(a);
-    const float3x3 m = float3x3(
-        float3(0.213 + co * 0.787 - si * 0.213,
-               0.213 - co * 0.213 + si * 0.143,
-               0.213 - co * 0.213 - si * 0.787),
-        float3(0.715 - co * 0.715 - si * 0.715,
-               0.715 + co * 0.285 + si * 0.140,
-               0.715 - co * 0.715 + si * 0.715),
-        float3(0.072 - co * 0.072 + si * 0.928,
-               0.072 - co * 0.072 - si * 0.283,
-               0.072 + co * 0.928 + si * 0.072));
-    return mix(c, max(m * c, 0.0), k);
+    const float3 lw = float3(0.2126, 0.7152, 0.0722);
+    const float l = dot(c, lw);
+    // How yellow a warm colour is: green against red (red 0, yellow 1);
+    // a colourless one in between.
+    const float hi = max(max(c.r, c.g), c.b);
+    const float lo = min(min(c.r, c.g), c.b);
+    const float w = hi - lo > 1e-4
+        ? saturate((c.g - lo) / max(c.r - lo, 1e-4))
+        : 0.5;
+    // sRGB (0, 100, 200) and (40, 168, 232), in linear light: the
+    // azure of a copper sulphate crystal (CuSO4 . 5H2O), deep in its
+    // folds, lighter where it was warm.
+    const float3 deep = float3(0.000, 0.127, 0.578);
+    const float3 aqua = float3(0.021, 0.392, 0.807);
+    float3 t = mix(deep, aqua, w);
+    t *= l / max(dot(t, lw), 1e-4);
+    // Past what the tint holds, toward foam: no channel clipped to a
+    // hue of its own.
+    const float3 sea = mix(t, float3(l), smoothstep(0.35, 1.0, l));
+    return mix(c, max(sea, 0.0), k);
 }
 
 fragment SceneOut scene_fragment(VertexOut in [[stage_in]],

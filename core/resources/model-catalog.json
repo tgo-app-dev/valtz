@@ -482,6 +482,8 @@
       "license": "apache-2.0",
       "engine": {
         "vpipe": {
+          "tensor_parallel": {"heads": 30, "ffn": 10240, "ffn_grain": 256,
+                              "needs": "z-image", "adapters": false},
           "config_stage": "z-image-model-config",
           "accel": ["sol_attn", "sage_attn", "sage_pv8", "i8_gemm", "i8_gemm_tier",
                     "vae_i8_gemm", "vae_i8_gemm_tier", "ane_ffn", "ane_qkv",
@@ -514,6 +516,8 @@
       "engine": {
         "vpipe": {
           "config_stage": "flux3-model-config",
+          "tensor_parallel": {"heads": 24, "ffn": 9216, "needs": "flux3",
+                              "adapters": false},
           "accel": ["sol_attn", "sage_attn", "sage_pv8", "i8_gemm",
                     "vae_i8_gemm", "vae_i8_gemm_tier", "ane_ffn", "ane_int8"],
           "config": {},
@@ -565,6 +569,8 @@
       "license": "apache-2.0",
       "engine": {
         "vpipe": {
+          "tensor_parallel": {"heads": 24, "ffn": 8192, "ffn_grain": 256,
+                              "needs": "moss-image", "adapters": false},
           "config_stage": "moss-image-model-config",
           "negative": "conditioner",
           "config_shift": 5.0,
@@ -618,6 +624,8 @@
       "license": "apache-2.0",
       "engine": {
         "vpipe": {
+          "tensor_parallel": {"heads": 24, "ffn": 8192, "ffn_grain": 256,
+                              "needs": "moss-image", "adapters": false},
           "config_stage": "moss-image-model-config",
           "negative": "conditioner",
           "config_shift": 5.0,
@@ -706,6 +714,8 @@
       "gated": true,
       "engine": {
         "vpipe": {
+          "tensor_parallel": {"heads": 28, "ffn": 9536, "ffn_grain": 64,
+                              "needs": "fibo2", "adapters": false},
           "config_stage": "fibo2-model-config",
           "accel": ["sol_attn", "sage_attn", "sage_pv8", "i8_gemm", "i8_gemm_tier",
                     "vae_i8_gemm", "vae_i8_gemm_tier", "ane_ffn", "ane_qkv",
@@ -750,6 +760,7 @@
       "engine": {
         "vpipe": {
           "shape": "h3-image",
+          "tensor_parallel": {"heads": 56, "ffn": 14336},
           "config_stage": "minimax-h3-model-config",
           "dit_from": "minimax-h3-fl2va",
           "adapter": "p-h3-image-lora",
@@ -798,6 +809,7 @@
       "engine": {
         "vpipe": {
           "shape": "h3-image",
+          "tensor_parallel": {"heads": 56, "ffn": 14336},
           "config_stage": "minimax-h3-model-config",
           "encoder_from": ["minimax-h3-text-encoder", "minimax-h3-fl2va",
                            "minimax-h3-ref2va"],
@@ -862,6 +874,9 @@
       "prompting": {"language": "english"},
       "engine": {
         "vpipe": {
+          "tensor_parallel": {"heads": 48, "ffn": 16384, "head_group": 4,
+                              "ffn_grain": 256, "needs": "krea2",
+                              "adapters": false},
           "config_stage": "krea2-model-config",
           "accel": ["sol_attn", "sage_attn", "sage_pv8", "i8_gemm", "i8_gemm_tier", "ane_ffn", "ane_qkv", "ane_int8"],
           "config": {},
@@ -902,6 +917,8 @@
       "license": "qwen-research (non-commercial)",
       "engine": {
         "vpipe": {
+          "tensor_parallel": {"heads": 32, "ffn": 12288,
+                              "needs": "qwen-image-21", "adapters": false},
           "config_stage": "qwen-image-21-model-config",
           "accel": ["sage_attn", "sage_pv8", "i8_gemm", "i8_gemm_tier", "vae_i8_gemm", "vae_i8_gemm_tier", "ane_ffn", "ane_qkv", "ane_int8"],
           "config": {},
@@ -959,6 +976,8 @@
       "license": "qwen-research (non-commercial)",
       "engine": {
         "vpipe": {
+          "tensor_parallel": {"heads": 32, "ffn": 12288,
+                              "needs": "qwen-image-21", "adapters": false},
           "config_stage": "qwen-image-21-model-config",
           "accel": ["sage_attn", "sage_pv8", "i8_gemm", "i8_gemm_tier", "vae_i8_gemm", "vae_i8_gemm_tier", "ane_ffn", "ane_qkv", "ane_int8"],
           "config": {},

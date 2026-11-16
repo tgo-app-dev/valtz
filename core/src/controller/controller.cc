@@ -3768,6 +3768,10 @@ Controller::set_download_source(const std::string& name)
   return ok_status();
 }
 
+namespace {
+Json compress_parts(const models::ModelEntry& e, int bits);
+}
+
 Result<JobId>
 Controller::download_model(const std::string& model_id,
                            const std::string& hf_token,
@@ -3844,16 +3848,38 @@ Controller::download_model(const std::string& model_id,
                    {"label", e->name}};
   }
   std::string copied_from;
+  // "fleet:<member>@<bits>bit": the member's COMPRESSED copy (DESIGN
+  // §8b), into the folder a compress here makes, marked as it lands.
+  std::string member_in = by_fleet ? source_in.substr(6) : std::string();
+  int copy_bits = 0;
+  for (const int bits : {8, 4}) {
+    const auto tail = std::format("@{}bit", bits);
+    if (member_in.ends_with(tail)) {
+      member_in.resize(member_in.size() - tail.size());
+      copy_bits = bits;
+    }
+  }
+  Json copy_shared;
   if (by_fleet) {
     fs::path dir = download_base_(*e) / e->hf_path;
     if (!e->subdir.empty()) {
       dir /= e->subdir;
     }
+    if (copy_bits > 0) {
+      // Here already: a copy would sit beside it unmarked as its own.
+      if (_store->info(*e).state == models::InstallState::Installed) {
+        return make_error(Code::InvalidArgument,
+                          msg::kFleetCopyCompressedHere,
+                          {{"model", e->name},
+                           {"bits", std::to_string(copy_bits)}});
+      }
+      dir = _store->compressed_dir(e->id, copy_bits);
+    }
     VALTZ_ASSIGN(fleet::CopyPlan plan,
-                 copy_plan_(*e, source_in.substr(6), dir));
+                 copy_plan_(*e, member_in, dir, copy_bits, &copy_shared));
     for (const auto& m : _fleet->members()) {
-      if (jget<std::string>(m, "id", "") == source_in.substr(6) ||
-          jget<std::string>(m, "name", "") == source_in.substr(6)) {
+      if (jget<std::string>(m, "id", "") == member_in ||
+          jget<std::string>(m, "name", "") == member_in) {
         copied_from = jget<std::string>(m, "name", "");
       }
     }
@@ -3884,10 +3910,13 @@ Controller::download_model(const std::string& model_id,
   rec.op = spec.op;
   rec.purpose = "download";
   const std::string member_name =
-      copied_from.empty() && by_fleet ? source_in.substr(6) : copied_from;
-  rec.title = by_fleet ? std::format("Copy {} from {}", e->name,
-                                     member_name)
-                       : std::format("Download {}", e->name);
+      copied_from.empty() && by_fleet ? member_in : copied_from;
+  rec.title = by_fleet && copy_bits > 0
+                  ? std::format("Copy {} ({}-bit) from {}", e->name,
+                                copy_bits, member_name)
+              : by_fleet ? std::format("Copy {} from {}", e->name,
+                                       member_name)
+                         : std::format("Download {}", e->name);
   rec.created_ms = project::now_ms();
   _jobs.add(rec);
   // On its way from now: what needs it waits for it -- before the
@@ -3904,6 +3933,36 @@ Controller::download_model(const std::string& model_id,
   const bool gated = by_hub && e->gated && source == "huggingface";
   const std::string name = e->name;
   const std::string id = e->id;
+  // A compressed copy landed: checked as a compress's is, then MARKED --
+  // the mark is what makes the folder the model's (models/model-store.h).
+  // Its original is not here (nothing to keep beside it).
+  const auto mark_copy = [this, id, copy_bits, copy_shared,
+                          member_name]() -> std::string {
+    const auto* d = _catalog.find(id);
+    if (!d) {
+      return "not a model of this Valtz";
+    }
+    const fs::path dir = _store->compressed_dir(id, copy_bits);
+    const models::ModelCheck check = models::check_model(*d, dir,
+                                                         &_catalog);
+    if (!check.usable) {
+      return jget<std::string>(check.error(), "message", "");
+    }
+    std::ofstream out(dir / models::ModelStore::kCompressedMarker);
+    out << to_text({{"model", id},
+                    {"bits", copy_bits},
+                    {"group_size", 64},
+                    {"parts", compress_parts(*d, copy_bits)},
+                    {"from", ""},
+                    {"original_bytes",
+                     jget<std::uint64_t>(copy_shared, "original_bytes", 0)},
+                    {"original_kept", false},
+                    {"in_use", true},
+                    {"copied_from", member_name},
+                    {"made", project::now_ms()}}, 2) << "\n";
+    return out ? std::string() : std::string("its mark could not be "
+                                             "written");
+  };
   // Cancelled to be deleted (stop_download): its files go once the job
   // has let go of them -- unless it finished first, whole.
   const auto discarded = [this, id](bool finished) {
@@ -3920,7 +3979,8 @@ Controller::download_model(const std::string& model_id,
   };
   Status submitted = _engine->submit(
       std::move(spec),
-      [this, gated, name, id, discarded](const engine::JobEvent& ev) {
+      [this, gated, name, id, discarded, copy_bits,
+       mark_copy](const engine::JobEvent& ev) {
     switch (ev.kind) {
     case engine::JobEventKind::Started:
       _jobs.update(ev.job, [](JobRecord& r) { r.state = JobState::Running; });
@@ -3939,6 +3999,27 @@ Controller::download_model(const std::string& model_id,
       break;
     }
     case engine::JobEventKind::Finished:
+      if (copy_bits > 0) {
+        // A member's compressed copy: marked, or failed saying why.
+        if (const std::string why = mark_copy(); !why.empty()) {
+          VALTZ_LOG_ERROR("models", "{}'s {}-bit copy not kept: {}", id,
+                          copy_bits, why);
+          finish_job_(ev.job, JobState::Failed, why);
+          discarded(false);
+          _store->rescan();
+          download_ended_(id, false, false);
+          post_("job.failed", ev.job, {{"message", why}});
+          post_("models.changed", JobId{});
+          break;
+        }
+        finish_job_(ev.job, JobState::Finished, "");
+        discarded(true);
+        _store->rescan();
+        download_ended_(id, true, false);
+        post_("job.finished", ev.job);
+        post_("models.changed", JobId{});
+        break;
+      }
       finish_job_(ev.job, JobState::Finished, "");
       discarded(true);
       // Fetched again over a compressed copy (DESIGN §8b): the original
@@ -4765,6 +4846,18 @@ Controller::keep_compressed(const std::string& model_id, bool compressed)
 std::uint64_t
 Controller::discard_download_(const models::ModelEntry& e)
 {
+  // A member's compressed copy part way (DESIGN §8b): its folder, never
+  // marked -- a marked one is a copy whole, kept.
+  for (const int bits : {8, 4}) {
+    std::error_code ec;
+    const fs::path d = _store->compressed_dir(e.id, bits);
+    if (fs::is_directory(d, ec) &&
+        !fs::exists(d / models::ModelStore::kCompressedMarker, ec)) {
+      fs::remove_all(d, ec);
+      VALTZ_LOG_INFO("models", "{}'s {}-bit copy part way deleted: {}",
+                     e.id, bits, d.string());
+    }
+  }
   const fs::path root = download_base_(e).lexically_normal();
   const fs::path repo = (root / e.hf_path).lexically_normal();
   // Never the models folder itself, nor anything outside it: a link's
@@ -8059,6 +8152,11 @@ Controller::generate_image(GenerateImageRequest req)
   }
   if (!req.preview) {
     r.params["preview"] = false;
+  }
+  // One rank of a DiT split with another Mac (DESIGN §11c), as asked
+  // (valtzctl --tp): an H3 picture's, as a clip's.
+  if (req.tensor_parallel.is_object()) {
+    r.params["tensor_parallel"] = req.tensor_parallel;
   }
   // Steps are always recorded explicitly, so a snapshot says exactly
   // what ran even if the catalog's defaults change later; so are the
@@ -11437,7 +11535,9 @@ Controller::submit_build_(
   // A rank of a split asked for by hand (valtzctl --tp) is this Mac's.
   if ((!own_files || weights_from.is_object()) && !no_model &&
       !r.params.contains("tensor_parallel")) {
-    members = fleet_candidates_(r.op, needs, here.ok(), own_bytes);
+    // (A build held until now is listed already: not its own reason to
+    // be sent.)
+    members = fleet_candidates_(r.op, needs, here.ok(), own_bytes, id);
   }
   if (weights_from.is_object() && members.empty()) {
     unshare_job_(id);
@@ -12874,6 +12974,14 @@ Controller::busy_here_(JobId except) const
 {
   for (const auto& j : _jobs.list()) {
     // (One waiting for a download holds nothing yet.)
+    // A background chat (DESIGN §9c: the micro agent's; an intent read
+    // as words are typed) is seconds on the lane: a clip asked behind it
+    // waits that long, no more -- not reason to send it away or make it
+    // whole. A held build's release came behind the micro agent's naming
+    // chat and was sent whole to the paired Mac (reported, 2026-11-15).
+    if (j.purpose == "micro" || j.purpose == "intent") {
+      continue;
+    }
     if ((j.state == JobState::Queued || j.state == JobState::Running) &&
         j.runner.empty() && holds_engine(j.op) && !waiting_(j.id) &&
         j.id != except) {
@@ -12886,7 +12994,8 @@ Controller::busy_here_(JobId except) const
 std::vector<Json>
 Controller::fleet_candidates_(const std::string& op,
                               const std::vector<std::string>& models,
-                              bool here, std::uint64_t weights) const
+                              bool here, std::uint64_t weights,
+                              JobId except) const
 {
   std::vector<Json> out;
   if (!_fleet) {
@@ -12904,7 +13013,7 @@ Controller::fleet_candidates_(const std::string& op,
   if (policy == fleet::kOffloadNever) {
     return out;
   }
-  if (policy == fleet::kOffloadLocalFirst && here && !busy_here_() &&
+  if (policy == fleet::kOffloadLocalFirst && here && !busy_here_(except) &&
       !prefer) {
     return out;
   }
@@ -13111,6 +13220,7 @@ Controller::fleet_self_() const
   Json installed = Json::array();
   Json runs = Json::array();
   Json shares = Json::array();
+  Json shares_compressed = Json::object();
   for (const auto& m : _catalog.models()) {
     const auto info = _store->info(m);
     if (info.state != models::InstallState::Installed ||
@@ -13118,12 +13228,25 @@ Controller::fleet_self_() const
       continue;
     }
     installed.push_back(m.id);
-    // Its own files to hand over: not a compressed copy alone, not a
-    // quantized variant (made here from its source).
+    // Its own files to hand over: its original where it is here, and
+    // its compressed copy (DESIGN §8b) -- in use or set aside -- apart;
+    // not a quantized variant (made here from its source).
     if (m.quantize_from.empty() &&
         (info.compressed_bits == 0 ||
          (!info.other_dir.empty() && info.other_bits == 0))) {
       shares.push_back(m.id);
+    }
+    if (const int bits = std::max(info.compressed_bits, info.other_bits);
+        m.quantize_from.empty() && bits > 0) {
+      const bool in_use = info.compressed_bits > 0;
+      const fs::path copy = in_use ? info.dir : info.other_dir;
+      std::ifstream in(copy / models::ModelStore::kCompressedMarker);
+      const Json mark = in ? Json::parse(in, nullptr, false) : Json();
+      shares_compressed[m.id] = Json::array(
+          {{{"bits", bits},
+            {"bytes", in_use ? info.bytes : info.other_bytes},
+            {"original_bytes",
+             jget<std::uint64_t>(mark, "original_bytes", 0)}}});
     }
     for (const char* modality : {"image", "video", "audio"}) {
       for (const char* op : {"generate", "edit"}) {
@@ -13204,11 +13327,17 @@ Controller::fleet_self_() const
           {"thunderbolt", fleet::to_json(tb_state_())},
           {"splits", up && _engine->splits_dit()},
           {"splits_decode", up && _engine->splits_decode()},
+          {"split_families",
+           up ? Json(_engine->split_families()) : Json::array()},
           // Its MODEL SHARE (DESIGN §11d): the port, where it answers
           // without a cable, and the models it hands a member.
           {"share_port", _share ? _share->port() : 0},
           {"addresses", _share ? fleet::share_addresses() : Json::array()},
           {"shares", _share ? shares : Json::array()},
+          // Its compressed copies, by model: [{"bits", "bytes",
+          // "original_bytes"}] -- each served as "<id>@<bits>bit".
+          {"shares_compressed",
+           _share ? shares_compressed : Json::object()},
           // A job's own weights taken with it (DESIGN §11d), and the
           // room for them.
           {"takes_weights", _share != nullptr},
@@ -13298,7 +13427,16 @@ Controller::fleet_serve_(const fleet::Offer& o, const std::string& from,
   Json split_links;
   if (Json tp = jget(o.params, "tensor_parallel", Json()); tp.is_object()) {
     const Json tpp = jget(tp, "params", Json::object());
-    if (o.op != engine::kOpGenerateVideo || !_engine->splits_dit() ||
+    // A clip, or a picture of a DiT that splits (catalog
+    // `tensor_parallel`: H3's, FLUX.3's).
+    const auto* om = _catalog.find(o.model);
+    const bool h3_picture =
+        (o.op == engine::kOpGenerateImage ||
+         o.op == engine::kOpEditImage) && om != nullptr &&
+        jget(om->engine, "vpipe", Json::object())
+            .contains("tensor_parallel");
+    if ((o.op != engine::kOpGenerateVideo && !h3_picture) ||
+        !_engine->splits_dit() ||
         jget(tp, "rank", 0) != 1 ||
         jget<std::string>(tpp, "role", "") != "listen") {
       return make_error(Code::Unsupported, msg::kSplitCannotHere);

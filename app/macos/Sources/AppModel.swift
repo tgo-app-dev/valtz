@@ -1412,6 +1412,18 @@ final class AppModel: TuningHost {
     /// words as they are written this turn.
     var agent: AgentSession?
     var agentWriting = ""
+    /// Each session's live speed as its helper tells it ("agent.speed"):
+    /// the chat's meter, ahead of the session's state.
+    var agentLiveSpeed: [String: AgentLiveSpeed] = [:]
+    /// The meter as the status row shows it, for the snapshot hooks:
+    /// "phase:prefill_tps/decode_tps@decoded", "-" none.
+    var agentMeterText: String {
+        guard let a = agent,
+              let sp = agentLiveSpeed[a.agent] ?? a.liveSpeed else { return "-" }
+        let p = sp.prefillTps.map { String(format: "%.0f", $0) } ?? "-"
+        let d = sp.decodeTps.map { String(format: "%.1f", $0) } ?? "-"
+        return "\(sp.phase ?? "-"):\(p)/\(d)@\(sp.decoded ?? 0)"
+    }
     /// The agent's TABS (Simple/AgentTabs): a conversation each, one with
     /// Valtz's tools at most; the one shown (`agentTabIndex`) is live in
     /// `agent`, `agentWriting` and the box.
@@ -12421,6 +12433,11 @@ final class AppModel: TuningHost {
                 reloadAgent()
             } else if let id = p["agent"] as? String {
                 reloadAgentTab(session: id)
+            }
+        case "agent.speed":
+            if let id = p["agent"] as? String,
+               let sp = DTO.decode(AgentLiveSpeed.self, p["speed"]) {
+                agentLiveSpeed[id] = sp
             }
         case "agent.text":
             if (p["agent"] as? String) == agent?.agent {

@@ -22,6 +22,7 @@
 #include <unistd.h>
 
 #include <algorithm>
+#include <cmath>
 #include <array>
 #include <cerrno>
 #include <chrono>
@@ -1000,6 +1001,33 @@ gpu_share(int cores, bool matrix, const Json& machine)
   const double theirs =
       weight(jget(machine, "gpu_cores", cores), theirs_matrix);
   return mine / (mine + theirs);
+}
+
+std::pair<int, int>
+split_rows(int heads, int ffn, double frac, int head_grain, int ffn_grain)
+{
+  const int g = std::max(1, head_grain);
+  const int fg = std::max(1, ffn_grain);
+  // What does not divide evenly goes to the FASTER Mac: rounded up for
+  // the larger share, down for the smaller (H3's 56 heads in fours at
+  // 2:1 are 40:16, not 36:20 -- the slower Mac given 7% more than its
+  // part set the pace, the faster one waiting at every exchange). An
+  // even split rounds to nearest; an exact one stays exact.
+  const auto whole = [frac](double x) {
+    constexpr double kEps = 1e-9;
+    return frac > 0.5   ? static_cast<int>(std::ceil(x - kEps))
+           : frac < 0.5 ? static_cast<int>(std::floor(x + kEps))
+                        : static_cast<int>(std::lround(x));
+  };
+  const int h0 =
+      std::clamp(whole(heads * frac / g) * g, g, heads - g);
+  const int f0 =
+      ffn % heads == 0 && (ffn / heads) % fg == 0
+          ? ffn / heads * h0
+          : std::clamp(whole(static_cast<double>(ffn) * h0 / heads / fg) *
+                           fg,
+                       fg, ffn - fg);
+  return {h0, f0};
 }
 
 std::vector<TbLink>

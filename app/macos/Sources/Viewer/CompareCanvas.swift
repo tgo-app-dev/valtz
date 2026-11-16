@@ -271,6 +271,14 @@ final class CompareCanvas: NSView {
         }
     }
     var onMarkupPointer: ((MarkupPointer) -> Void)?
+    /// The pointer over the canvas (its points, the canvas's size): the
+    /// stage lets its drag band go when the pointer is inside the
+    /// picture, answering whether it was armed. SwiftUI's hover on the
+    /// band can miss the pointer leaving it -- reported in fullscreen on
+    /// macOS 26: the card stayed lifted and faded, the grab hand over
+    /// every tool's cursor in the picture's middle -- while the canvas
+    /// hears every move (the brush's outline followed it).
+    var onPointerOver: ((CGPoint, CGSize) -> Bool)?
     var onMarkupKey: ((MarkupKey) -> Void)?
     var canMarkupKey: ((MarkupKey) -> Bool)?
     var markupOverlay = MarkupOverlay() {
@@ -1093,6 +1101,7 @@ final class CompareCanvas: NSView {
     override func mouseMoved(with event: NSEvent) {
         super.mouseMoved(with: event)
         pointerAt = convert(event.locationInWindow, from: nil)
+        letBandGo()
         updateBrushRing()
         // Where the pointer is, for a tool that shows it (a polygon's next
         // edge).
@@ -1102,7 +1111,37 @@ final class CompareCanvas: NSView {
     override func mouseEntered(with event: NSEvent) {
         super.mouseEntered(with: event)
         pointerAt = convert(event.locationInWindow, from: nil)
+        letBandGo()
         updateBrushRing()
+    }
+
+    /// The stage's drag band let go where the pointer is inside the
+    /// picture (onPointerOver) -- and, if it was armed, this canvas's own
+    /// cursor put back: a cursor rect takes effect only as the pointer
+    /// ENTERS it, and the band lies inside the canvas, so the band's grab
+    /// hand stayed over every tool until the pointer left the canvas.
+    private func letBandGo() {
+        guard let p = pointerAt, bounds.contains(p),
+              onPointerOver?(p, bounds.size) == true else { return }
+        window?.invalidateCursorRects(for: self)
+        cursor(at: p).set()
+    }
+
+    /// The cursor resetCursorRects gives the point.
+    private func cursor(at p: CGPoint) -> NSCursor {
+        if markupHere {
+            return brushRadius > 0 ? Self.noCursor : markupCursor
+        }
+        if isWipe {
+            if mode == .wipe {
+                if abs(p.x - bounds.width * split) <= 8 {
+                    return .resizeLeftRight
+                }
+            } else if abs(p.y - bounds.height * (1 - split)) <= 8 {
+                return .resizeUpDown
+            }
+        }
+        return .arrow
     }
 
     override func mouseExited(with event: NSEvent) {
@@ -1135,6 +1174,7 @@ final class CompareCanvas: NSView {
         let v = CGPoint(x: c.x + markupOrigin.x, y: c.y + markupOrigin.y)
             .applying(canvasToView)
         pointerAt = CGPoint(x: v.x, y: bounds.height - v.y)
+        letBandGo()
         updateBrushRing()
         return CGFloat(brushRadius) * pointsPerPixel
     }

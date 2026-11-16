@@ -15,6 +15,7 @@
 #include <cmath>
 #include <cstdlib>
 #include <format>
+#include <numeric>
 #include <set>
 
 namespace valtz {
@@ -344,7 +345,20 @@ Controller::split_plan_(const project::Recipe& r, const engine::ModelRef& ref,
   auto quiet = [] {
     return make_error(Code::NotFound, "not split");
   };
-  if (!_fleet || r.op != engine::kOpGenerateVideo) {
+  if (!_fleet) {
+    return quiet();
+  }
+  const auto* m = _catalog.find(r.model);
+  const Json mvp = m ? jget(m->engine, "vpipe", Json::object()) : Json();
+  // A clip, or a PICTURE of a DiT that splits (catalog
+  // `tensor_parallel`): H3's (MiniMax-H3-Image's own, P-H3-Image's
+  // FL2VA: one latent frame of the same forward) and FLUX.3's. A picture
+  // is always decoded HERE -- one frame, a fraction of a second -- the
+  // member's rank denoising alone.
+  const bool picture = (r.op == engine::kOpGenerateImage ||
+                        r.op == engine::kOpEditImage) &&
+                       mvp.contains("tensor_parallel");
+  if (r.op != engine::kOpGenerateVideo && !picture) {
     return quiet();
   }
   if (const char* e = std::getenv("VALTZ_SPLIT");
@@ -355,11 +369,7 @@ Controller::split_plan_(const project::Recipe& r, const engine::ModelRef& ref,
   if (!c.joined() || c.pair_member.empty()) {
     return quiet();
   }
-  const auto* m = _catalog.find(r.model);
-  const Json widths =
-      m ? jget(jget(m->engine, "vpipe", Json::object()), "tensor_parallel",
-               Json())
-        : Json();
+  const Json widths = jget(mvp, "tensor_parallel", Json());
   const int heads = jget(widths, "heads", 0);
   const int ffn = jget(widths, "ffn", 0);
   // Not a model that splits; or split as asked already (valtzctl --tp).
@@ -373,6 +383,29 @@ Controller::split_plan_(const project::Recipe& r, const engine::ModelRef& ref,
   };
   if (!_engine || !_engine->splits_dit()) {
     return no(msg::kSplitCannotHere);
+  }
+  // A family split by a vpipe feature of its own (`needs`: "flux3",
+  // "qwen-image-21"), here and -- below -- there.
+  const std::string family_needs = jget<std::string>(widths, "needs", "");
+  const std::string model_name = m ? m->name : r.model;
+  const std::vector<std::string> families = _engine->split_families();
+  if (!family_needs.empty() &&
+      std::ranges::find(families, family_needs) == families.end()) {
+    return no(msg::kSplitModelHere, {{"model", model_name}});
+  }
+  // A family whose rank binds no adapter (FLUX.3: vpipe refuses a
+  // runtime LoRA on a rank): any LoRA, the catalog's or one's own.
+  if (!jget(widths, "adapters", true)) {
+    for (int k = 1; k <= engine::kLoraSlots; ++k) {
+      const std::string id =
+          k == 1 ? std::string("lora") : std::format("lora{}", k);
+      const std::string file =
+          k == 1 ? std::string("lora_file") : std::format("lora{}_file", k);
+      if (!jget<std::string>(r.params, id.c_str(), "").empty() ||
+          !jget<std::string>(r.params, file.c_str(), "").empty()) {
+        return no(msg::kSplitNoAdapters, {{"model", model_name}});
+      }
+    }
   }
   // What a rank cannot run yet (vpipe refuses each by name): a DiT, VAE
   // or text encoder of Custom's own -- a community DiT is int8 ConvRot or
@@ -397,13 +430,22 @@ Controller::split_plan_(const project::Recipe& r, const engine::ModelRef& ref,
   if (own_loras && (!_share || !c.send_weights)) {
     return no(msg::kSplitOwnLoras);
   }
-  // The Neural Engine's share, VDN and TaoMate: not on a rank -- the
-  // draft's, or the 2K refine's (its own tuning).
+  // The Neural Engine's share -- the draft's, or the 2K refine's (its own
+  // tuning) -- on both ranks, each its share's modules: where both Macs'
+  // engines say so ("h3-ane", vpipe's tensor-parallel-ane/1; the member's
+  // checked below). VDN and TaoMate: not on a rank.
   const Json t = jget(r.params, "tuning", Json::object());
   const Json rt = jget(r.params, "regenerate_tuning", Json::object());
   const bool regen = !jget<std::string>(r.params, "regenerate", "").empty();
-  if (jget(t, "ane_ffn", false) || jget(t, "ane_qkv", false) ||
-      (regen && (jget(rt, "ane_ffn", false) || jget(rt, "ane_qkv", false)))) {
+  const bool ane =
+      jget(t, "ane_ffn", false) || jget(t, "ane_qkv", false) ||
+      (regen && (jget(rt, "ane_ffn", false) || jget(rt, "ane_qkv", false)));
+  // MiniMax H3's alone (a family split by a feature of its own --
+  // FLUX.3, Qwen-Image -- runs its rank without the Neural Engine).
+  if (ane && !family_needs.empty()) {
+    return no(msg::kSplitNeuralEngineModel, {{"model", model_name}});
+  }
+  if (ane && std::ranges::find(families, "h3-ane") == families.end()) {
     return no(msg::kSplitNeuralEngine);
   }
   if (jget(t, "vdn", false) || jget(t, "taomate", false) ||
@@ -436,6 +478,13 @@ Controller::split_plan_(const project::Recipe& r, const engine::ModelRef& ref,
   if (!jget(self, "splits", false)) {
     return no(msg::kSplitCannotThere);
   }
+  if (!family_needs.empty() &&
+      !in_list(jget(self, "split_families", Json()), family_needs)) {
+    return no(msg::kSplitModelThere, {{"model", model_name}});
+  }
+  if (ane && !in_list(jget(self, "split_families", Json()), "h3-ane")) {
+    return no(msg::kSplitNeuralEngine);
+  }
   // Each Mac its share of the heads, by its GPU (or as set), the
   // feed-forward rows alike.
   const double frac =
@@ -450,10 +499,10 @@ Controller::split_plan_(const project::Recipe& r, const engine::ModelRef& ref,
   // regenerated past 768P, whose refine decodes): each its share of the
   // chunks, the member's part handed over the link -- this Mac makes the
   // clip, nothing sent back over the fleet's own network.
-  const bool split_decode = c.pair_decode == "auto" && !regen &&
+  const bool split_decode = !picture && c.pair_decode == "auto" && !regen &&
                             _engine->splits_decode() &&
                             jget(self, "splits_decode", false);
-  const bool peer_keeps = !split_decode &&
+  const bool peer_keeps = !picture && !split_decode &&
                           decodes_there(c.pair_decode, frac) &&
                           !jget(r.params, "keep_latents", false);
   std::vector<std::string> needs = {r.model};
@@ -532,17 +581,20 @@ Controller::split_plan_(const project::Recipe& r, const engine::ModelRef& ref,
     return jget(tj, "i8_gemm", false) &&
            jget<std::string>(tj, "i8_gemm_tier", "accurate") != "accurate";
   };
-  const int grain = (tiered(t) || (regen && tiered(rt))) && heads >= 8 &&
-                            heads % 4 == 0
-                        ? 4
-                        : 1;
-  const int h0 =
-      std::clamp(static_cast<int>(std::lround(heads * frac / grain)) * grain,
-                 grain, heads - grain);
-  const int f0 = ffn % heads == 0
-                     ? ffn / heads * h0
-                     : static_cast<int>(std::lround(
-                           static_cast<double>(ffn) * h0 / heads));
+  // A family's own grain beside it: Krea 2's heads share a key and value
+  // head four at a time (GQA: `head_group`), so a share is whole groups.
+  const int tier_grain = (tiered(t) || (regen && tiered(rt))) &&
+                                 heads >= 8 && heads % 4 == 0
+                             ? 4
+                             : 1;
+  const int head_group = std::max(1, jget(widths, "head_group", 1));
+  // The feed-forward's rows: the heads' fraction of them, in whole groups
+  // (`ffn_grain`) where the rows are not a whole number a head -- an
+  // affine pack's columns of fc2 are cut in whole groups of 64, and an
+  // int8 tier's rotation takes a share in whole groups of 256.
+  const auto [h0, f0] = fleet::split_rows(
+      heads, ffn, frac, std::lcm(tier_grain, head_group),
+      jget(widths, "ffn_grain", 1));
   // The member LISTENS on its end of each cable -- a port of its own,
   // told back as its half begins -- and this Mac connects from its end:
   // reaching out to the local network is the requester's (the app the
@@ -596,6 +648,29 @@ Controller::split_plan_(const project::Recipe& r, const engine::ModelRef& ref,
     const double d = static_cast<double>(h0) / heads;
     plan.local["decode_share"] = {0.0, d};
     plan.peer["decode_share"] = {d, 1.0};
+  }
+  // A MiniMax H3 rank (a clip's, an H3 picture's: no family of its own)
+  // bands a prompt longer than its band where both Macs' vpipe reads
+  // `prompt_bands` -- the ranks must cut the same bands. Unsaid, such a
+  // prompt runs every block whole on both, as before.
+  if (family_needs.empty() &&
+      std::ranges::find(families, "h3-long-prompts") != families.end() &&
+      in_list(jget(self, "split_families", Json()), "h3-long-prompts")) {
+    plan.local["prompt_bands"] = true;
+    plan.peer["prompt_bands"] = true;
+  }
+  // A PICTURE's rank bands where both Macs' vpipe reads the floor for its
+  // family ("<family>-bands": FLUX.3's and Qwen-Image's /2, the others'
+  // /1) -- over RDMA or TCP: without it each block crosses whole, its two
+  // exchanges exposed. The same floor as a clip's over RDMA; a block of
+  // fewer rows than two floors (1024²'s 4,096) stays whole.
+  if (picture && !family_needs.empty()) {
+    const std::string bands = family_needs + "-bands";
+    if (std::ranges::find(families, bands) != families.end() &&
+        in_list(jget(self, "split_families", Json()), bands)) {
+      plan.local["min_band_rows"] = kSplitMinBandRows;
+      plan.peer["min_band_rows"] = kSplitMinBandRows;
+    }
   }
   if (plan.rdma) {
     plan.local["params"]["rdma"] = rdma_here;
@@ -686,9 +761,13 @@ Controller::run_split_(SplitPlan plan, engine::JobSpec spec,
                               {"split", plan.name},
                               {"links", plan.links},
                               {"rdma", plan.rdma}});
-  VALTZ_LOG_INFO("fleet", "{}: split with {} -- {} link(s), {}; heads "
+  VALTZ_LOG_INFO("fleet", "{}: split with {} -- {} link(s), {}{}; heads "
                  "[0, {}) here; decoded {}", title, plan.name, plan.links,
                  plan.rdma ? "RDMA" : "TCP",
+                 plan.local.contains("min_band_rows")
+                     ? std::format(", bands of {}+ rows",
+                                   plan.local["min_band_rows"].get<int>())
+                     : std::string(),
                  jget(plan.local, "heads", Json::array()).size() == 2
                      ? plan.local["heads"][1].get<int>()
                      : 0,

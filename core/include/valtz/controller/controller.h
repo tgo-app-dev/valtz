@@ -170,6 +170,9 @@ struct GenerateImageRequest {
   Json                 tuning = Json::object();
   std::int64_t         seed = -1;    // -1 = random (materialized)
   bool                 preview = true;
+  // TENSOR PARALLEL (DESIGN §11c): this Mac one RANK of an H3 picture's
+  // DiT split with another, as GenerateVideoRequest's. Null: not split.
+  Json                 tensor_parallel;
   // The picture being edited -- resampled (Lanczos) to the output's
   // frame -- if there is one; recorded as the recipe's "base" input.
   std::optional<AssetId> base;
@@ -2367,7 +2370,9 @@ private:
   // ---- the fleet
   class FleetHost;
   // Busy: a job of its engine queued or running here (but `except`: the
-  // one being sent).
+  // one being placed) -- not a background chat of a few seconds (the
+  // micro agent's naming or a 2K pass's words, the intent of words being
+  // typed): a clip placed behind one is not "busy here".
   bool busy_here_(JobId except = {}) const;
   // The members that could take a job now, best first: idle, taking
   // jobs, running `op` with every model in `models` (a chat: an
@@ -2375,10 +2380,13 @@ private:
   // busy. None: here.
   // `weights`: the bytes of the job's own weight files sent with it
   // (DESIGN §11d) -- a member that takes them and has the disk.
+  // `except`: the job being placed, already listed (a build held for
+  // what it waited on) -- not this Mac's work.
   std::vector<Json> fleet_candidates_(const std::string& op,
                                       const std::vector<std::string>& models,
                                       bool here,
-                                      std::uint64_t weights = 0) const;
+                                      std::uint64_t weights = 0,
+                                      JobId except = {}) const;
   // Where a job of `op` on `model` goes (fleet::Config::offload): its
   // policies apply while this Mac is in a fleet; out of one, local first.
   std::string offload_policy_(std::string_view op,
@@ -2393,19 +2401,22 @@ private:
   Json fleet_self_() const;
   // The MODEL SHARE (DESIGN §11d): this Mac's file server while it is in
   // a fleet (started, or let go, as the configuration follows), and what
-  // it serves of a model -- its own files, as installed here and shared;
-  // a compressed copy alone is not (its original is what a copy is).
+  // it serves of a model -- its own files, as installed here and shared:
+  // "<id>" its original, "<id>@<bits>bit" its compressed copy (in use or
+  // set aside).
   void share_follow_();
   // "job:<id>": a job's own weights, served while it runs.
   Result<fleet::ShareList> share_list_(const std::string& model) const;
-  // A model's copy from a member: the plan -- its routes, its port --
-  // or why not.
+  // A model's copy from a member -- `bits` > 0 its compressed copy --
+  // the plan (its routes, its port) or why not. `shared` its entry in
+  // the member's `shares_compressed` (its sizes).
   Result<fleet::CopyPlan> copy_plan_(const models::ModelEntry&,
                                      const std::string& member,
-                                     const std::filesystem::path& dest);
+                                     const std::filesystem::path& dest,
+                                     int bits = 0, Json* shared = nullptr);
   // Each model the connected members share, and from whom: {"member",
-  // "name", "thunderbolt", "cables", "gbps"} (the Capabilities row's
-  // Copy from …).
+  // "name", "thunderbolt", "cables", "gbps"} -- and "bits", a compressed
+  // copy of it (the Capabilities row's Copy from …).
   std::map<std::string, Json> fleet_copies_() const;
   // ---- Thunderbolt between members (fleet/thunderbolt.h, DESIGN §11c)
   // This Mac's Thunderbolt network, read again past a few seconds.

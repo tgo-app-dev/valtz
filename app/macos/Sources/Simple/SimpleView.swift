@@ -619,6 +619,8 @@ private struct ResultStage: View {
     /// The compare (or clip) bar under the card, in the window: the ring
     /// leaves it out.
     @State private var barFrame: CGRect = .null
+    /// The band's strips the pointer is over (dragRing).
+    @State private var bandHovered: Set<Int> = []
     /// The card's width: the scrubber over the clip bar is as wide.
     @State private var cardWidth: CGFloat = 0
 
@@ -911,6 +913,15 @@ private struct ResultStage: View {
                         model.markupPointer(e)
                     }
                 },
+                // Inside the picture, past the band: the band let go
+                // (CompareCanvas.onPointerOver -- its hover can miss it).
+                // On the picture: the band (just outside it) let go
+                // (CompareCanvas.onPointerOver -- its hover can miss it).
+                onPointerOver: { _, _ in
+                    guard model.stageDragReady else { return false }
+                    model.stageDragReady = false
+                    return true
+                },
                 onMarkupKey: { model.markupKey($0) },
                 canMarkupKey: { model.markupCan($0) },
                 onViewport: { model.stage.setViewport($0) },
@@ -999,45 +1010,66 @@ private struct ResultStage: View {
                 CGRect(x: 0, y: g.size.height - ringWidth,
                        width: g.size.width, height: ringWidth),
             ] : []
-            let ring = RingShape(inset: ringWidth,
-                                 radius: model.stageCornerRadius,
-                                 open: local(area),
-                                 cutouts: [local(barFrame)] + marks)
-            let band = ring.path(in: CGRect(origin: .zero, size: g.size))
-            Color.clear
-                .contentShape(ring)
-                // VALTZ_SNAPSHOT_RING=1: the band drawn, to see where it
-                // reaches.
-                .overlay {
-                    if Self.showsBand {
-                        ring.fill(Color.red.opacity(0.35))
-                            .allowsHitTesting(false)
-                    }
+            // The band as RECTANGLES -- its top, bottom, left and right
+            // strips, each cut to the editor's area and around the
+            // cut-outs -- never one view shaped by contentShape: on macOS
+            // 26 (fullscreen, reported) SwiftUI hit-tested the shaped
+            // view's drag and pointer style by its whole frame, the
+            // picture's middle included: the grab hand over every markup
+            // tool, a stroke dragging the picture. A rectangle's frame is
+            // its hit region on every macOS.
+            let pieces = bandPieces(size: g.size, inset: ringWidth,
+                                    open: local(area),
+                                    cutouts: [local(barFrame)] + marks)
+            ZStack(alignment: .topLeading) {
+                ForEach(pieces.indices, id: \.self) { i in
+                    let r = pieces[i]
+                    Color.clear
+                        .frame(width: r.width, height: r.height)
+                        .contentShape(Rectangle())
+                        // VALTZ_SNAPSHOT_RING=1: the band drawn, to see
+                        // where it reaches.
+                        .overlay {
+                            if Self.showsBand {
+                                Color.red.opacity(0.35)
+                                    .allowsHitTesting(false)
+                            }
+                        }
+                        .onContinuousHover { phase in
+                            // Over any strip, ready; off all of them, not
+                            // (a strip's end and the next's start come in
+                            // either order).
+                            switch phase {
+                            case .active:
+                                bandHovered.insert(i)
+                            case .ended:
+                                bandHovered.remove(i)
+                            }
+                            model.stageDragReady = !model.navOpen
+                                && !bandHovered.isEmpty
+                        }
+                        .pointerStyle(.grabIdle)
+                        .onDrag {
+                            // Into the prompt, what it shows is CAPTURED
+                            // -- every edit with it
+                            // (AppModel.addStageToPrompt); anywhere else,
+                            // the file of what it shows, flattened.
+                            let provider = model.stageDragFile()
+                                .map { NSItemProvider(object: $0 as NSURL) }
+                                ?? NSItemProvider()
+                            provider.registerObject(
+                                AppModel.stagePrefix as NSString,
+                                visibility: .ownProcess)
+                            return provider
+                        } preview: {
+                            dragPreview
+                        }
+                        .offset(x: r.minX, y: r.minY)
                 }
-                .onContinuousHover { phase in
-                    switch phase {
-                    case .active(let p):
-                        model.stageDragReady = !model.navOpen
-                            && band.contains(p)
-                    case .ended:
-                        model.stageDragReady = false
-                    }
-                }
-                .pointerStyle(.grabIdle)
-                .onDrag {
-                    // Into the prompt, what it shows is CAPTURED -- every
-                    // edit with it (AppModel.addStageToPrompt); anywhere
-                    // else, the file of what it shows, flattened.
-                    let provider = model.stageDragFile()
-                        .map { NSItemProvider(object: $0 as NSURL) }
-                        ?? NSItemProvider()
-                    provider.registerObject(
-                        AppModel.stagePrefix as NSString,
-                        visibility: .ownProcess)
-                    return provider
-                } preview: {
-                    dragPreview
-                }
+            }
+            .frame(width: g.size.width, height: g.size.height,
+                   alignment: .topLeading)
+            .onChange(of: pieces) { bandHovered.removeAll() }
         }
         .padding(-ringWidth)
         .allowsHitTesting(model.canDragStage)
@@ -1398,28 +1430,40 @@ private struct ViewingLabel: View {
     }
 }
 
-/// A frame with its middle cut out: the band around the result that the
-/// drag handle lives in -- within `open` (the editor's area) and outside
-/// each of `cutouts` (other controls), all in the band's coordinates.
-private struct RingShape: Shape {
-    let inset: CGFloat
-    /// The image's corners, as the stage draws them.
-    var radius: CGFloat = 10
-    var open: CGRect = .infinite
-    var cutouts: [CGRect] = []
-
-    func path(in rect: CGRect) -> Path {
-        let image = Path(roundedRect: rect.insetBy(dx: inset, dy: inset),
-                         cornerSize: CGSize(width: radius, height: radius),
-                         style: .continuous)
-        guard !open.isNull else { return Path() }
-        var p = Path(rect).subtracting(image)
-            .intersection(Path(open.intersection(rect)))
-        for c in cutouts where !c.isNull {
-            p = p.subtracting(Path(c))
+/// The drag band's rectangles: a strip of `inset` along each edge of a
+/// view of `size` (the card padded out by it: the band lies just outside
+/// the picture), each cut to `open` (the editor's area, in the view's
+/// points; null: none) and around every `cutouts` rect.
+func bandPieces(size: CGSize, inset: CGFloat = 28, open: CGRect,
+                cutouts: [CGRect]) -> [CGRect] {
+    guard !open.isNull, size.width > 2 * inset, size.height > 2 * inset
+    else { return [] }
+    let w = size.width, h = size.height
+    var out = [
+        CGRect(x: 0, y: 0, width: w, height: inset),
+        CGRect(x: 0, y: h - inset, width: w, height: inset),
+        CGRect(x: 0, y: inset, width: inset, height: h - 2 * inset),
+        CGRect(x: w - inset, y: inset, width: inset, height: h - 2 * inset),
+    ].map { $0.intersection(open) }.filter { !$0.isNull && !$0.isEmpty }
+    for c in cutouts where !c.isNull && !c.isEmpty {
+        out = out.flatMap { r -> [CGRect] in
+            let x = r.intersection(c)
+            guard !x.isNull, !x.isEmpty else { return [r] }
+            // What is left of r around x: above, below, then the sides
+            // between them.
+            return [
+                CGRect(x: r.minX, y: r.minY, width: r.width,
+                       height: x.minY - r.minY),
+                CGRect(x: r.minX, y: x.maxY, width: r.width,
+                       height: r.maxY - x.maxY),
+                CGRect(x: r.minX, y: x.minY, width: x.minX - r.minX,
+                       height: x.height),
+                CGRect(x: x.maxX, y: x.minY, width: r.maxX - x.maxX,
+                       height: x.height),
+            ].filter { $0.width > 0.5 && $0.height > 0.5 }
         }
-        return p
     }
+    return out
 }
 
 /// The assistant's rewrite, offered -- never applied without asking.

@@ -39,6 +39,7 @@ struct CompareCanvasView: NSViewRepresentable {
     var markupOverlay = MarkupOverlay()
     var markupOrigin = CGPoint.zero
     var onMarkupPointer: (MarkupPointer) -> Void = { _ in }
+    var onPointerOver: (CGPoint, CGSize) -> Bool = { _, _ in false }
     var onMarkupKey: (MarkupKey) -> Void = { _ in }
     var canMarkupKey: (MarkupKey) -> Bool = { _ in false }
     var onViewport: (CompareCanvas.Viewport) -> Void
@@ -77,6 +78,7 @@ struct CompareCanvasView: NSViewRepresentable {
     func updateNSView(_ v: CompareCanvas, context: Context) {
         v.onModeFlip = { m in DispatchQueue.main.async { onModeFlip(m) } }
         v.onMarkupPointer = { e in onMarkupPointer(e) }
+        v.onPointerOver = { p, size in onPointerOver(p, size) }
         v.onMarkupKey = { k in onMarkupKey(k) }
         v.canMarkupKey = { k in canMarkupKey(k) }
         v.markupActive = markupActive

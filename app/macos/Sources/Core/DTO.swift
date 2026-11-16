@@ -2074,6 +2074,8 @@ struct AgentSession: Decodable, Sendable, Equatable {
     var messages: [AgentMessage]?
     /// The last turn's cost and speed.
     var stats: AgentTurnStats?
+    /// Its helper's live speed, the last it told: the status row's meter.
+    var liveSpeed: AgentLiveSpeed?
     /// How full its model's context is: the chat's ring.
     var context: AgentContext?
     /// Times the conversation was compacted to go on within it.
@@ -2097,6 +2099,22 @@ struct AgentSession: Decodable, Sendable, Equatable {
         guard let e = error, !e.isEmpty else { return nil }
         return errorFields?.text ?? e
     }
+}
+
+/// A turn's LIVE SPEED as its helper reads and writes (vpipe's text-chat
+/// stream_speed, through the core's "agent.speed"): the last prefill
+/// piece's tokens a second, and the decode's over its last 128 tokens --
+/// the round's so far while it has fewer.
+struct AgentLiveSpeed: Decodable, Sendable, Equatable {
+    /// "prefill" while a prompt is read, "decode" while the reply is
+    /// written.
+    var phase: String?
+    var prefillTps: Double?
+    var prefillTokens: Int?
+    var prefillDone: Int?
+    var prefillTotal: Int?
+    var decodeTps: Double?
+    var decoded: Int?
 }
 
 /// How full a session's model's context is (the core's estimate of what

@@ -134,6 +134,19 @@ public:
   virtual std::int64_t context_tokens() const { return 0; }
   // The conversation is over: what is kept for it let go.
   virtual void close() {}
+  // The turn's LIVE SPEED as it goes, where the backend can say (the
+  // helper's, here or on a member: vpipe's text-chat stream_speed):
+  // {"phase": "prefill" | "decode", "prefill_tps", "prefill_tokens" (the
+  // last prefill piece's), "prefill_done", "prefill_total", "decode_tps"
+  // (over the last 128 tokens, or the round's so far), "decoded"}. Called
+  // from the turn's thread; a cloud backend calls it never.
+  void set_live_speed(std::function<void(const Json&)> fn)
+  {
+    _live_speed = std::move(fn);
+  }
+
+protected:
+  std::function<void(const Json&)> _live_speed;
 };
 
 // ---- compaction (DESIGN §9b) ------------------------------------------

@@ -73,7 +73,17 @@ Controller::share_list_(const std::string& model) const
     return make_error(Code::NotFound, "that job's weights are not served "
                                       "now");
   }
-  const auto* e = _catalog.find(model);
+  // "<id>@<bits>bit": its compressed copy (DESIGN §8b).
+  std::string id = model;
+  int want_bits = 0;
+  for (const int bits : {8, 4}) {
+    const auto tail = std::format("@{}bit", bits);
+    if (model.ends_with(tail)) {
+      id = model.substr(0, model.size() - tail.size());
+      want_bits = bits;
+    }
+  }
+  const auto* e = _catalog.find(id);
   if (!e) {
     return make_error(Code::NotFound, std::format("{} is not a model of "
                                                   "this Valtz", model));
@@ -87,6 +97,18 @@ Controller::share_list_(const std::string& model) const
   if (info.state != models::InstallState::Installed) {
     return make_error(Code::NotFound, std::format("{} is not here",
                                                   e->name));
+  }
+  // Its compressed copy, in use or set aside -- its mark left out (the
+  // copy marks its own).
+  if (want_bits > 0) {
+    if (info.compressed_bits == want_bits) {
+      return fleet::list_model_files(info.dir, e->file);
+    }
+    if (info.other_bits == want_bits && !info.other_dir.empty()) {
+      return fleet::list_model_files(info.other_dir, e->file);
+    }
+    return make_error(Code::NotFound, std::format(
+        "{} has no {}-bit copy here", e->name, want_bits));
   }
   // Its own weights: a compressed copy in use, its original beside it.
   fs::path root = info.dir;
@@ -102,7 +124,8 @@ Controller::share_list_(const std::string& model) const
 
 Result<fleet::CopyPlan>
 Controller::copy_plan_(const models::ModelEntry& e,
-                       const std::string& member, const fs::path& dest)
+                       const std::string& member, const fs::path& dest,
+                       int bits, Json* shared)
 {
   if (!_fleet || !_fleet->config().joined()) {
     return make_error(Code::NotFound, msg::kFleetCopyAway,
@@ -122,14 +145,35 @@ Controller::copy_plan_(const models::ModelEntry& e,
                       {{"member", name}, {"model", e.name}});
   }
   const int port = jget(self, "share_port", 0);
-  if (port <= 0 || !in_list(jget(self, "shares", Json()), e.id)) {
+  if (port <= 0 ||
+      (bits == 0 && !in_list(jget(self, "shares", Json()), e.id))) {
     return make_error(Code::NotFound, msg::kFleetCopyNotShared,
                       {{"member", name}, {"model", e.name}});
+  }
+  if (bits > 0) {
+    // Its compressed copy, as the member says it has one (DESIGN §8b).
+    Json found_copy;
+    const Json copies = jget(jget(self, "shares_compressed",
+                                  Json::object()),
+                             e.id.c_str(), Json::array());
+    for (const auto& c : copies.is_array() ? copies : Json::array()) {
+      if (jget(c, "bits", 0) == bits) {
+        found_copy = c;
+      }
+    }
+    if (!found_copy.is_object()) {
+      return make_error(Code::NotFound, msg::kFleetCopyNoCompressed,
+                        {{"member", name}, {"model", e.name},
+                         {"bits", std::to_string(bits)}});
+    }
+    if (shared) {
+      *shared = found_copy;
+    }
   }
   fleet::CopyPlan plan;
   plan.port = port;
   plan.key = _fleet->config().key;
-  plan.model = e.id;
+  plan.model = bits > 0 ? std::format("{}@{}bit", e.id, bits) : e.id;
   plan.dest = dest;
   // Each cable once (a cable bridged reads as its port and its bridge),
   // fastest first; then the member's addresses.
@@ -187,13 +231,35 @@ Controller::fleet_copies_() const
                        {"thunderbolt", cables > 0},
                        {"cables", cables},
                        {"gbps", gbps}};
+    const auto add = [&](const std::string& model, const Json& item) {
+      auto& list = out[model];
+      if (!list.is_array()) {
+        list = Json::array();
+      }
+      list.push_back(item);
+    };
     for (const auto& model : jget(self, "shares", Json::array())) {
       if (model.is_string()) {
-        auto& list = out[model.get<std::string>()];
-        if (!list.is_array()) {
-          list = Json::array();
+        add(model.get<std::string>(), from);
+      }
+    }
+    // Its compressed copies (DESIGN §8b), each an item of its own.
+    const Json squeezed = jget(self, "shares_compressed", Json::object());
+    if (squeezed.is_object()) {
+      for (auto it = squeezed.begin(); it != squeezed.end(); ++it) {
+        if (!it.value().is_array()) {
+          continue;
         }
-        list.push_back(from);
+        for (const auto& c : it.value()) {
+          const int bits = jget(c, "bits", 0);
+          if (bits != 8 && bits != 4) {
+            continue;
+          }
+          Json item = from;
+          item["bits"] = bits;
+          item["bytes"] = jget<std::uint64_t>(c, "bytes", 0);
+          add(it.key(), item);
+        }
       }
     }
   }

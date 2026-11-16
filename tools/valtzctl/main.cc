@@ -23,7 +23,7 @@
 //                    [--seconds s]] [--partial]   the suggestion as it
 //                    is written
 //   valtzctl intent <text> [--image name]...
-//   valtzctl download <model-id> [--from <source>|fleet:<member>]
+//   valtzctl download <model-id> [--from <source>|fleet:<member>[@8bit]]
 //   valtzctl sources [<name>]       where downloads come from
 //   valtzctl wired [auto|<GB>]      the wired memory limit
 //   valtzctl ext [list] | enable <id> | disable <id>
@@ -282,6 +282,8 @@ usage()
       "           [--speed|--quality] [--tune k=v,...] [--repeat n]\n"
       "           [--base <file|asset-id>] [--ref <file|asset-id>]...\n"
       "           [--mode auto|edit|generate] [--adjust k=v,...]\n"
+      "           [--tp '<json>'] (an H3 picture's DiT split: one rank,\n"
+      "           as video's --tp)\n"
       "           (files are imported first; --base is the picture to\n"
       "           edit, resampled to the output; --ref pictures are\n"
       "           drawn from as they are -- with only refs, the model\n"
@@ -679,7 +681,8 @@ usage()
       "          one of `sources` -- the one chosen without it -- or\n"
       "          fleet:<member>: COPIED from that member of the fleet,\n"
       "          over each Thunderbolt cable to it, several streams a\n"
-      "          cable (else its network address))\n"
+      "          cable (else its network address); fleet:<member>@8bit\n"
+      "          (@4bit) its COMPRESSED copy, kept here as one)\n"
       "  sources [<name>]   where downloads come from -- vpipe's sources,\n"
       "          the one chosen (Settings > Capabilities' Download From);\n"
       "          a name chooses it for later downloads, the app's too\n"
@@ -5616,6 +5619,14 @@ main(int argc, char** argv)
         std::sscanf(s.c_str(), "%dx%d", &req.width, &req.height);
       } else if (a == "--no-preview") {
         req.preview = false;
+      } else if (a == "--tp") {
+        // One rank of an H3 picture's DiT split with another Mac
+        // (DESIGN §11c), as `video --tp` takes it.
+        req.tensor_parallel = Json::parse(next(), nullptr, false);
+        if (!req.tensor_parallel.is_object()) {
+          std::fprintf(stderr, "--tp takes a JSON object\n");
+          return usage();
+        }
       } else if (a == "--speed") {
         req.preference = "speed";
       } else if (a == "--quality") {

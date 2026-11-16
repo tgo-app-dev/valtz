@@ -19,6 +19,7 @@
 
 #include <map>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace valtz::fleet {
@@ -128,6 +129,15 @@ std::vector<TbLink> probe_thunderbolt(const TbState& mine,
 // as it says it is (`machine`: "gpu_cores", "matrix_cores" -- else its
 // chip's name).
 double gpu_share(int cores, bool matrix, const Json& machine);
+
+// THIS MAC'S ROWS of a DiT split (DESIGN §11c): `frac` of `heads` in
+// whole groups of `head_grain` (one Mac at least a group, the other too;
+// what does not divide evenly to the faster Mac -- the larger `frac`),
+// and the feed-forward's rows in proportion -- a whole number a head
+// where that is a whole number of `ffn_grain`, else rounded to whole
+// grains. {heads, ffn rows} this Mac takes from the front.
+std::pair<int, int> split_rows(int heads, int ffn, double frac,
+                               int head_grain, int ffn_grain);
 
 // A TCP port free on every one of `addresses` now (a split's rank to
 // listen on: bound a moment later, a port taken meanwhile fails the

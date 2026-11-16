@@ -869,6 +869,9 @@ struct AgentStatusRow: View {
                 .lineLimit(1)
                 .truncationMode(.middle)
             Spacer(minLength: 8)
+            if let a, let sp = model.agentLiveSpeed[a.agent] ?? a.liveSpeed {
+                SpeedMeter(speed: sp)
+            }
             controls(a)
             ContextRing(context: model.agentContext,
                         compactions: a?.compactions ?? 0)
@@ -942,6 +945,56 @@ struct AgentStatusRow: View {
         case "stopped": "stop.circle"
         default: "wand.and.stars"
         }
+    }
+}
+
+/// The helper's LIVE SPEED: what its last prefill piece read a second
+/// and what its decode writes a second over its last 128 tokens (the
+/// round's so far while it has fewer) -- the one being measured now in
+/// the primary colour, the other as last measured.
+struct SpeedMeter: View {
+    var speed: AgentLiveSpeed
+
+    var body: some View {
+        let reading = speed.phase == "prefill"
+        HStack(spacing: 6) {
+            figure("Prefill", speed.prefillTps, now: reading)
+            figure("Decode", speed.decodeTps, now: !reading)
+        }
+        .font(.caption.monospacedDigit())
+        .lineLimit(1)
+        .fixedSize()
+        .help(help)
+        .accessibilityElement(children: .combine)
+    }
+
+    private func figure(_ title: LocalizedStringKey, _ tps: Double?,
+                        now: Bool) -> some View {
+        HStack(spacing: 3) {
+            Text(title)
+                .foregroundStyle(.tertiary)
+            Text(tps.map { Self.rate($0) } ?? "–")
+                .foregroundStyle(now ? .primary : .secondary)
+        }
+    }
+
+    /// "1,850 tok/s", "51.0 tok/s".
+    static func rate(_ tps: Double) -> String {
+        let n = tps.formatted(.number.precision(
+            .fractionLength(tps >= 100 ? 0 : 1)))
+        return String(localized: "\(n) tok/s")
+    }
+
+    private var help: String {
+        var lines = [String(localized: "Prefill: the last piece of the prompt it read, in tokens a second. Decode: the reply's last 128 tokens, or this round's while it has fewer.")]
+        if let done = speed.prefillDone, let total = speed.prefillTotal,
+           total > 0, speed.phase == "prefill" {
+            lines.append(String(localized: "Read \(done.formatted()) of \(total.formatted()) tokens."))
+        }
+        if let d = speed.decoded, speed.phase == "decode" {
+            lines.append(String(localized: "Written \(d.formatted()) tokens this round."))
+        }
+        return lines.joined(separator: "\n")
     }
 }
 

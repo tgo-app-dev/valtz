@@ -42,7 +42,7 @@ final class MarkRenderer {
     /// The mark as a flat white silhouette -- no shading, no glow: what
     /// reads at 16 x 16, where the ribbon's detail would be mush.
     var flat = false
-    /// The mark in BLUE (0...1): its hue turned to the sky's, its light
+    /// The mark in BLUE (0...1): a copper sulphate azure, its light
     /// and shade kept -- the Mac at work on a fleet job (DESIGN §11).
     var blue: Float = 0
     /// The mark sits on a light ground (the light appearance): its glass

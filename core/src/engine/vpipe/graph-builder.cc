@@ -763,6 +763,21 @@ build_h3_image(const JobSpec& job, const std::vector<RefImage>& refs,
     stages.push_back(sink(g.preview_sink, port("generate-video", 2),
                           /*latest_only=*/true));
   }
+  // One RANK of a DiT split with another Mac (DESIGN §11c), the other
+  // making the picture: its denoise alone -- the latent written, the
+  // proof it ran -- nothing decoded, no file.
+  if (jget(job.params, "denoise_only", false)) {
+    g.denoised = job.output_dir / std::format("{}-denoised.vpt", jid);
+    stages.push_back(stage("denoised", "save-tensor",
+                           Json::array({port("generate-video", 0)}),
+                           {{"path", g.denoised.string()}}));
+    g.width = width;
+    g.height = height;
+    g.spec = {{"id", "valtz-" + jid},
+              {"stages", stages},
+              {"subpipelines", Json::array()}};
+    return g;
+  }
   // The picture: its one latent frame through the model's own decoder,
   // F16, written as a 16-bit PNG -- an edit's carrying its base's EXIF.
   const std::string vae = vae_source(job, stages);
@@ -1196,12 +1211,34 @@ build_image(const JobSpec& job, const std::vector<RefImage>& refs,
   gen_cfg = merged(gen_cfg, declared_of(job, "generate"));
   gen_cfg = merged(gen_cfg, jget(job.params, "vpipe_generate",
                                  Json::object()));
+  // One RANK of a DiT split with another Mac (DESIGN §11c; FLUX.3's,
+  // vpipe's tensor-parallel-flux3/1): the partial sums through the
+  // plugin's transport.
+  if (const Json tp = jget(job.params, "tensor_parallel", Json());
+      tp.is_object()) {
+    gen_cfg["tensor_parallel"] =
+        merged(tp, {{"transport", ex::kTpTransport}});
+  }
   stages.push_back(stage("generate-image", "generate-image", gen_in,
                          gen_cfg));
 
   if (!g.preview_sink.empty()) {
     stages.push_back(sink(g.preview_sink, port("generate-image", 2),
                           /*latest_only=*/true));
+  }
+  // The other rank makes the picture: this one's denoise alone -- the
+  // latent written, the proof it ran -- nothing decoded, no file.
+  if (jget(job.params, "denoise_only", false)) {
+    g.denoised = job.output_dir / std::format("{}-denoised.vpt", jid);
+    stages.push_back(stage("denoised", "save-tensor",
+                           Json::array({port("generate-image", 0)}),
+                           {{"path", g.denoised.string()}}));
+    g.width = width;
+    g.height = height;
+    g.spec = {{"id", "valtz-" + jid},
+              {"stages", stages},
+              {"subpipelines", Json::array()}};
+    return g;
   }
   // The decoder's samples kept (F16) and written as a 16-bit PNG: a
   // result is as smooth as the model made it, not banded to 8 bits.
@@ -2978,6 +3015,10 @@ build_agent_turn(const JobSpec& job)
   Json chat_cfg = helper_chat_config(job);
   chat_cfg["max_new_tokens"] = jget(conv, "max_new_tokens",
                                     jget(job.params, "max_new_tokens", 2048));
+  // Its live speed beside its words (vpipe's stream_speed: the last
+  // prefill piece's, the decode's over its last 128 tokens) -- the chat's
+  // meter. A vpipe without it reads no key: no meter.
+  chat_cfg["stream_speed"] = true;
   Json stages = Json::array();
   stages.push_back(stage("turn", "text-prompt", Json::array(),
                          {{"value", conv}}));

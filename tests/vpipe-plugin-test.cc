@@ -9,6 +9,7 @@
 
 #include "engine/vpipe/checkpoint-reader.h"
 #include "engine/vpipe/flex-json.h"
+#include "engine/vpipe/flops-hold.h"
 #include "engine/vpipe/host-exchange.h"
 #include "engine/vpipe/job-progress.h"
 #include "valtz/base/version.h"
@@ -27,6 +28,7 @@
 #include "vpipe/vpipe.h"
 #include "stages/model-catalog.h"
 #include "generative-models/tensor-parallel.h"
+#include "plugin/plugin-abi.h"
 
 #include <CoreGraphics/CoreGraphics.h>
 #include <dlfcn.h>
@@ -35,6 +37,7 @@
 #include <unistd.h>
 #include <ImageIO/ImageIO.h>
 
+#include <algorithm>
 #include <array>
 #include <chrono>
 #include <condition_variable>
@@ -1575,6 +1578,49 @@ TEST(vpipe_plugin, the_wired_limit_is_vpipes_wired_pool)
 // two seconds of the two together -- one nobody read at the time too.
 // The meter is the process's: the credits made here are what a model's
 // blocks credit as they retire.
+// What the engine says it splits (DESIGN §11c): each picture family its
+// vpipe splits, and -- where its rank reads a band floor -- "<family>-
+// bands", which a picture split's plan sends the floor to alone.
+TEST(vpipe_plugin, the_engine_says_which_picture_families_band)
+{
+  if (!plugin_present()) {
+    SKIP("valtz-vpipe.so not found");
+  }
+  const auto dir = test::temp_dir("split-families");
+  EngineConfig cfg;
+  cfg.state_dir = dir / "engine";
+  cfg.temp_dir = dir / "tmp";
+  cfg.log_level = "error";
+  auto e = make_vpipe_engine(cfg);
+  REQUIRE(e && e->available());
+  if (!e->splits_dit()) {
+    SKIP("this vpipe splits no DiT");
+  }
+  const auto fams = e->split_families();
+  auto has = [&](const std::string& f) {
+    return std::ranges::find(fams, f) != fams.end();
+  };
+  // Never a floor without its family.
+  for (const auto& f : fams) {
+    if (f.ends_with("-bands")) {
+      CHECK(has(f.substr(0, f.size() - 6)));
+    }
+  }
+#ifdef VPIPE_FEATURE_TENSOR_PARALLEL_KREA2
+  CHECK(has("krea2") && has("krea2-bands"));
+  CHECK(has("moss-image") && has("moss-image-bands"));
+  CHECK(has("z-image") && has("z-image-bands"));
+  CHECK(has("fibo2") && has("fibo2-bands"));
+#endif
+#ifdef VPIPE_FEATURE_TENSOR_PARALLEL_FLUX3_2
+  CHECK(has("flux3-bands") && has("qwen-image-21-bands"));
+#endif
+  // An H3 rank that bands a prompt longer than its band (`prompt_bands`).
+#ifdef VPIPE_FEATURE_TENSOR_PARALLEL_PROMPT_BANDS
+  CHECK(has("h3-long-prompts"));
+#endif
+}
+
 TEST(vpipe_plugin, throughput_is_the_meter_read)
 {
   if (!plugin_present()) {
@@ -1614,6 +1660,43 @@ TEST(vpipe_plugin, throughput_is_the_meter_read)
   CHECK(std::abs(jget(t, "ane_tflops", 0.0) - 1) < 0.01);
   CHECK(jget(t, "peak_tflops", 0.0) == peak);
   e->shutdown();
+}
+
+// The reading stands while a job's blocks retire further apart than three
+// seconds (flops-hold.h: a 2K refine of 362 frames read 0 for three
+// seconds of every eight, its GPUs busy) -- the longest of the last gaps
+// and a quarter, at most a minute -- and three seconds with no job.
+TEST(vpipe_plugin, the_meters_hold_follows_a_jobs_blocks)
+{
+  using valtz::engine::FlopsHold;
+  constexpr std::uint64_t kS = 1'000'000'000;
+  FlopsHold h;
+  CHECK(h.hold(true) == 3 * kS);
+  CHECK(h.hold(false) == 3 * kS);
+  // Small blocks, a second apart: three seconds still.
+  for (std::uint64_t t = 100; t <= 104; ++t) {
+    h.note(t * kS);
+  }
+  CHECK(h.hold(true) == 3 * kS);
+  // The same end read again is no gap.
+  h.note(104 * kS);
+  CHECK(h.hold(true) == 3 * kS);
+  // Blocks eight seconds apart: ten, while running; three without.
+  h.note(112 * kS);
+  CHECK(h.hold(true) == 10 * kS);
+  CHECK(h.hold(false) == 3 * kS);
+  // The longest of the last four gaps holds until it is pushed out.
+  for (std::uint64_t t = 113; t <= 115; ++t) {
+    h.note(t * kS);
+  }
+  CHECK(h.hold(true) == 10 * kS);
+  h.note(116 * kS);
+  CHECK(h.hold(true) == 3 * kS);
+  // Never past a minute; an older end is ignored.
+  h.note(416 * kS);
+  CHECK(h.hold(true) == 60 * kS);
+  h.note(200 * kS);
+  CHECK(h.hold(true) == 60 * kS);
 }
 
 // valtz-tap (exchange.h): the frames going by are counted -- a [F, C, H,

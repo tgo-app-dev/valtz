@@ -628,11 +628,18 @@ private struct MemberRow: View {
                 if !copies.isEmpty {
                     Divider()
                     ForEach(copies) { c in
-                        Button(resume ? "Resume from \(c.name)"
-                                      : "Copy from \(c.name)") {
-                            model.startDownload(m, from: "fleet:\(c.member)")
+                        if let bits = c.bits {
+                            Button("Copy \(String(bits))-bit Compressed from \(c.name)") {
+                                model.startDownload(m, from: c.source)
+                            }
+                            .help(copyHelp(c))
+                        } else {
+                            Button(resume ? "Resume from \(c.name)"
+                                          : "Copy from \(c.name)") {
+                                model.startDownload(m, from: c.source)
+                            }
+                            .help(copyHelp(c))
                         }
-                        .help(copyHelp(c))
                     }
                 }
             } label: {
@@ -640,8 +647,8 @@ private struct MemberRow: View {
             } primaryAction: {
                 // A cable to a member that has it: the copy, faster than
                 // any download.
-                if let c = copies.first(where: \.thunderbolt) {
-                    model.startDownload(m, from: "fleet:\(c.member)")
+                if let c = cabledCopy(copies) {
+                    model.startDownload(m, from: c.source)
                 } else {
                     model.startDownload(m, from: from)
                 }
@@ -649,7 +656,7 @@ private struct MemberRow: View {
             .menuStyle(.button)
             .fixedSize()
             .disabled(!m.fits)
-            .help(copies.first(where: \.thunderbolt).map(copyHelp) ?? help)
+            .help(cabledCopy(copies).map(copyHelp) ?? help)
         } else {
             Button(resume ? "Resume" : "Download") {
                 model.startDownload(m, from: from)
@@ -659,9 +666,25 @@ private struct MemberRow: View {
         }
     }
 
+    /// The copy a click takes: over a cable, the original before a
+    /// compressed copy (the widest first).
+    private func cabledCopy(_ copies: [CapabilityTree.FleetCopy])
+        -> CapabilityTree.FleetCopy?
+    {
+        copies.filter(\.thunderbolt)
+            .min { ($0.bits ?? 99) > ($1.bits ?? 99) }
+    }
+
     /// What a copy from a member does, and over what.
     private func copyHelp(_ c: CapabilityTree.FleetCopy) -> String {
-        c.thunderbolt
+        if let bits = c.bits {
+            let size = ByteCountFormatter.string(
+                fromByteCount: c.bytes ?? 0, countStyle: .file)
+            return c.thunderbolt
+                ? String(localized: "Copy the \(String(bits))-bit compressed copy \(c.name) made of it (\(size)) over Thunderbolt (\(String(c.cables)) cable(s), \(String(c.gbps)) Gb/s) -- it runs here as that copy, Download brings the original")
+                : String(localized: "Copy the \(String(bits))-bit compressed copy \(c.name) made of it (\(size)) over the network -- it runs here as that copy, Download brings the original")
+        }
+        return c.thunderbolt
             ? String(localized: "Copy its files from \(c.name), a member of your fleet, over Thunderbolt (\(String(c.cables)) cable(s), \(String(c.gbps)) Gb/s) into the models folder Valtz manages")
             : String(localized: "Copy its files from \(c.name), a member of your fleet, over the network into the models folder Valtz manages")
     }

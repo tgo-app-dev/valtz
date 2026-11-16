@@ -413,9 +413,13 @@ public:
       Code                    code = Code::Ok;
     };
     auto w = std::make_shared<Wait>();
-    engine::JobSink sink = [w, on_text](const engine::JobEvent& ev) {
+    engine::JobSink sink = [w, on_text, live = _live_speed](
+                               const engine::JobEvent& ev) {
       using K = engine::JobEventKind;
       if (ev.kind == K::Text) {
+        if (live && ev.data.is_object() && ev.data.contains("speed")) {
+          live(ev.data["speed"]);
+        }
         if (on_text && !ev.text.empty()) {
           on_text(ev.text);
         }
@@ -1690,6 +1694,7 @@ Controller::AgentHost::state_json_(const Session& s, bool messages) const
             {"error_fields", s.error.empty() ? Json::object()
                                              : s.error_fields},
             {"writing", s.writing},
+            {"live_speed", s.live_speed},
             {"turns", s.turns},
             {"usage", s.usage},
             {"stats", s.stats},
@@ -1943,7 +1948,33 @@ Controller::AgentHost::run_(Session& s)
       _c.post_("agent.text", JobId{},
                {{"agent", s.id}, {"text", std::string(t)}});
     };
+    // Its live speed (the helper's): kept for the state, and told the
+    // app at most every quarter of a second -- a decode's every token
+    // carries it.
+    // A prompt's every piece told; the decode's first, then a quarter of
+    // a second apart.
+    struct Told {
+      std::chrono::steady_clock::time_point at;
+      std::string phase;
+    };
+    auto told = std::make_shared<Told>();
+    s.backend->set_live_speed([this, &s, told](const Json& sp) {
+      const auto now = std::chrono::steady_clock::now();
+      {
+        std::lock_guard lk(s.mu);
+        s.live_speed = sp;
+      }
+      const auto phase = jget<std::string>(sp, "phase", "");
+      if (phase != "prefill" && phase == told->phase &&
+          now - told->at < std::chrono::milliseconds(250)) {
+        return;
+      }
+      told->at = now;
+      told->phase = phase;
+      _c.post_("agent.speed", JobId{}, {{"agent", s.id}, {"speed", sp}});
+    });
     auto reply = s.backend->turn(msgs, specs, on_text, s.cancel);
+    s.backend->set_live_speed({});
     {
       std::lock_guard lk(s.mu);
       if (s.stop_asked) {

@@ -664,15 +664,25 @@ struct ValtzApp: App {
             } else {
                 CompareCanvas.shown?.zoom(by: CGFloat(Double(arg) ?? 1))
             }
-        case "hover":
+        // (Named apart from "hover" -- the model's pointer -- above, which
+        // took both: the canvas's own hover never ran.)
+        case "outline":
             if let p = points(arg).first, m.markupOnClip,
                let c = ClipMarkupNSView.shown {
                 let r = c.hover(atCanvas: p)
-                print("snapshot: hover \(arg) brush=\(mk.radius) ring=\(r)")
+                print("snapshot: brush-outline \(arg) brush=\(mk.radius) ring=\(r)")
             } else if let p = points(arg).first, let c = CompareCanvas.shown {
                 let r = c.hover(atCanvas: p)
-                print("snapshot: hover \(arg) brush=\(mk.radius) ring=\(r)")
+                print("snapshot: brush-outline \(arg) brush=\(mk.radius) ring=\(r) "
+                      + "band=\(m.stageDragReady)")
             }
+        // The stage's drag band armed (on) or not, as its hover leaves it
+        // -- "band=on" then a hover= inside the picture: the canvas lets
+        // it go (CompareCanvas.onPointerOver).
+        case "band":
+            m.stageDragReady = arg != "off"
+            print("snapshot: band \(arg) ready=\(m.stageDragReady) "
+                  + "canDrag=\(m.canDragStage)")
         // A clip's player put at a frame: markup is drawn there.
         case "seek":
             m.timelineSeek(Int(arg) ?? 0)
@@ -3089,6 +3099,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                                           to: (path as NSString)
                                               .deletingPathExtension
                                               + "-memory.png")
+            }
+            // VALTZ_SNAPSHOT_FLEET_SERVING=<member>: the window given
+            // over to a fleet job for that member, as one running here
+            // shows it -- the mark in sea water -- with no job (its look
+            // judged without a member's work). Held 3 s for the light.
+            if let m = model, let from = env["VALTZ_SNAPSHOT_FLEET_SERVING"] {
+                withAnimation(AppModel.motion) {
+                    m.fleetServing = FleetServing(
+                        job: "snapshot", from: from,
+                        title: "A red fox trotting through fresh snow",
+                        op: "generate-video", progress: 0.42)
+                }
+                try? await Task.sleep(for: .seconds(3))
+                FileHandle.standardError.write(Data(
+                    "snapshot: fleet-serving from=\(from)\n".utf8))
             }
             // VALTZ_SNAPSHOT_FLEET_POPOVER=1|<s>: the Fleet meter's
             // popover opened (as a click on it opens it) once a member
@@ -5871,7 +5896,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     FileHandle.standardError.write(Data(
                         "snapshot: agent-scroll \(Self.chatScrollSummary(m))\n".utf8))
                     FileHandle.standardError.write(Data(
-                        "snapshot: agent-chat chat=\(m.agentChat) chatRect=\(Int(cf.minX)),\(Int(cf.minY)),\(Int(cf.width))x\(Int(cf.height)) ctx=\(ctx?.used ?? -1)/\(ctx?.limit ?? -1)@\(ctx?.compactAt ?? -1) transcript=\(a?.transcript.flatMap { m.asset(id: $0)?.name.replacingOccurrences(of: " ", with: "_") } ?? "-") row=\(m.promptAttachments.count) said=\(said.joined(separator: ",")) tab=\(m.activePromptTab) look=\(m.activeTabDoNotApply) tabs=\(m.agentTabs.indices.map { i in let t = m.agentTabSession(i); return "\(i + 1):\(m.agentTabs[i].skills):\(t?.state ?? "-"):\(t?.steps.count ?? 0)\(i == m.agentTabIndex ? "*" : "")" }.joined(separator: ","))\n".utf8))
+                        "snapshot: agent-chat chat=\(m.agentChat) chatRect=\(Int(cf.minX)),\(Int(cf.minY)),\(Int(cf.width))x\(Int(cf.height)) ctx=\(ctx?.used ?? -1)/\(ctx?.limit ?? -1)@\(ctx?.compactAt ?? -1) transcript=\(a?.transcript.flatMap { m.asset(id: $0)?.name.replacingOccurrences(of: " ", with: "_") } ?? "-") row=\(m.promptAttachments.count) said=\(said.joined(separator: ",")) tab=\(m.activePromptTab) look=\(m.activeTabDoNotApply) tabs=\(m.agentTabs.indices.map { i in let t = m.agentTabSession(i); return "\(i + 1):\(m.agentTabs[i].skills):\(t?.state ?? "-"):\(t?.steps.count ?? 0)\(i == m.agentTabIndex ? "*" : "")" }.joined(separator: ",")) meter=\(m.agentMeterText)\n".utf8))
                     FileHandle.standardError.write(Data(
                         "snapshot: agent \(step.replacingOccurrences(of: " ", with: "_").prefix(40)) state=\(a?.state ?? "-") steps=\(a?.steps.count ?? 0) proposed=\(a?.proposed?.tool ?? "-") last=\(a?.steps.last.map { "\($0.tool):\($0.state)" } ?? "-") review=\(a?.review ?? false) backend=\(a?.backend?.kind ?? "-") composition=\(m.activeComposition?.name.replacingOccurrences(of: " ", with: "_") ?? "-") pages=\(m.activeComposition?.pages ?? 0) writing=\(m.agentWriting.count) holds=\(m.agentHolds) follows=\(m.agentFollows) watching=\(m.watchingAgentShot ? "shot" : m.isGenerating ? "task" : "-") preview=\(m.stage.clip.map { "\($0.frames.count)f@\($0.step)" } ?? "-") viewed=\(m.viewedAsset.flatMap { m.asset(id: $0)?.name.replacingOccurrences(of: " ", with: "_") } ?? "-") page=\(m.stagePage + 1) error=\(a?.errorText?.replacingOccurrences(of: " ", with: "_").prefix(60) ?? "-") speed=\(a?.stats.flatMap { $0.isEmpty ? nil : $0.line.replacingOccurrences(of: " ", with: "_") } ?? "-")\n".utf8))
                 }
@@ -6848,9 +6873,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 line += "source=\(m.capabilityTree?.downloadSource ?? "-") "
                 line += "sources=\(from.isEmpty ? "-" : from.joined(separator: ",")) "
                 // The members it can be copied from (DESIGN §11d):
-                // name:cables:Gb/s, `-` none.
+                // name:cables:Gb/s[:<bits>bit], `-` none.
                 let copies = (r?.fleet ?? []).map {
                     "\($0.name):\($0.cables):\($0.gbps)"
+                        + ($0.bits.map { ":\($0)bit" } ?? "")
                 }
                 line += "fleet=\(copies.isEmpty ? "-" : copies.joined(separator: ","))\n"
                 FileHandle.standardError.write(Data(line.utf8))
