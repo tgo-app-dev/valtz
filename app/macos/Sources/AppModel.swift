@@ -1821,6 +1821,20 @@ final class AppModel: TuningHost {
     var clipPlacement = AppModel.storedPlacement {
         didSet { Self.keep(clipPlacement.rawValue, as: "landing.place") }
     }
+    /// A generated picture or clip of another SIZE than the canvas it
+    /// lands on (Settings › General › Generations' Size Mismatch): left
+    /// at its own size, centred (the default, as ever); scaled to fit
+    /// inside the canvas, its shape kept, the rest left clear; or the
+    /// canvas made its size, what was there kept at its own about the
+    /// centre (core Controller::place_result's `fit`). Kept between
+    /// launches -- a snapshot run takes VALTZ_SNAPSHOT_LANDING's
+    /// "fit=center|fit|canvas".
+    enum LandingFit: String, CaseIterable, Sendable {
+        case center, fit, canvas
+    }
+    var landingFit = AppModel.storedLandingFit {
+        didSet { Self.keep(landingFit.rawValue, as: "landing.fit") }
+    }
     /// A result of this kind lands after its timeline's content, not at
     /// the playhead: a clip, At the End.
     func placesAtEnd(_ kind: String) -> Bool {
@@ -1999,6 +2013,21 @@ final class AppModel: TuningHost {
         }
         return (UserDefaults.standard.string(forKey: "landing.place"))
             .flatMap(ClipPlacement.init(rawValue:)) ?? .playhead
+    }
+    private static var storedLandingFit: LandingFit {
+        guard keepsViewState else {
+            let spec = ProcessInfo.processInfo
+                .environment["VALTZ_SNAPSHOT_LANDING"] ?? ""
+            for item in spec.split(separator: ",") {
+                let kv = item.split(separator: "=").map(String.init)
+                if kv.count == 2, kv[0] == "fit" {
+                    return LandingFit(rawValue: kv[1]) ?? .center
+                }
+            }
+            return .center
+        }
+        return (UserDefaults.standard.string(forKey: "landing.fit"))
+            .flatMap(LandingFit.init(rawValue:)) ?? .center
     }
     private static func storedLanding(_ name: String,
                                       default fallback: Bool) -> Bool {
@@ -2362,6 +2391,9 @@ final class AppModel: TuningHost {
     private var trimPersistTask: Task<Void, Never>?
     /// The frame the clip on the stage shows (its player reports it).
     var videoFrame = 0
+    /// File › Insert Valtz Mark being drawn (insertValtzMark): the menu
+    /// item off meanwhile.
+    var insertingMark = false
     /// The page of the still on the stage it shows and the panels work on,
     /// from 0 (DESIGN §6a).
     var stagePage = 0
@@ -6197,6 +6229,7 @@ final class AppModel: TuningHost {
         }
         assets = list
         assetFolders = got.folders
+        healPromptRow()
         reloadHistory()
         reloadOutput()
         if screen == .atlas { reloadAtlas() }
@@ -6347,6 +6380,47 @@ final class AppModel: TuningHost {
     }
 
     /// The imported asset for a dropped file, once its import finished.
+    /// The prompt row's items that name an asset this project no longer
+    /// has -- an undo, a redo or Revert to Saved took away the asset an
+    /// item was given (a picture from Assets, the stage captured into the
+    /// prompt, Continue's guide, a row picture's own edited copy) -- found
+    /// again by their file: an edited copy's file is its original's, a
+    /// file imported is its asset. One no asset holds leaves the row,
+    /// said. Start sent the id regardless, and the core refused it
+    /// ("recipe input 'reference' refers to a missing asset", reported on
+    /// a Ref2VA clip). Items still importing name none and are left alone.
+    func healPromptRow() {
+        guard !assets.isEmpty || !promptAttachments.isEmpty else { return }
+        let here = Set(assets.map(\.id))
+        var list = promptAttachments
+        var gone: [PromptAttachment] = []
+        var changed = false
+        for i in list.indices {
+            guard let a = list[i].asset, !here.contains(a) else { continue }
+            changed = true
+            if let found = asset(forFile: list[i].url) {
+                list[i].asset = found.id
+                list[i].ownCopy = false
+            } else {
+                gone.append(list[i])
+            }
+        }
+        guard changed else { return }
+        let goneIds = Set(gone.map(\.id))
+        list.removeAll { goneIds.contains($0.id) }
+        withAnimation(Self.motion) { promptAttachments = list }
+        for g in gone {
+            if focusedReference == g.id { endActivation(restore: true) }
+            referenceThumbs[g.id] = nil
+        }
+        promptChanged()
+        if !gone.isEmpty {
+            let names = gone.map(\.url.lastPathComponent)
+                .joined(separator: ", ")
+            flash(String(localized: "\(names) is no longer in this project, and left the prompt."), level: .warning)
+        }
+    }
+
     func asset(forFile url: URL) -> AssetDTO? {
         let path = url.standardizedFileURL.path
         func same(_ p: String?) -> Bool {
@@ -7694,6 +7768,20 @@ final class AppModel: TuningHost {
         importFiles(urls.filter { !Self.isProjectFile($0) })
         promptChanged()
         return ids
+    }
+
+    /// A medium of the row MENTIONED in the words at their caret (its
+    /// menu's Insert at Cursor) -- as a drag of its thumbnail into the
+    /// text mentions it there: one undoable change, the keyboard in the
+    /// box after it.
+    var canMentionAtCursor: Bool { promptTextView is PromptTextView }
+    func mentionAtCursor(_ id: UUID) {
+        guard let t = promptTextView as? PromptTextView,
+              promptAttachments.contains(where: { $0.id == id }) else {
+            return
+        }
+        t.insertMentions([id], at: t.cursorIndex)
+        t.window?.makeFirstResponder(t)
     }
 
     /// Out of the row -- and out of the text, where it was mentioned
@@ -11489,6 +11577,7 @@ final class AppModel: TuningHost {
              \.autoplaysNewClips)
         take(Self.storedLanding("muted", default: false), \.mutesNewClips)
         take(Self.storedPlacement, \.clipPlacement)
+        take(Self.storedLandingFit, \.landingFit)
         take(Self.storedPointingDevice, \.pointingDevice)
         take(Self.storedLaunchAppearance, \.launchAppearance)
         if Self.storedAgentEnabled != agentEnabled {
@@ -11799,6 +11888,7 @@ final class AppModel: TuningHost {
         case "crop": String(localized: "Crop")
         case "trim": String(localized: "Trim")
         case "keys": String(localized: "Keyframes")
+        case "remove-adjustment": String(localized: "Remove Adjustment")
         case "keys.move": String(localized: "Move Key")
         case "canvas": String(localized: "Canvas Size")
         case "timeline": String(localized: "Length")
@@ -11852,6 +11942,7 @@ final class AppModel: TuningHost {
         case "folder.remove": String(localized: "Delete Folder")
         case "asset.move": String(localized: "Move to Folder")
         case "capture.camera": String(localized: "Camera")
+        case "mark.insert": String(localized: "Insert Valtz Mark")
         case "asset.rename": String(localized: "Rename Asset")
         case "asset.remove": String(localized: "Remove Asset")
         case "asset.modify": String(localized: "Modified Copy")
@@ -12701,6 +12792,7 @@ final class AppModel: TuningHost {
            asset.kind == "image" || asset.kind == "video"
                || asset.kind == "audio" {
             var req: [String: Any] = ["asset": asset.id, "join": job]
+            if landingFit != .center { req["fit"] = landingFit.rawValue }
             if let onto = ctx.onto {
                 req["onto"] = onto
                 if let at = ctx.at { req["at"] = at }

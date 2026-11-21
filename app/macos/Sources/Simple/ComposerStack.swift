@@ -2178,25 +2178,50 @@ struct ModelPicker: View {
     /// own when nil.
     var width: CGFloat? = nil
 
+    /// The last item's tag: Add Model…, which opens Settings ›
+    /// Capabilities rather than choosing anything (no model id starts
+    /// with a control character).
+    static let addModelTag = "\u{1}add-model"
+
+    /// The model choice, but Add Model… opens Capabilities and leaves
+    /// the choice as it was.
+    private var choice: Binding<String> {
+        Binding(get: { model.modelChoice },
+                set: { [model] tag in
+                    if tag == Self.addModelTag {
+                        // after the menu has closed
+                        DispatchQueue.main.async {
+                            model.openCapabilities(family: nil)
+                        }
+                    } else {
+                        model.modelChoice = tag
+                    }
+                })
+    }
+
     var body: some View {
+        let options = model.modelOptions(for: model.activeModality)
         if let width {
             // The AppKit pop-up, set to fill the width it is given (as
             // FilledSegments, for the same reason).
-            let options = model.modelOptions(for: model.activeModality)
             FilledPopUp(items: [("", autoLabel)]
                             + (options.isEmpty ? [] : [(nil, "")])
-                            + options.map { ($0.model, Self.label($0)) },
-                        selection: $model.modelChoice, width: width)
+                            + options.map { ($0.model, Self.label($0)) }
+                            + [(nil, ""),
+                               (Self.addModelTag,
+                                String(localized: "Add Model…"))],
+                        selection: choice, width: width)
                 .accessibilityLabel(Text("Model"))
                 .fixedSize()
         } else {
-            Picker("Model", selection: $model.modelChoice) {
+            Picker("Model", selection: choice) {
                 Text(autoLabel).tag("")
-                let options = model.modelOptions(for: model.activeModality)
                 if !options.isEmpty { Divider() }
                 ForEach(options, id: \.model) { o in
                     Text(verbatim: Self.label(o)).tag(o.model)
                 }
+                Divider()
+                Text("Add Model…").tag(Self.addModelTag)
             }
             .labelsHidden()
             .fixedSize()
@@ -2217,6 +2242,10 @@ struct ModelPicker: View {
         let id = model.autoPick(op)
         // A quantized variant goes by its source's name.
         let name = model.modelName(model.baseModel(id))
+        // Nothing here yet to make this kind of thing: said, not "Auto".
+        if id.isEmpty && model.modelOptions(for: model.activeModality).isEmpty {
+            return String(localized: "No Models Yet")
+        }
         if id.isEmpty { return String(localized: "Auto") }
         return model.autoWaits(op)
             ? String(localized: "Auto (\(name) · Downloading)")
@@ -2930,6 +2959,14 @@ struct FilledSegments<T: Hashable>: NSViewRepresentable {
 
 /// A pop-up selector that fills the width it is given: items by tag (nil
 /// for a separator), `selection` the tag shown.
+///
+/// Its menu is built again only when its items change, never while it is
+/// open, and each item reports ITSELF when picked. It had been made anew
+/// at every update of the view: the first click on it takes the keyboard
+/// from the prompt, which updates the card while the menu opens, so the
+/// pick landed in a menu no longer the button's, and the action read the
+/// new menu's selection -- the model before -- and wrote it back. The
+/// second try found nothing to update and took.
 struct FilledPopUp: NSViewRepresentable {
     let items: [(tag: String?, label: String)]
     @Binding var selection: String
@@ -2938,44 +2975,100 @@ struct FilledPopUp: NSViewRepresentable {
     func makeCoordinator() -> Coordinator { Coordinator() }
 
     @MainActor
-    final class Coordinator: NSObject {
+    final class Coordinator: NSObject, NSMenuDelegate {
         var pick: (String) -> Void = { _ in }
-        @objc func changed(_ b: NSPopUpButton) {
-            if let tag = b.selectedItem?.representedObject as? String {
-                pick(tag)
+        /// The binding's item selected again (after a pick it did not
+        /// take: an action item, Add Model…).
+        var reselect: () -> Void = {}
+        /// The items the menu was built from.
+        var built: [(tag: String?, label: String)]? = nil
+        var open = false
+        /// An update that came while the menu was open, applied as it
+        /// closes.
+        var pending: (() -> Void)? = nil
+
+        @objc func picked(_ item: NSMenuItem) {
+            if let tag = item.representedObject as? String { pick(tag) }
+            DispatchQueue.main.async { [weak self] in self?.reselect() }
+        }
+
+        func menuWillOpen(_ menu: NSMenu) { open = true }
+        func menuDidClose(_ menu: NSMenu) {
+            open = false
+            // After the pick's action has run.
+            DispatchQueue.main.async { [weak self] in
+                guard let self, !self.open else { return }
+                let p = self.pending
+                self.pending = nil
+                p?()
             }
         }
     }
 
     func makeNSView(context: Context) -> NSPopUpButton {
         let b = NSPopUpButton(frame: .zero, pullsDown: false)
-        b.target = context.coordinator
-        b.action = #selector(Coordinator.changed(_:))
         b.setContentHuggingPriority(.defaultLow, for: .horizontal)
         return b
     }
 
     func updateNSView(_ b: NSPopUpButton, context: Context) {
-        let menu = NSMenu()
-        for item in items {
-            if let tag = item.tag {
-                let mi = NSMenuItem(title: item.label, action: nil,
-                                    keyEquivalent: "")
-                mi.representedObject = tag
-                menu.addItem(mi)
-            } else {
-                menu.addItem(.separator())
+        let c = context.coordinator
+        let binding = $selection
+        c.pick = { binding.wrappedValue = $0 }
+        c.reselect = { [weak b] in
+            guard let b, let menu = b.menu else { return }
+            let selection = binding.wrappedValue
+            if let i = menu.items.firstIndex(where: {
+                ($0.representedObject as? String) == selection
+            }), b.indexOfSelectedItem != i {
+                b.selectItem(at: i)
             }
         }
-        b.menu = menu
-        if let i = menu.items.firstIndex(where: {
-            ($0.representedObject as? String) == selection
-        }) {
-            b.selectItem(at: i)
-        }
-        let binding = $selection
-        context.coordinator.pick = { binding.wrappedValue = $0 }
         b.isEnabled = context.environment.isEnabled
+        let items = self.items
+        let apply = { [weak b, weak c] in
+            guard let b, let c else { return }
+            let same = c.built.map { old in
+                old.count == items.count
+                    && zip(old, items).allSatisfy {
+                        $0.tag == $1.tag && $0.label == $1.label
+                    }
+            } ?? false
+            if !same {
+                let menu = NSMenu()
+                menu.delegate = c
+                for item in items {
+                    if let tag = item.tag {
+                        let mi = NSMenuItem(title: item.label,
+                                            action: #selector(
+                                                Coordinator.picked(_:)),
+                                            keyEquivalent: "")
+                        mi.target = c
+                        mi.representedObject = tag
+                        menu.addItem(mi)
+                    } else {
+                        menu.addItem(.separator())
+                    }
+                }
+                b.menu = menu
+                c.built = items
+            }
+            // The binding as it is then: a pick made while the menu was
+            // open has written it.
+            let selection = binding.wrappedValue
+            if let menu = b.menu,
+               let i = menu.items.firstIndex(where: {
+                   ($0.representedObject as? String) == selection
+               }),
+               b.indexOfSelectedItem != i {
+                b.selectItem(at: i)
+            }
+        }
+        if c.open {
+            c.pending = apply
+        } else {
+            apply()
+        }
     }
 
     func sizeThatFits(_ proposal: ProposedViewSize, nsView b: NSPopUpButton,

@@ -679,6 +679,7 @@ Controller::shutdown()
   // The fleet first: no job comes in, none goes out -- nor a model's
   // files to a member.
   _share.reset();
+  _lender.reset();
   if (_fleet) {
     _fleet->stop();
   }
@@ -1040,6 +1041,11 @@ Controller::memory_held()
       if (!p.empty()) {
         dirs.emplace_back(held_path(p), &e);
       }
+    }
+    // A one-file model held by its file (a GGUF of a repo of several):
+    // that file, the longest match, names it.
+    if (!info.file.empty()) {
+      dirs.emplace_back(held_path(info.path()), &e);
     }
     for (const auto& [part, link] : info.parts) {
       if (!link.file.empty()) {
@@ -2209,6 +2215,17 @@ Controller::tp_bench(const Json& tp, const std::vector<std::size_t>& sizes,
 }
 
 Result<Json>
+Controller::far_bench(const Json& params,
+                      const std::vector<std::size_t>& sizes, int rounds,
+                      int parallel) const
+{
+  if (!_engine || !_engine->available()) {
+    return make_error(Code::Unsupported, "no engine");
+  }
+  return _engine->far_bench(params, sizes, rounds, parallel);
+}
+
+Result<Json>
 Controller::measure_read_speed(const std::string& id, double seconds) const
 {
   const models::ModelEntry* e = _catalog.find(id);
@@ -2684,6 +2701,14 @@ Controller::tuning_context(const models::ModelEntry& m) const
   c.pika_installed = installed("pika_flex", "lora");
   c.taomate_installed = installed("taomate", "lora");
   c.vdn_installed = installed("vdn", "branch");
+  // the models a declared option may name (`requires_model`)
+  for (const auto& d : jget(vp, "options", Json::array())) {
+    const auto rm = jget<std::string>(d, "requires_model", "");
+    if (const auto* e = rm.empty() ? nullptr : _catalog.find(rm);
+        e && coming_(*e)) {
+      c.models_here.insert(rm);
+    }
+  }
   c.matrix_cores = _hw.gpu_matrix_cores;
   c.gpu_cores = _hw.gpu_cores;
   c.ane_cores = _hw.ane_cores;
@@ -3048,9 +3073,15 @@ Controller::upscale_settings() const
                      {"runs", runs ? runs->id : std::string()}});
   }
   // Listed by kind, then as Auto ranks them (FlashVSR+ Turbo, Base, 1.1).
+  // (a part of another -- RelayVSR's 2x checkpoint, its Model Scale --
+  // upscales nothing alone: not listed)
   std::vector<const models::ModelEntry*> ups;
   for (const auto& e : _catalog.models()) {
-    if (e.role == "upscale") {
+    const bool own = e.has(models::Capability::UpscaleVideo) ||
+                     e.has(models::Capability::UpscaleImage) ||
+                     jget(jget(e.engine, "vpipe", Json::object()),
+                          "regenerate", Json()).is_object();
+    if (e.role == "upscale" && own) {
       ups.push_back(&e);
     }
   }
@@ -3083,11 +3114,66 @@ Controller::upscale_settings() const
         needs.push_back(m->name);
       }
     }
+    // Its CHECKLIST (Settings › Upscaling, while it is not ready): itself,
+    // what it needs beside it, what it may use (optional), and the engine,
+    // each with its state -- installed | downloading | partial | missing;
+    // the engine's ok | missing (a vpipe without its stage). It was a
+    // sentence naming some of them, where what was still to get was
+    // unclear.
+    Json checklist = Json::array();
+    {
+      std::vector<std::string> seen;
+      const Json vp = jget(e.engine, "vpipe", Json::object());
+      const Json rg = jget(vp, "regenerate", Json::object());
+      const Json up = jget(vp, "upscale", Json::object());
+      auto item = [&](const std::string& id, const char* role,
+                      bool optional) {
+        if (id.empty() || std::ranges::find(seen, id) != seen.end()) {
+          return;
+        }
+        const auto* m = _catalog.find(id);
+        if (m == nullptr) { return; }
+        seen.push_back(id);
+        const auto st = _store->info(*m).state;
+        const std::string state =
+            st == models::InstallState::Installed ? "installed"
+            : coming_(*m)                          ? "downloading"
+                                                   : models::to_str(st);
+        checklist.push_back({{"id", m->id}, {"name", m->name},
+                             {"role", role}, {"optional", optional},
+                             {"gated", m->gated}, {"state", state}});
+      };
+      item(e.id, "model", false);
+      for (const auto& r : e.requires_models) { item(r, "needs", false); }
+      item(jget<std::string>(rg, "upscaler", ""), "needs", false);
+      item(jget<std::string>(rg, "base", ""), "needs", false);
+      for (const auto& a : jget(rg, "adapters", Json::array())) {
+        if (a.is_string()) { item(a.get<std::string>(), "needs", false); }
+      }
+      item(jget<std::string>(up, "encoder", ""), "needs", false);
+      item(jget<std::string>(rg, "fast_decoder", ""), "fast-decoder", true);
+      item(jget<std::string>(up, "x2", ""), "x2", true);
+      // the engine's support, where an engine runs to ask
+      if (_engine && _engine->available()) {
+        const bool ok = upscaler_runs_(e) && (!refines || refiner_runs_(e));
+        checklist.push_back({{"id", ""}, {"role", "engine"},
+                             {"optional", false},
+                             {"state", ok ? "ok" : "missing"}});
+      }
+    }
     list.push_back(
         {{"id", e.id},
          {"name", e.name},
+         {"checklist", std::move(checklist)},
          {"kind", e.has(models::Capability::UpscaleVideo) ? "video"
                                                           : "image"},
+         // every kind it restores (RelayVSR: both), for the pickers
+         {"kinds", [&] {
+            Json k = Json::array();
+            if (e.has(models::Capability::UpscaleVideo)) k.push_back("video");
+            if (e.has(models::Capability::UpscaleImage)) k.push_back("image");
+            return k;
+          }()},
          {"family", e.family},
          {"refines", refines},
          {"in_context",
@@ -3461,10 +3547,11 @@ Controller::assistant_model() const
       return m;
     }
   }
+  // Chosen, it runs where it is READY -- what it reads beside it here
+  // too (DeepSeek's GGUFs their n-gram table).
   if (!_assistant_choice.empty()) {
     if (const auto* m = _catalog.find(_assistant_choice);
-        m && m->role == "assistant" &&
-        _store->info(*m).state == models::InstallState::Installed) {
+        m && m->role == "assistant" && ready_(*m)) {
       return m;
     }
   }
@@ -3478,8 +3565,7 @@ Controller::agent_model() const
   // agent's too: the 9B on a 24 GB Mac whatever is chosen.
   if (_agent && _assistant.empty()) {
     if (const auto* m = _catalog.find(_agent->model_choice());
-        m && m->role == "assistant" &&
-        _store->info(*m).state == models::InstallState::Installed) {
+        m && m->role == "assistant" && ready_(*m)) {
       return m;
     }
   }
@@ -3711,6 +3797,12 @@ Controller::resolve_model_(const models::ModelEntry& e,
   ref.id = e.id;
   ref.family = e.family;
   ref.dir = inst.dir;
+  // A GGUF of a repo of several (orcarouter's quantizations side by
+  // side): its file -- a split one's first shard, which opens the rest --
+  // as vpipe's catalogue registers it; its folder would name them all.
+  if (inst.file.extension() == ".gguf") {
+    ref.dir = inst.path();
+  }
   ref.engine = e.engine;
   if (want_preview && !e.preview_with.empty()) {
     if (const auto* tae = _catalog.find(e.preview_with)) {
@@ -4078,11 +4170,17 @@ Controller::download_model(const std::string& model_id,
     download_ended_(id, false, false);
     return submitted.error();
   }
-  if (const auto* d = _catalog.find(drafter);
-      d && _store->info(*d).state != models::InstallState::Installed) {
-    // From where the model came, where that carries it.
-    const bool there = !_engine->source_path(source, d->hf_path).empty();
-    (void)download_model(d->id, "", there ? source : "");
+  // ...and what comes with it (catalog `comes_with`: DeepSeek's GGUFs'
+  // n-gram table), each a download of its own after it.
+  std::vector<std::string> with{drafter};
+  with.insert(with.end(), e->comes_with.begin(), e->comes_with.end());
+  for (const auto& w : with) {
+    if (const auto* d = _catalog.find(w);
+        d && _store->info(*d).state != models::InstallState::Installed) {
+      // From where the model came, where that carries it.
+      const bool there = !_engine->source_path(source, d->hf_path).empty();
+      (void)download_model(d->id, "", there ? source : "");
+    }
   }
   return rec.id;
 }
@@ -6781,6 +6879,25 @@ Controller::helper_params_(const models::ModelEntry& m) const
   if (agent_ngram_asked_(m)) {
     p["ngram_resident"] = true;
   }
+  // FAR MEMORY for its expert cache (DESIGN §11e): another Mac's memory
+  // lent over Thunderbolt, its experts read from there in place of the
+  // drive. VALTZ_FAR_MEMORY=<valtz-far params> names a lender by hand.
+  // VALTZ_FAR_MEMORY=off: none, paired or not.
+  const char* fv = std::getenv("VALTZ_FAR_MEMORY");
+  if (fv != nullptr && std::string_view(fv) == "off") {
+    // none
+  } else if (const char* v = fv; v != nullptr && *v != '\0') {
+    Json fp = Json::parse(v, nullptr, false);
+    if (fp.is_object()) {
+      p["far_memory"] = Json{{"transport", "valtz-far"},
+                             {"params", std::move(fp)}};
+    } else {
+      VALTZ_LOG_WARN("controller", "VALTZ_FAR_MEMORY is not a JSON object");
+    }
+  } else if (Json fp = far_params_(m); fp.is_object()) {
+    p["far_memory"] = Json{{"transport", "valtz-far"},
+                           {"params", std::move(fp)}};
+  }
   // Its whole context where this Mac holds it (Qwen3.5's and 3.8's
   // 262,144): an agent's long session runs to the model's limit, not
   // ours. Its K/V grows as it fills.
@@ -6805,6 +6922,13 @@ Controller::helper_params_(const models::ModelEntry& m) const
       p["draft_model"] = _store->info(*d).path().string();
       p["draft_bits"] = _assistant_drafter_bits;
     }
+  }
+  // Its EYES where its checkpoint carries none (catalog `eyes`: a GGUF's
+  // vision tower, the release's), when they are here: named to the chat,
+  // wherever the two lie (a link, another models folder).
+  if (const auto* e = m.eyes.empty() ? nullptr : _catalog.find(m.eyes);
+      e && _store->info(*e).state == models::InstallState::Installed) {
+    p["vision_model"] = _store->info(*e).path().string();
   }
   return p;
 }
@@ -10128,8 +10252,22 @@ Controller::upscale_(const AssetOpRequest& req, project::Project& p,
   // ones asked for, else what made it or was said of it.
   const Json regen = jget(jget(m->engine, "vpipe", Json::object()),
                           "regenerate", Json());
+  // RelayVSR's MODEL SCALE (Settings › Upscaling): x2 runs its 2x
+  // checkpoint (catalog `upscale.x2`) where the layer is scaled 2x or
+  // less and it is here (or coming), its arithmetic RelayVSR's own; else
+  // the 4x model, fitted down.
+  const Json tuning = upscale_tuning(*m);
+  const models::ModelEntry* run = m;
+  if (jget<std::string>(up, "kind", "") == "relayvsr" &&
+      jget<std::string>(tuning, "model_scale", "x4") == "x2" &&
+      std::max(sx, sy) <= 2.0 + 1e-9) {
+    const auto* x2 = _catalog.find(jget<std::string>(up, "x2", ""));
+    if (x2 && coming_(*x2)) {
+      run = x2;
+    }
+  }
   project::Recipe r;
-  r.model = m->id;
+  r.model = run->id;
   r.deterministic = false;
   if (clip && regen.is_object()) {
     if (!refiner_runs_(*m)) {
@@ -10183,10 +10321,10 @@ Controller::upscale_(const AssetOpRequest& req, project::Project& p,
   }
   // Its arithmetic, as Settings › Upscaling has it: the stages' int8
   // GEMMs, Sage, Sol (graph-builder's accel_of).
-  r.params["tuning"] = upscale_tuning(*m);
+  r.params["tuning"] = tuning;
   stamp_reproducible_(r.params["tuning"]);
   r.inputs.push_back({"source", src.id, v.number});
-  stamp_origin(r, *m);
+  stamp_origin(r, *run);
   std::vector<OpMade> made;
   made.push_back({std::format("{} {}×{}", src.name, to.width, to.height),
                   clip ? project::AssetKind::Video
@@ -13180,19 +13318,36 @@ Controller::run_remote_(std::vector<Json> members, fleet::Offer offer,
           started->store(true);
         }
         const auto why = jget<std::string>(ev.data, "fleet", "");
-        if (ev.kind != engine::JobEventKind::Failed || why.empty()) {
+        // REFUSED FOR MEMORY there (its plan does not fit that Mac: vpipe
+        // refuses before anything is made, or at its first frame): the
+        // member would not take it either -- it began, and wrote nothing.
+        const bool no_room = ev.kind == engine::JobEventKind::Failed &&
+                             ev.error == Code::OutOfMemory;
+        if (ev.kind != engine::JobEventKind::Failed ||
+            (why.empty() && !no_room)) {
           sink(ev);
           return;
         }
-        // Declined, or gone before it began: the next member, or here.
-        if (!started->load() && !withdrawn_(ev.job) &&
+        // Declined, gone before it began, or no room there: the next
+        // member, or back in this Mac's queue -- the person told.
+        if ((!started->load() || no_room) && !withdrawn_(ev.job) &&
             (!rest->empty() || keep->has_value())) {
-          VALTZ_LOG_INFO("fleet", "{}: {} ({})", again.title, ev.text, why);
+          VALTZ_LOG_INFO("fleet", "{}: {} ({})", again.title, ev.text,
+                         no_room ? std::string("no memory there") : why);
+          if (no_room) {
+            const MessageArgs args = {{"member", name}};
+            post_("job.runner", ev.job,
+                  {{"returned", message_fields(msg::kFleetNoMemory, args)}});
+          }
           if (run_remote_(std::move(*rest), again, out_dir,
                           std::move(*keep), sink)
                   .ok()) {
             return;
           }
+        }
+        if (no_room) {
+          sink(ev);    // its own words: what did not fit there
+          return;
         }
         // Worded for the person: who, and why.
         engine::JobEvent e = ev;
@@ -13341,6 +13496,12 @@ Controller::fleet_self_() const
           // A job's own weights taken with it (DESIGN §11d), and the
           // room for them.
           {"takes_weights", _share != nullptr},
+          // Its LENT MEMORY (DESIGN §11e): the port, and what it would
+          // lend now -- a member's expert cache takes it as its far tier.
+          {"far_port", _lender ? _lender->port() : 0},
+          {"far_bytes", _lender && _fleet
+                            ? fleet::lend_bytes_for(_fleet->config().lend)
+                            : std::uint64_t(0)},
           {"free_bytes", [&] {
              std::error_code ec;
              const auto sp = fs::space(_fleet_files.empty()
@@ -13385,7 +13546,8 @@ Controller::fleet_serve_(const fleet::Offer& o, const std::string& from,
   // Files of the sender's own are never sent, so never named: a path in
   // a job from elsewhere is refused.
   auto named = own_file_keys();
-  for (const char* k : {"mtp_model", "draft_model", "output"}) {
+  for (const char* k : {"mtp_model", "draft_model", "vision_model",
+                        "output"}) {
     named.emplace_back(k);
   }
   for (const auto& k : named) {
@@ -13707,6 +13869,15 @@ Controller::fleet_configure(const Json& j)
   }
   if (j.contains("send_weights")) {
     c.send_weights = jget(j, "send_weights", false);
+  }
+  if (j.contains("lend")) {
+    // "auto", "off", or GB: what this Mac lends a member's expert cache.
+    std::string v = jget<std::string>(j, "lend", "auto");
+    if (v != "auto" && v != "off" && std::atof(v.c_str()) <= 0) {
+      return make_error(Code::InvalidArgument,
+                        "lend is auto, off or a number of GB");
+    }
+    c.lend = v;
   }
   if (j.contains("pair_share")) {
     c.pair_share = std::clamp(jget(j, "pair_share", 0.0), 0.0, 0.95);

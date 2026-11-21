@@ -10,6 +10,7 @@
 #include "valtz/fleet/fleet.h"
 #include "valtz/fleet/model-share.h"
 #include "valtz/fleet/thunderbolt.h"
+#include "fleet/far-compute.h"
 #include "valtz/project/records.h"
 
 #include <atomic>
@@ -19,6 +20,7 @@
 #include <fstream>
 #include <mutex>
 #include <thread>
+#include <sys/mman.h>
 #include <unistd.h>
 
 using namespace valtz;
@@ -732,7 +734,12 @@ public:
   }
 
   void fleet_cancel(JobId) override {}
-  void fleet_note(std::string, Json) override {}
+  void
+  fleet_note(std::string kind, Json) override
+  {
+    if (kind == "fleet.changed") { ++changed; }
+  }
+  std::atomic<int> changed = 0;
 
   Json
   fleet_load() override
@@ -912,6 +919,54 @@ TEST(fleet, a_job_goes_to_a_member_and_comes_back)
   fs::remove_all(d);
 }
 
+// A fleet made on another Mac shows on this one's Fleet page BY ITSELF:
+// Bonjour's find tells the app (fleet.changed), as Discoverable switched
+// did -- the page re-read only then.
+TEST(fleet, a_fleet_found_is_told_the_app)
+{
+  if (!std::getenv("VALTZ_TEST_FLEET")) {
+    SKIP("set VALTZ_TEST_FLEET=1 (two members on this Mac's loopback)");
+  }
+  const fs::path d = temp_dir("found");
+  // This Mac: in no fleet, its Fleet page open (browsing).
+  Config me;
+  me.member_id = Uuid::v7().str();
+  me.member_name = "looker";
+  (void)save_config(d / "looker.json", me);
+  FakeHost hl;
+  auto looker = make_fleet(d / "looker.json", d / "looker-files", hl);
+  looker->browse(true);
+  auto listed = [&](const std::string& name) {
+    for (const auto& f : jget(looker->status(), "fleets", Json::array())) {
+      if (jget<std::string>(f, "fleet", "") == name) { return true; }
+    }
+    return false;
+  };
+  std::this_thread::sleep_for(std::chrono::seconds(1));
+  const int before = hl.changed.load();
+  const std::string fleet = "Found " + Uuid::v7().str().substr(0, 8);
+  // The other: a fleet made, discoverable.
+  Config other;
+  other.member_id = Uuid::v7().str();
+  other.member_name = "maker";
+  other.fleet = fleet;
+  other.key = derive_key(fleet, "a-long-test-secret");
+  other.discoverable = true;
+  (void)save_config(d / "maker.json", other);
+  FakeHost hm;
+  auto maker = make_fleet(d / "maker.json", d / "maker-files", hm);
+  // Listed, and the app told -- with nothing switched here.
+  REQUIRE(eventually([&] { return listed(fleet); }, 20));
+  CHECK(eventually([&] { return hl.changed.load() > before; }, 5));
+  // Gone: told again.
+  const int found = hl.changed.load();
+  maker->stop();
+  CHECK(eventually([&] { return !listed(fleet); }, 30));
+  CHECK(eventually([&] { return hl.changed.load() > found; }, 5));
+  looker->stop();
+  fs::remove_all(d);
+}
+
 // The FLEET'S ARITHMETIC (the status bar's Fleet meter): each member
 // tells its own TFLOP/s as they move, and each adds up its own and the
 // others' -- with the highest the sum reached kept when it falls.
@@ -974,4 +1029,266 @@ TEST(fleet, the_members_arithmetic_is_added_up)
   air->stop();
   studio->stop();
   fs::remove_all(d);
+}
+
+// RUN THERE (DESIGN §11e; prototype): the lender's expert kernels over its
+// lent memory against the arithmetic on the CPU -- three FP4 experts of
+// random codes at offsets in the memory, a row's weighted sum in bf16 (an
+// ulp or two of bf16 apart where the GPU sums in another order) -- and a
+// part past the memory refused.
+TEST(fleet, the_lender_runs_fp4_experts_in_place)
+{
+  const std::size_t bytes = 64u << 20;
+  void* m = ::mmap(nullptr, bytes, PROT_READ | PROT_WRITE,
+                   MAP_PRIVATE | MAP_ANON, -1, 0);
+  REQUIRE(m != MAP_FAILED);
+  auto* mem = static_cast<std::uint8_t*>(m);
+  std::string err;
+  auto fc = fleet::FarCompute::create(mem, bytes, &err);
+  if (!fc) { SKIP("no GPU here: " + err); }
+  const int H = 512, I = 768;
+  far_wire::ComputeForm form{};
+  form.format = far_wire::kComputeFp4;
+  form.dtype = 1;
+  form.hidden = H;
+  form.inter = I;
+  form.swiglu_limit = 10.0f;
+  std::uint32_t seed = 12345u;
+  auto rnd = [&] {
+    seed = seed * 1664525u + 1013904223u;
+    return seed >> 8;
+  };
+  far_wire::ComputeCall calls[3]{};
+  std::uint64_t at = 4096;
+  for (auto& c : calls) {
+    for (int k = 0; k < 6; ++k) {
+      c.part[k] = at;
+      const std::uint64_t n = far_wire::compute_part_bytes(form, k);
+      for (std::uint64_t i = 0; i < n; ++i) {
+        mem[at + i] = k % 2 == 0 ? (std::uint8_t)rnd()
+                                 : (std::uint8_t)(120 + rnd() % 6);
+      }
+      at += (n + 255) / 256 * 256 + 1024;   // not packed
+    }
+    c.weight = 0.2f + 0.1f * (float)(&c - calls);
+  }
+  auto bf = [](float f) {   // round to bf16, nearest even
+    std::uint32_t u;
+    std::memcpy(&u, &f, 4);
+    u += 0x7fffu + ((u >> 16) & 1u);
+    return (std::uint16_t)(u >> 16);
+  };
+  auto fl = [](std::uint16_t b) {
+    const std::uint32_t u = (std::uint32_t)b << 16;
+    float f;
+    std::memcpy(&f, &u, 4);
+    return f;
+  };
+  static const float kE2m1[16] = {0.0f, 0.5f, 1.0f, 1.5f, 2.0f, 3.0f,
+                                  4.0f, 6.0f, -0.0f, -0.5f, -1.0f, -1.5f,
+                                  -2.0f, -3.0f, -4.0f, -6.0f};
+  // row r of a [rows, cols] FP4 matrix dotted with v
+  auto dot = [&](std::uint64_t codes, std::uint64_t scales, int r, int cols,
+                 const std::vector<float>& v) {
+    double s = 0;
+    for (int c = 0; c < cols; ++c) {
+      const std::uint8_t b = mem[codes + (std::uint64_t)r * cols / 2 + c / 2];
+      const float q = kE2m1[c % 2 == 0 ? b & 15 : b >> 4];
+      const std::uint8_t e = mem[scales + (std::uint64_t)r * cols / 32 +
+                                 c / 32];
+      s += (double)q * std::ldexp(1.0, (int)e - 127) * v[(std::size_t)c];
+    }
+    return (float)s;
+  };
+  std::vector<std::uint16_t> x((std::size_t)H);
+  std::vector<float> xf((std::size_t)H);
+  for (int i = 0; i < H; ++i) {
+    x[(std::size_t)i] = bf(((float)(rnd() % 2001) - 1000.0f) / 400.0f);
+    xf[(std::size_t)i] = fl(x[(std::size_t)i]);
+  }
+  // each call's row, rounded as the model's kernels round it (vpipe's
+  // far-compute/2: a row a call, in call order)
+  std::vector<float> want((std::size_t)3 * H, 0.0f);
+  for (const auto& c : calls) {
+    const std::size_t j = (std::size_t)(&c - calls);
+    std::vector<float> act((std::size_t)I);
+    for (int f = 0; f < I; ++f) {
+      float g = dot(c.part[0], c.part[1], f, H, xf);
+      float u = dot(c.part[2], c.part[3], f, H, xf);
+      u = std::clamp(u, -10.0f, 10.0f);
+      g = std::min(g, 10.0f);
+      act[(std::size_t)f] = fl(bf(c.weight * (g / (1.0f + std::exp(-g)) * u)));
+    }
+    for (int r = 0; r < H; ++r) {
+      want[j * H + (std::size_t)r] =
+          fl(bf(dot(c.part[4], c.part[5], r, I, act)));
+    }
+  }
+  std::vector<std::uint16_t> got((std::size_t)3 * H);
+  REQUIRE(fc->run(form, calls, 3, x.data(), got.data(), &err));
+  double worst = 0, scale = 0;
+  for (int i = 0; i < 3 * H; ++i) {
+    const float w = want[(std::size_t)i];
+    scale = std::max(scale, (double)std::fabs(w));
+    worst = std::max(worst,
+                     (double)std::fabs(fl(got[(std::size_t)i]) - w));
+  }
+  std::printf("[far] run here: worst %.3g of %.3g\n", worst, scale);
+  CHECK(scale > 0 && worst <= scale * 0.02);
+  // a part past the memory
+  far_wire::ComputeCall bad = calls[0];
+  bad.part[4] = bytes - 16;
+  CHECK(!fc->run(form, &bad, 1, x.data(), got.data(), &err));
+  fc.reset();
+  ::munmap(m, bytes);
+}
+
+// BENCH (VALTZ_FAR_COMPUTE_BENCH=1): the lender's call as a decode sends
+// it -- 1-3 of DeepSeek V4.1 Flash's FP4 experts (random codes) a call, a
+// millisecond apart, from a pool of 64 -- timed whole, at the keep-warm
+// intervals in VALTZ_FAR_COMPUTE_BENCH_WARM ("0,20,100" us).
+TEST(fleet, far_compute_bench)
+{
+  if (std::getenv("VALTZ_FAR_COMPUTE_BENCH") == nullptr) {
+    SKIP("set VALTZ_FAR_COMPUTE_BENCH=1");
+  }
+  far_wire::ComputeForm form{};
+  form.format = far_wire::kComputeFp4;
+  form.dtype = 1;
+  form.hidden = 5120;
+  form.inter = 2304;
+  form.swiglu_limit = 10.0f;
+  std::uint64_t per = 0;
+  for (int k = 0; k < 6; ++k) { per += far_wire::compute_part_bytes(form, k); }
+  const char* pv = std::getenv("VALTZ_FAR_COMPUTE_BENCH_POOL");
+  const int pool = pv != nullptr ? std::max(4, std::atoi(pv)) : 64;
+  const std::size_t bytes = (per * pool + (1u << 24)) / (1u << 24) * (1u << 24);
+  void* m = ::mmap(nullptr, bytes, PROT_READ | PROT_WRITE,
+                   MAP_PRIVATE | MAP_ANON, -1, 0);
+  REQUIRE(m != MAP_FAILED);
+  auto* mem = static_cast<std::uint8_t*>(m);
+  for (std::size_t i = 0; i < bytes; ++i) {
+    mem[i] = (std::uint8_t)(i % 7 == 0 ? 121 : (i * 2654435761u) >> 24);
+  }
+  std::vector<int> warms = {0, 20, 100};
+  if (const char* v = std::getenv("VALTZ_FAR_COMPUTE_BENCH_WARM")) {
+    warms.clear();
+    std::stringstream ss(v);
+    for (std::string t; std::getline(ss, t, ',');) {
+      warms.push_back(std::atoi(t.c_str()));
+    }
+  }
+  std::vector<std::uint16_t> x(5120, 0x3f00), out(5120);
+  // LOAD beside the calls, as a lender's session has it: _SPIN threads
+  // spinning (its RDMA links' and calls' threads), _COPY GB/s copied
+  // into the memory 1 MiB at a time (its writes landing)
+  auto env_int = [](const char* k, int d) {
+    const char* v = std::getenv(k);
+    return v != nullptr ? std::atoi(v) : d;
+  };
+  const int spin = env_int("VALTZ_FAR_COMPUTE_BENCH_SPIN", 0);
+  const double copy_gbs = [] {
+    const char* v = std::getenv("VALTZ_FAR_COMPUTE_BENCH_COPY");
+    return v != nullptr ? std::atof(v) : 0.0;
+  }();
+  std::atomic<bool> quit{false};
+  std::vector<std::thread> load;
+  // how a spinner spins (_SPIN_KIND busy | yield | wfe | sleep) and where
+  // (_SPIN_QOS ui | bg)
+  const std::string kind = std::getenv("VALTZ_FAR_COMPUTE_BENCH_SPIN_KIND")
+                               ? std::getenv("VALTZ_FAR_COMPUTE_BENCH_SPIN_KIND")
+                               : "busy";
+  const std::string qn = std::getenv("VALTZ_FAR_COMPUTE_BENCH_SPIN_QOS")
+                             ? std::getenv("VALTZ_FAR_COMPUTE_BENCH_SPIN_QOS")
+                             : "ui";
+  const qos_class_t qos = qn == "bg"        ? QOS_CLASS_BACKGROUND
+                          : qn == "utility" ? QOS_CLASS_UTILITY
+                          : qn == "default" ? QOS_CLASS_DEFAULT
+                          : qn == "ini"     ? QOS_CLASS_USER_INITIATED
+                                            : QOS_CLASS_USER_INTERACTIVE;
+  const bool bg = qn != "ui";
+  for (int i = 0; i < spin; ++i) {
+    load.emplace_back([&quit, kind, qos] {
+      pthread_set_qos_class_self_np(qos, 0);
+      volatile std::uint64_t k = 0;
+      while (!quit.load(std::memory_order_relaxed)) {
+        k = k + 1;
+        if (kind == "yield") {
+          std::this_thread::yield();
+        } else if (kind == "wfe") {
+          __builtin_arm_wfe();
+        } else if (kind.rfind("sleep", 0) == 0) {
+          // "sleep" 1 us, "sleep50" 50 us
+          const int us = kind.size() > 5 ? std::atoi(kind.c_str() + 5) : 1;
+          std::this_thread::sleep_for(std::chrono::microseconds(us));
+        }
+      }
+    });
+  }
+  if (copy_gbs > 0) {
+    load.emplace_back([&quit, mem, bytes, copy_gbs] {
+      std::vector<std::uint8_t> src(1u << 20, 0x5a);
+      const double gap_us = 1048576.0 / (copy_gbs * 1e9) * 1e6;
+      std::uint64_t at = 0;
+      auto next = std::chrono::steady_clock::now();
+      while (!quit.load(std::memory_order_relaxed)) {
+        // into the pool's tail, past the experts the calls read
+        std::memcpy(mem + bytes - (8u << 20) + at, src.data(), src.size());
+        at = (at + src.size()) % (8u << 20);
+        next += std::chrono::microseconds((long)gap_us);
+        std::this_thread::sleep_until(next);
+      }
+    });
+  }
+  std::printf("[far] bench: %d spinning (%s%s), %.1f GB/s copied\n", spin,
+              kind.c_str(), bg ? (", " + qn).c_str() : "", copy_gbs);
+  // the calling thread's QoS (_CALLER_QOS bg: an efficiency core's)
+  if (const char* v = std::getenv("VALTZ_FAR_COMPUTE_BENCH_CALLER_QOS");
+      v != nullptr && std::string(v) == "bg") {
+    pthread_set_qos_class_self_np(QOS_CLASS_BACKGROUND, 0);
+  }
+  for (int w : warms) {
+    ::setenv("VALTZ_FAR_GPU_WARM_US", std::to_string(w).c_str(), 1);
+    std::string err;
+    auto fc = fleet::FarCompute::create(mem, bytes, &err);
+    if (!fc) { SKIP("no GPU here: " + err); }
+    for (int k : {1, 2, 3}) {
+      const fleet::FarCompute::Timing t0 = fc->timing();
+      std::vector<double> us;
+      std::uint32_t pick = 7;
+      for (int r = 0; r < 205; ++r) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        far_wire::ComputeCall calls[3]{};
+        for (int j = 0; j < k; ++j) {
+          pick = pick * 1664525u + 1013904223u;
+          std::uint64_t at = (std::uint64_t)((pick >> 8) % pool) * per;
+          for (int p = 0; p < 6; ++p) {
+            calls[j].part[p] = at;
+            at += far_wire::compute_part_bytes(form, p);
+          }
+          calls[j].weight = 0.3f;
+        }
+        const auto t0 = std::chrono::steady_clock::now();
+        REQUIRE(fc->run(form, calls, (std::size_t)k, x.data(), out.data(),
+                        &err));
+        if (r >= 5) {
+          us.push_back(std::chrono::duration<double, std::micro>(
+                           std::chrono::steady_clock::now() - t0).count());
+        }
+      }
+      std::sort(us.begin(), us.end());
+      const fleet::FarCompute::Timing t1 = fc->timing();
+      const double c = (double)(t1.calls - t0.calls);
+      std::printf("[far] bench: warm %3d us, %d expert%s: p50 %4.0f us, "
+                  "p90 %4.0f; lag %3.0f run %3.0f notice %3.0f\n", w, k,
+                  k == 1 ? " " : "s", us[us.size() / 2],
+                  us[us.size() * 9 / 10], (t1.lag_us - t0.lag_us) / c,
+                  (t1.run_us - t0.run_us) / c,
+                  (t1.notice_us - t0.notice_us) / c);
+    }
+  }
+  ::unsetenv("VALTZ_FAR_GPU_WARM_US");
+  quit.store(true);
+  for (auto& t : load) { t.join(); }
+  ::munmap(m, bytes);
 }

@@ -28,6 +28,9 @@
 #include "vpipe/vpipe.h"
 #include "stages/model-catalog.h"
 #include "generative-models/tensor-parallel.h"
+#include "generative-models/far-memory.h"
+#include "valtz-vpipe/far-wire.h"
+#include "valtz/fleet/far-lend.h"
 #include "plugin/plugin-abi.h"
 
 #include <CoreGraphics/CoreGraphics.h>
@@ -159,6 +162,75 @@ plugin_present()
 // through (DESIGN §11c), over the loopback: two ranks, one link and two
 // -- each exchange striped across them, the peer's partial arriving
 // whole -- the key checked both ways, and ranks out of step caught.
+// FAR MEMORY (DESIGN §11e): a lender's memory, reached through the
+// plugin's valtz-far -- written and read back, striped over connections;
+// a wrong key refused; a second Mac turned away while the first holds the
+// session, let in once it lets go; nothing taken before a session.
+TEST(vpipe_plugin, far_memory_is_lent_and_read_back)
+{
+  REQUIRE(plugin_present());
+  TestSession ts(test::temp_dir("vpx-far"));
+  REQUIRE(ts.s);
+  namespace g = vpipe::genai;
+  if (!g::far_memory_available()) { SKIP("vpipe without far-memory/1"); }
+  REQUIRE(g::find_far_memory_transport("valtz-far") != nullptr);
+  const std::string hex(64, 'a');
+  fleet::FarLender::Options o;
+  int sized = 0;
+  o.size = [&] {
+    ++sized;
+    return std::uint64_t(64) << 20;
+  };
+  o.key = [&] { return far_wire::from_hex(hex.data(), hex.size()); };
+  auto lender = fleet::FarLender::start(std::move(o));
+  REQUIRE(lender.ok());
+  CHECK(sized == 0 && (*lender)->traffic().lent == 0);
+  auto open = [&](const std::string& key) {
+    Json params = {{"links", {std::format("127.0.0.1:{}",
+                                          (*lender)->port())}},
+                   {"key", key}, {"streams", 3}, {"chunk_kb", 64},
+                   {"wait_ms", 2000}};
+    std::string e;
+    auto m = g::open_far_memory(
+        vp::to_flex({{"transport", "valtz-far"}, {"params", params}}), &e);
+    return std::make_pair(m, e);
+  };
+  {
+    auto [far, e] = open(hex);
+    REQUIRE(far != nullptr);
+    CHECK(far->bytes() == (64u << 20) && sized == 1);
+    // Two pieces at once, cut in chunks over the three connections.
+    std::vector<std::uint8_t> a(300000), b(5000), ra(a.size()), rb(b.size());
+    for (std::size_t i = 0; i < a.size(); ++i) { a[i] = (std::uint8_t)(i * 7); }
+    for (std::size_t i = 0; i < b.size(); ++i) { b[i] = (std::uint8_t)(i + 3); }
+    g::FarPiece w[2] = {{1000, a.data(), a.size()},
+                        {(64u << 20) - b.size(), b.data(), b.size()}};
+    CHECK(far->write(w, 2, &e));
+    g::FarPiece r[2] = {{1000, ra.data(), ra.size()},
+                        {(64u << 20) - b.size(), rb.data(), rb.size()}};
+    CHECK(far->read(r, 2, &e));
+    CHECK(ra == a && rb == b);
+    // Past the memory lent: refused before anything is sent.
+    g::FarPiece past{(64u << 20) - 10, rb.data(), 20};
+    CHECK(!far->read(&past, 1, &e));
+    // Another Mac while this one holds the session: no memory for it.
+    auto [other, e2] = open(hex);
+    CHECK(other == nullptr && e2.find("no memory") != std::string::npos);
+    // A wrong key: refused.
+    auto [wrong, e3] = open(std::string(64, 'b'));
+    CHECK(wrong == nullptr && e3.find("key") != std::string::npos);
+    CHECK((*lender)->traffic().lent == (64u << 20));
+  }
+  // Let go: the session ends, its memory given back; the next is sized
+  // anew.
+  for (int i = 0; i < 100 && (*lender)->traffic().lent != 0; ++i) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+  CHECK((*lender)->traffic().lent == 0);
+  auto [again, e4] = open(hex);
+  CHECK(again != nullptr && sized == 2);
+}
+
 TEST(vpipe_plugin, a_split_dits_partials_cross_between_ranks)
 {
   REQUIRE(plugin_present());

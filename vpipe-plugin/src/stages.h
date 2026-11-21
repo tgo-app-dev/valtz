@@ -15,6 +15,8 @@ void register_tap(vpipe::VpipePluginContext*);
 void register_summary(vpipe::VpipePluginContext*);
 // Not a stage: the tensor-parallel transport, valtz-tp.
 void register_tp(vpipe::VpipePluginContext*);
+// Not a stage: far memory, another Mac's lent to an expert cache.
+void register_far(vpipe::VpipePluginContext*);
 
 }
 

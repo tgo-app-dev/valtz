@@ -237,6 +237,8 @@ private struct AgentConversation: View {
         /// A block of code fenced in its words (CodeFences): a code
         /// block, `closed` false while it is being written.
         case code(language: String, body: String, closed: Bool)
+        /// A tool call written in its words (ToolCallText): a box, shut.
+        case call(ToolCallText.Call)
         case steps([AgentStep])
         case question(String)
         case note(String)
@@ -260,6 +262,20 @@ private struct AgentConversation: View {
         // The agent's words: a row a part, as written or being written
         // -- a block of code fenced in them a code block of its own.
         func words(_ id: String, _ text: String, writing: Bool) {
+            // A tool call written out -- the turn being decoded, or one
+            // its parser left in the words: a box of its own.
+            for (j, part) in ToolCallText.split(text).enumerated() {
+                switch part {
+                case .call(let c):
+                    add("\(id).k\(j)", .call(c),
+                        gap: out.isEmpty || j == 0 ? Self.rowGap : 8)
+                case .text(let t):
+                    fenced(j == 0 ? id : "\(id).k\(j)", t,
+                           writing: writing)
+                }
+            }
+        }
+        func fenced(_ id: String, _ text: String, writing: Bool) {
             for (i, seg) in CodeFences.split(text).enumerated() {
                 switch seg {
                 case .text(let t):
@@ -404,6 +420,8 @@ private struct AgentConversation: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
         case .code(let language, let body, let closed):
             CodeBlockView(code: body, language: language, closed: closed)
+        case .call(let c):
+            ToolCallBlockView(call: c)
         case .steps(let steps):
             AgentStepGroup(steps: steps)
         case .question(let q):
@@ -767,10 +785,11 @@ private struct AgentStepDisclosure: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            // The program it was given: a code block, shown -- not one
-            // line of JSON escapes behind the disclosure.
+            // The program it was given: a code block, shut to its header
+            // until opened -- not one line of JSON escapes.
             if let code = step.code, !code.isEmpty {
-                CodeBlockView(code: code, language: "javascript")
+                CodeBlockView(code: code, language: "javascript",
+                              collapsed: true)
                     .padding(.leading, 24)
                     .padding(.top, 2)
             }
@@ -956,10 +975,12 @@ struct SpeedMeter: View {
     var speed: AgentLiveSpeed
 
     var body: some View {
+        // At rest -- the round over -- its averages, neither lit.
+        let rested = speed.phase == "rested"
         let reading = speed.phase == "prefill"
         HStack(spacing: 6) {
-            figure("Prefill", speed.prefillTps, now: reading)
-            figure("Decode", speed.decodeTps, now: !reading)
+            figure("Prefill", speed.prefillTps, now: reading && !rested)
+            figure("Decode", speed.decodeTps, now: !reading && !rested)
         }
         .font(.caption.monospacedDigit())
         .lineLimit(1)
@@ -986,6 +1007,16 @@ struct SpeedMeter: View {
     }
 
     private var help: String {
+        if speed.phase == "rested" {
+            var lines = [String(localized: "The last round's averages: its prompt read, and its reply written, in tokens a second.")]
+            if let n = speed.prefillTokens, n > 0 {
+                lines.append(String(localized: "Read \(n.formatted()) tokens."))
+            }
+            if let d = speed.decoded {
+                lines.append(String(localized: "Written \(d.formatted()) tokens."))
+            }
+            return lines.joined(separator: "\n")
+        }
         var lines = [String(localized: "Prefill: the last piece of the prompt it read, in tokens a second. Decode: the reply's last 128 tokens, or this round's while it has fewer.")]
         if let done = speed.prefillDone, let total = speed.prefillTotal,
            total > 0, speed.phase == "prefill" {

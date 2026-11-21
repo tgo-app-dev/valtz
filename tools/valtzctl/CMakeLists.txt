@@ -4,3 +4,6 @@
 add_executable(valtzctl main.cc)
 target_link_libraries(valtzctl PRIVATE valtz::core)
 valtz_target_warnings(valtzctl)
+# far memory's wire (far-lend): shared with the plugin
+target_include_directories(valtzctl PRIVATE
+  "${PROJECT_SOURCE_DIR}/vpipe-plugin/include")

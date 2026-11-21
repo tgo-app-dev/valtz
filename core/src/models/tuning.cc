@@ -317,7 +317,8 @@ snake(std::string_view k)
 // after Valtz's: each {key, type: bool | int | real | choice (its
 // `choices`, strings: VOSR's colour fix), min, max, step,
 // default, presets: {speed, balanced, quality}, needs, excludes,
-// requires: "matrix-cores", label, note, help, group, stage}. A key
+// requires: "matrix-cores", requires_model: <catalog id> (offered
+// "not-installed" without it), label, note, help, group, stage}. A key
 // Valtz offers itself, or one already declared, is not taken: one key,
 // one meaning.
 void
@@ -363,6 +364,12 @@ declared_offers(const Json& vp, const TuningContext& ctx,
         o.preset = o.choices.front();
       }
       o.needs = jget<std::string>(d, "needs", "");
+      // a model it needs that is not here: offered, not taken
+      if (const auto rm = jget<std::string>(d, "requires_model", "");
+          !rm.empty() && !ctx.models_here.contains(rm)) {
+        o.available = false;
+        o.why = "not-installed";
+      }
       o.declared = true;
       o.label = jget<std::string>(d, "label", key);
       o.note = jget<std::string>(d, "note", "");
@@ -396,6 +403,11 @@ declared_offers(const Json& vp, const TuningContext& ctx,
         !ctx.matrix_cores) {
       o.available = false;
       o.why = "needs-matrix-cores";
+    }
+    if (const auto rm = jget<std::string>(d, "requires_model", "");
+        !rm.empty() && !ctx.models_here.contains(rm)) {
+      o.available = false;
+      o.why = "not-installed";
     }
     o.needs = jget<std::string>(d, "needs", "");
     for (const auto& x : jget(d, "excludes", Json::array())) {

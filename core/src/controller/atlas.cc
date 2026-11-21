@@ -50,6 +50,9 @@ struct Node {
   std::vector<int> in;
   std::vector<int> out;
   int              part = -1;
+  // An op of a layer's chain: its place in it, and the chain's length.
+  int              link = 0;
+  int              links = 1;
   // An asset something is made from, or a layer shows: no leaf.
   bool             feeds = false;
 };
@@ -57,7 +60,7 @@ struct Node {
 struct Edge {
   int         from = 0;
   int         to = 0;
-  std::string kind;  // input | made | layer | into | note
+  std::string kind;  // input | made | layer | chain | into | note
   std::string role;
   int         index = -1;  // into a generate node: its place in the row
 };
@@ -101,6 +104,45 @@ place(std::vector<int>& col, std::vector<Node>& nodes,
   }
 }
 
+// The adjust modifier's keys of one card: "color" the mixer's (mix_...),
+// "grade" the grade's (grade_...), "adjust" the rest (the sliders, the
+// opacity) -- flat, or in its keys. Only values off their rest are kept.
+bool
+look_has(const project::Asset& comp, const project::Layer& l,
+         const std::string& part)
+{
+  auto in = [&](const Json& o) {
+    if (!o.is_object()) {
+      return false;
+    }
+    for (const auto& [k, v] : o.items()) {
+      (void)v;
+      if (k == "keys" || k == "frame" || k == "interp" ||
+          k == "rate_num" || k == "rate_den") {
+        continue;
+      }
+      if (Controller::look_card(k) == part) {
+        return true;
+      }
+    }
+    return false;
+  };
+  for (const auto& m : comp.modifiers) {
+    if (m.layer != l.id || m.kind != "adjust") {
+      continue;
+    }
+    if (in(m.params)) {
+      return true;
+    }
+    for (const auto& k : jget(m.params, "keys", Json::array())) {
+      if (in(k)) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
 // What a layer does to what it shows, as the composition's modifiers for
 // it say: the look's parts, keyed or not, its time, its mask.
 Json
@@ -116,6 +158,12 @@ layer_look(const project::Asset& comp, const project::Layer& l)
             m.params.contains("rotate_keys");
     if (m.kind == "adjust") {
       look.push_back("adjust");
+      if (look_has(comp, l, "color")) {
+        look.push_back("mix");
+      }
+      if (look_has(comp, l, "grade")) {
+        look.push_back("grade");
+      }
     } else if (m.kind == "crop") {
       look.push_back("place");
       const double turn = m.params.value("rotate", 0.0);
@@ -147,6 +195,42 @@ layer_look(const project::Asset& comp, const project::Layer& l)
     look.push_back("pinned");
   }
   return look;
+}
+
+// The layer has a modifier of that kind.
+bool
+layer_has(const project::Asset& comp, const project::Layer& l,
+          const char* kind)
+{
+  return std::any_of(comp.modifiers.begin(), comp.modifiers.end(),
+                     [&](const project::Modifier& m) {
+                       return m.layer == l.id && m.kind == kind;
+                     });
+}
+
+// What a node of the chain shows of the layer's look: its own part's
+// marks, and the layer's state (keyed, masked, hidden, locked, pinned)
+// on each.
+Json
+part_look(const Json& look, const std::string& part)
+{
+  Json out = Json::array();
+  for (const auto& x : look) {
+    const auto v = x.get<std::string>();
+    const bool mine =
+        (part == "time" && (v == "timed" || v == "speed")) ||
+        (part == "adjust" && v == "adjust") ||
+        (part == "color" && v == "mix") ||
+        (part == "grade" && v == "grade") ||
+        (part == "place" && (v == "place" || v == "turn")) ||
+        (part == "sound" && v == "sound");
+    const bool state = v == "keyed" || v == "mask" || v == "hidden" ||
+                       v == "locked" || v == "pinned";
+    if (mine || state) {
+      out.push_back(v);
+    }
+  }
+  return out;
 }
 
 const char*
@@ -275,19 +359,55 @@ Controller::atlas(ProjectId pid)
       if (f == of.end() || f->second == at) {
         continue;
       }
-      const int o = op(at,
-                       {{"id", "l:" + a.id.str() + ":" + l.id},
-                        {"type", "layer"}, {"into", a.id.str()},
-                        {"layer", l.id}, {"index", i}, {"name", l.name},
-                        {"source", l.source->str()},
-                        {"look", layer_look(a, l)},
-                        {"in", l.time.in}, {"out", l.time.out},
-                        {"offset", l.time.offset},
-                        {"duration", l.time.duration}},
-                       kOpSlots);
-      nodes[o].order = nodes[at].order + 0.5 * (count - i) / (count + 1);
-      edge(f->second, o, "layer", "");
-      edge(o, at, "into", "");
+      // Its CHAIN, each adjustment a node of its own: its ADJUST (the
+      // Adjust card's sliders and opacity), its COLOR (the mixer), its
+      // GRADE -- one modifier, told apart by its keys -- its PLACE (cropped, placed, turned --
+      // on a still always: what places it there), its SOUND, and last,
+      // next to its composition, its TIME (on a timeline, or a
+      // composition of sound: what places it there, always). The node
+      // that places it carries the layer's own id; the others
+      // "<id>:<part>".
+      const bool timed = a.cls == AssetClass::Composition;
+      std::vector<std::string> parts;
+      for (const char* p : {"adjust", "color", "grade"}) {
+        if (look_has(a, l, p)) {
+          parts.push_back(p);
+        }
+      }
+      if (!timed || layer_has(a, l, "crop")) {
+        parts.push_back("place");
+      }
+      if (layer_has(a, l, "audio")) {
+        parts.push_back("sound");
+      }
+      if (timed) {
+        parts.push_back("time");
+      }
+      const std::string placing = timed ? "time" : "place";
+      const std::string base = "l:" + a.id.str() + ":" + l.id;
+      const Json look = layer_look(a, l);
+      int prev = f->second;
+      const int links = static_cast<int>(parts.size());
+      for (int j = 0; j < links; ++j) {
+        const std::string& part = parts[static_cast<std::size_t>(j)];
+        const int o = op(at,
+                         {{"id", part == placing ? base : base + ":" + part},
+                          {"type", "layer"}, {"step", part},
+                          {"into", a.id.str()}, {"layer", l.id},
+                          {"index", i}, {"name", l.name},
+                          {"source", l.source->str()},
+                          {"look", part_look(look, part)},
+                          {"in", l.time.in}, {"out", l.time.out},
+                          {"offset", l.time.offset},
+                          {"duration", l.time.duration}},
+                         kOpSlots);
+        nodes[o].order = nodes[at].order + 0.5 * (count - i) / (count + 1);
+        nodes[o].link = j;
+        nodes[o].links = links;
+        edge(prev, o, j == 0 ? "layer" : "chain", "");
+        prev = o;
+      }
+      edge(prev, at, "into", "");
     }
   }
 
@@ -354,11 +474,19 @@ Controller::atlas(ProjectId pid)
   // made from. What a cycle leaves (none should be) is ranked by what of
   // it was reached.
   const int count = static_cast<int>(nodes.size());
+  // (through a layer's chain to what it shows)
   auto preds = [&](int v) {
     std::vector<int> u;
-    for (int o : nodes[v].in) {
+    std::vector<int> walk(nodes[v].in.begin(), nodes[v].in.end());
+    while (!walk.empty()) {
+      const int o = walk.back();
+      walk.pop_back();
       for (int x : nodes[o].in) {
-        u.push_back(x);
+        if (nodes[x].asset) {
+          u.push_back(x);
+        } else {
+          walk.push_back(x);
+        }
       }
     }
     return u;
@@ -425,21 +553,27 @@ Controller::atlas(ProjectId pid)
       n.rank = std::max(0, first - 1);
     }
   }
-  int columns = 1;
+  // Columns: an asset's rank's, the ops between -- as many as the
+  // longest chain, a chain's nodes in the columns just before its
+  // composition; a generate node not run the one after its inputs.
+  // Columns nothing is in are dropped after (the loose laid first).
+  int span = 1;
+  for (const auto& n : nodes) {
+    span = std::max(span, n.links);
+  }
+  const int step = span + 1;
   for (auto& n : nodes) {
     if (n.asset) {
-      n.column = 2 * n.rank;
+      n.column = step * n.rank;
     } else if (n.owner >= 0) {
-      n.column = 2 * nodes[n.owner].rank - 1;
+      n.column = step * nodes[n.owner].rank - n.links + n.link;
     } else {
-      // A generate node not run: the op column after its inputs.
       int r = -1;
       for (int u : n.in) {
         r = std::max(r, nodes[u].rank);
       }
-      n.column = 2 * r + 1;
+      n.column = step * r + 1;
     }
-    columns = std::max(columns, n.column + 1);
   }
 
   // The parts: nodes joined by edges (union-find), the loose apart.
@@ -565,12 +699,28 @@ Controller::atlas(ProjectId pid)
   });
   for (std::size_t i = 0; i < loose.size(); ++i) {
     Node& n = nodes[loose[i]];
-    n.column = 2 * static_cast<int>(i % kLoosePerRow);
+    n.column = step * static_cast<int>(i % kLoosePerRow);
     n.y = top + static_cast<double>(i / kLoosePerRow) *
                     (kAssetSlots + kGap);
     n.json["loose"] = true;
-    columns = std::max(columns, n.column + 1);
   }
+  // The columns used, in order, each an asset's or an op's.
+  std::map<int, int> used;
+  for (const auto& n : nodes) {
+    used[n.column] = 0;
+  }
+  Json column_kinds = Json::array();
+  {
+    int k = 0;
+    for (auto& [c, to] : used) {
+      to = k++;
+      column_kinds.push_back(c % step == 0 ? "asset" : "op");
+    }
+  }
+  for (auto& n : nodes) {
+    n.column = used[n.column];
+  }
+  const int columns = std::max(1, static_cast<int>(used.size()));
   const double height =
       loose.empty()
           ? std::max(0.0, top - kPartGap)
@@ -604,6 +754,7 @@ Controller::atlas(ProjectId pid)
   return Json{{"nodes", std::move(out_nodes)},
               {"edges", std::move(out_edges)},
               {"columns", columns},
+              {"column_kinds", std::move(column_kinds)},
               {"height", height}};
 }
 

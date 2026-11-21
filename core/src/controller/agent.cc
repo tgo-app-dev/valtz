@@ -326,8 +326,19 @@ public:
   sees() const override
   {
     const auto* m = _c.agent_model();
-    return m != nullptr && (m->has(models::Capability::VideoSummary) ||
-                            m->has(models::Capability::Caption));
+    if (m == nullptr) {
+      return false;
+    }
+    if (m->has(models::Capability::VideoSummary) ||
+        m->has(models::Capability::Caption)) {
+      return true;
+    }
+    // A GGUF's eyes beside it (catalog `eyes`: the release's vision
+    // tower), where they are here.
+    const auto* eyes = m->eyes.empty() ? nullptr
+                                       : _c._catalog.find(m->eyes);
+    return eyes != nullptr && _c._store->info(*eyes).state ==
+                                  models::InstallState::Installed;
   }
 
   // This Mac's helper's, as its memory gives it -- or the member's that
@@ -2023,6 +2034,25 @@ Controller::AgentHost::run_(Session& s)
       ++s.turns;
       s.usage = reply->usage;
       s.stats = stats;
+      // The turn over, nothing read or written: the meter shows the
+      // round's own averages, not its last piece (phase "rested").
+      Json rested = {{"phase", "rested"}};
+      for (const char* k : {"prefill_tps", "decode_tps"}) {
+        if (const auto it = stats.find(k);
+            it != stats.end() && it->is_number()) {
+          rested[k] = *it;
+        }
+      }
+      if (const auto it = stats.find("decode_tokens");
+          it != stats.end() && it->is_number()) {
+        rested["decoded"] = *it;
+      }
+      if (const auto it = stats.find("prefill_tokens");
+          it != stats.end() && it->is_number()) {
+        rested["prefill_tokens"] = *it;
+      }
+      s.live_speed = rested;
+      _c.post_("agent.speed", JobId{}, {{"agent", s.id}, {"speed", rested}});
       s.messages.push_back({.role = "assistant",
                             .content = reply->content,
                             .raw = reply->raw,

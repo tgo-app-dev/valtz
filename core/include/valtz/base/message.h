@@ -263,6 +263,13 @@ inline constexpr Message kSplitBusyHere{
     "core.split_busy_here",
     "This Mac is busy: made whole -- on a free member where there is "
     "one, else here in its turn."};
+inline constexpr Message kFleetNoMemory{
+    "core.fleet_no_memory",
+    "{member} does not have the memory for this job: it goes to another member, or waits here."};
+inline constexpr Message kSplitTaomateLora{
+    "core.split_taomate_lora",
+    "With TaoMate as a LoRA only where both Macs run an engine that "
+    "splits it."};
 inline constexpr Message kSplitNeuralEngine{
     "core.split_neural_engine",
     "With the Neural Engine's share only where both Macs run an engine "
@@ -272,7 +279,7 @@ inline constexpr Message kSplitNeuralEngineModel{
     "Not with the Neural Engine's share for {model}."};
 inline constexpr Message kSplitVdnTaomate{
     "core.split_vdn_taomate",
-    "Not with VDN or TaoMate."};
+    "Not with VDN or TaoMate's streaming (TaoMate as a LoRA only splits)."};
 inline constexpr Message kSplitOwnFiles{
     "core.split_own_files",
     "Not with Custom's own DiT, VAE or text encoder: {member} does not "
@@ -293,7 +300,7 @@ inline constexpr Message kSplitModelThere{
     "{member}'s Valtz or vpipe cannot split {model}."};
 inline constexpr Message kSplitContinued{
     "core.split_continued",
-    "Not a clip continued from its kept latents, or cleaned, yet."};
+    "Not a clip continued through its end with its guide cleaned, yet."};
 inline constexpr Message kSplitPeerFailed{
     "core.split_peer_failed",
     "{member} failed its half: {reason}"};

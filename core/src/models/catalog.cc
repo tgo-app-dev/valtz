@@ -207,6 +207,8 @@ read_entry(const Json& m, const Contributor& who, ModelEntry& e,
   e.preview_with = jget<std::string>(m, "preview_with", "");
   e.requires_models = jget(m, "requires", std::vector<std::string>{});
   e.requires_one_of = jget(m, "requires_one_of", std::vector<std::string>{});
+  e.comes_with = jget(m, "comes_with", std::vector<std::string>{});
+  e.eyes = jget<std::string>(m, "eyes", "");
   e.files_of = jget<std::string>(m, "files_of", "");
   e.license = jget<std::string>(m, "license", "");
   e.gated = jget(m, "gated", false);
@@ -321,6 +323,16 @@ missing_reference(const Catalog& cat, const ModelEntry& e,
       *what = "requires one of";
       return r;
     }
+  }
+  for (const auto& r : e.comes_with) {
+    if (!cat.find(r)) {
+      *what = "comes with";
+      return r;
+    }
+  }
+  if (!e.eyes.empty() && !cat.find(e.eyes)) {
+    *what = "eyes";
+    return e.eyes;
   }
   const Json vp = jget(e.engine, "vpipe", Json::object());
   for (const auto& [block, key] :

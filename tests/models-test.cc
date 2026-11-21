@@ -3132,6 +3132,79 @@ TEST(models, ternary_bonsai_is_a_helper_by_name)
   CHECK(listed);
 }
 
+// The llama.cpp GGUFs vpipe a12871d4 reads, offered as the agent's models
+// by name: DeepSeek V4.1 Flash's IQ2_XXS (AtomicChat) -- its n-gram table a
+// record of its own (ISTA-DASLab's), needed beside it and downloaded with
+// it -- and Flash-Next's Q4_K_M and Q5_K_M (orcarouter, gated), each a
+// split GGUF of a repo of several: installed when its every shard is, its
+// first shard the model's path.
+TEST(models, the_agents_ggufs_are_helpers_by_name)
+{
+  auto c = Catalog::builtin();
+  REQUIRE_OK(c);
+  auto root = test::temp_dir("models-agent-ggufs");
+  ModelStore store({root});
+  auto put = [&](const ModelEntry& e, std::size_t upto) {
+    const auto dir = root / e.hf_path;
+    std::filesystem::create_directories(dir);
+    std::vector<std::string> all{e.file};
+    all.insert(all.end(), e.beside.begin(), e.beside.end());
+    for (std::size_t i = 0; i < std::min(upto, all.size()); ++i) {
+      std::ofstream(dir / all[i]) << "GGUF";
+    }
+  };
+  const ModelEntry* table = c->find("deepseek-v4.1-flash-gguf-ngram");
+  REQUIRE(table);
+  CHECK(table->role != "assistant");
+  for (const char* id : {"deepseek-v4.1-flash-iq2xxs",
+                         "qwen3.8-flash-next-q4km",
+                         "qwen3.8-flash-next-q5km"}) {
+    const ModelEntry* m = c->find(id);
+    REQUIRE(m);
+    CHECK(m->role == "assistant" && m->by_name);
+    CHECK(m->has(Capability::PromptEnhance));
+    CHECK(!m->has(Capability::Caption));        // text only here
+    CHECK(!m->fetch_variant.empty());
+    CHECK(m->file.ends_with("-00001-of-00004.gguf") ||
+          m->file.ends_with("-00001-of-00003.gguf"));
+    CHECK(!m->beside.empty());
+    CHECK(jget(jget(m->engine, "vpipe", Json::object()), "mtp", true) ==
+          false);
+    // A shard short: a download not finished.
+    put(*m, m->beside.size());
+    store.rescan();
+    CHECK(store.info(*m).state == InstallState::Partial);
+    put(*m, 99);
+    store.rescan();
+    const auto info = store.info(*m);
+    CHECK(info.state == InstallState::Installed);
+    CHECK(info.path().filename() == m->file);
+    // Never Auto's, every helper installed.
+    const ModelEntry* a = pick_assistant(*c, store, box(256));
+    CHECK(!a || a->id != m->id);
+  }
+  const ModelEntry* ds = c->find("deepseek-v4.1-flash-iq2xxs");
+  CHECK(ds->requires_models == std::vector<std::string>{table->id});
+  // ...and its eyes, the release's vision tower (catalog `eyes`).
+  CHECK((ds->comes_with ==
+         std::vector<std::string>{table->id, "deepseek-v4.1-flash-vision"}));
+  CHECK(ds->eyes == "deepseek-v4.1-flash-vision");
+  const auto installed = [&](const ModelEntry& x) {
+    return store.info(x).state == InstallState::Installed;
+  };
+  CHECK(!needs_met(*c, *ds, installed));
+  put(*table, 1);
+  store.rescan();
+  CHECK(needs_met(*c, *ds, installed));
+  for (const char* id : {"qwen3.8-flash-next-q4km",
+                         "qwen3.8-flash-next-q5km"}) {
+    CHECK(c->find(id)->gated);
+  }
+  // Two quantizations of one repo side by side, each its own.
+  CHECK(store.info(*c->find("qwen3.8-flash-next-q4km")).path() !=
+        store.info(*c->find("qwen3.8-flash-next-q5km")).path());
+}
+
 // A LOCKED Neural Engine split (Settings › General › Reproducibility): the
 // share that balances the two engines' rates on a feed-forward. An M4 Pro
 // lands where vpipe's own figure does (12.6 TOPS against ~7 TFLOP/s:

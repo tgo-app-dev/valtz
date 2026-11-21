@@ -19,13 +19,26 @@ struct CapabilitiesView: View {
 
     var body: some View {
         ScrollViewReader { scroller in
-        List {
+        // A plain stack, not a List of DisclosureGroups: SwiftUI drives
+        // such a List through an NSOutlineView, and Valtz 34 crashed in
+        // it -- AppKit refusing a family's rows removed under a parent it
+        // no longer held as SwiftUI's diff did (NSOutlineView
+        // _validateParentRowEntry), as a model copied from a member
+        // landed and the tree was read again. Here no outline keeps rows
+        // of its own to fall out of step.
+        //
+        // And EAGER, not a LazyVStack: a lazy stack only estimates the
+        // rows it has not laid out, so a family opened near the end, the
+        // bottom in sight, made the page's height a guess, and AppKit
+        // set the scroll offset from it -- Agentic helpers opened at the
+        // bottom put the page at the top. The rows are a few hundred.
+        ScrollView(.vertical) {
+        VStack(alignment: .leading, spacing: 0) {
             SettingsHeader(page: .capabilities)
                 .background(Color.primary.opacity(0.04),
                             in: RoundedRectangle(cornerRadius: 12,
                                                  style: .continuous))
-                .listRowSeparator(.hidden)
-                .padding(.bottom, 6)
+                .padding(.bottom, 12)
             HStack {
                 if let hw = model.hardware {
                     Text("\(hw.chip) · \(hw.ramGb) GB · \(model.engine)")
@@ -55,29 +68,43 @@ struct CapabilitiesView: View {
                     .help("Look for models again")
             }
             ForEach(model.capabilityTree?.families ?? []) { f in
-                DisclosureGroup(isExpanded: Binding(
-                    get: { expanded.contains(f.id) },
-                    set: { if $0 { expanded.insert(f.id) }
-                           else { expanded.remove(f.id) } })) {
-                    ForEach(f.members) { m in
-                        MemberRow(model: model, member: m)
-                    }
-                } label: {
-                    // The whole row opens and closes the family, not only
-                    // the wedge: a List's DisclosureGroup turns only on its
-                    // wedge on macOS, and its row takes a tap gesture
-                    // itself -- a button still gets the click.
-                    Button { toggle(f.id) } label: {
+                let open = expanded.contains(f.id)
+                // The whole row opens and closes the family.
+                Button { toggle(f.id) } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: "chevron.right")
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundStyle(.secondary)
+                            .rotationEffect(.degrees(open ? 90 : 0))
+                            .frame(width: 14)
                         FamilyRow(family: f)
-                            .padding(.leading, 6)
-                            .contentShape(Rectangle())
+                            .padding(.leading, 2)
                     }
-                    .buttonStyle(.plain)
+                    .padding(.vertical, 6)
+                    .contentShape(Rectangle())
                 }
+                .buttonStyle(.plain)
+                .accessibilityAddTraits(.isHeader)
+                .accessibilityValue(open ? Text("Expanded")
+                                         : Text("Collapsed"))
                 .id(f.id)
+                if open {
+                    ForEach(f.members) { m in
+                        VStack(spacing: 0) {
+                            Divider()
+                            MemberRow(model: model, member: m)
+                                .padding(.vertical, 6)
+                        }
+                        .padding(.leading, 18)
+                        .id("\(f.id)/\(m.id)")
+                    }
+                }
+                Divider()
             }
         }
-        .listStyle(.inset)
+        .padding(.horizontal, 20)
+        .padding(.vertical, 12)
+        }
         .onAppear {
             model.refreshMachine()
             // The first family open, the rest closed.

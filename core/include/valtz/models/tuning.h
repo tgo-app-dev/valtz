@@ -149,6 +149,7 @@
 #include <filesystem>
 #include <cstdint>
 #include <map>
+#include <set>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -173,6 +174,10 @@ struct TuningContext {
   bool pika_installed = false;       // `pika_flex.lora`
   bool taomate_installed = false;    // `taomate.lora`
   bool vdn_installed = false;        // `vdn.branch`
+  // The catalog models installed (or downloading) a declared option
+  // names by `requires_model` (RelayVSR's 2x checkpoint): one not here
+  // offers its option "not-installed".
+  std::set<std::string> models_here;
   // HardwareInfo::gpu_matrix_cores; without them a preset is its table
   // with `without_matrix_cores.<preference>` laid over it.
   bool matrix_cores = false;

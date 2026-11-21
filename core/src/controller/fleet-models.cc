@@ -7,6 +7,8 @@
 
 #include "valtz/controller/controller.h"
 
+#include "valtz-vpipe/far-wire.h"
+
 #include "valtz/base/hash.h"
 #include "valtz/base/log.h"
 #include "valtz/models/model-check.h"
@@ -39,6 +41,31 @@ void
 Controller::share_follow_()
 {
   const bool joined = _fleet && _fleet->config().joined();
+  // MEMORY LENT (DESIGN §11e): a member's expert cache's far tier, sized
+  // as each session starts -- nothing taken until then.
+  const bool lends = joined && _fleet->config().lend != "off";
+  if (!lends && _lender) {
+    _lender.reset();
+    VALTZ_LOG_INFO("fleet", "memory no longer lent");
+  } else if (lends && !_lender) {
+    fleet::FarLender::Options o;
+    o.size = [this] {
+      return _fleet ? fleet::lend_bytes_for(_fleet->config().lend) : 0;
+    };
+    o.key = [this] {
+      const std::string k = _fleet ? _fleet->config().key : std::string();
+      return far_wire::from_hex(k.data(), k.size());
+    };
+    auto l = fleet::FarLender::start(std::move(o));
+    if (l.ok()) {
+      _lender = std::move(*l);
+      VALTZ_LOG_INFO("fleet", "memory lent on port {} (now {} GB)",
+                     _lender->port(),
+                     fleet::lend_bytes_for(_fleet->config().lend) >> 30);
+    } else {
+      VALTZ_LOG_WARN("fleet", "no memory lent: {}", l.error().message);
+    }
+  }
   if (!joined) {
     if (_share) {
       _share.reset();

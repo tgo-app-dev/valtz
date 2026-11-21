@@ -409,6 +409,10 @@ extension AppModel {
             } else if let why = p["unsplit"] as? [String: Any] {
                 flash(String(localized: "Not split: \(L10n.coreMessage(why))"),
                       level: .info)
+            } else if let why = p["returned"] as? [String: Any] {
+                // A member refused it for memory: on to the next, or
+                // queued here.
+                flash(L10n.coreMessage(why), level: .info)
             }
         default:
             break

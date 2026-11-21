@@ -950,6 +950,13 @@ struct ValtzApp: App {
                 Button("Attach Media…") { attachMedia() }
                     .keyboardShortcut("i", modifiers: [.command, .shift])
                     .disabled(model.closingTasks != nil || model.agentHolds)
+                // The mark and its sonic logo, on what the stage works on
+                // (a hidden asset: AppModel.insertValtzMark).
+                Button("Insert Valtz Mark") { model.insertValtzMark() }
+                    .disabled(model.projectId == nil
+                              || model.closingTasks != nil
+                              || model.agentHolds || model.insertingMark
+                              || model.missingHolds)
             }
             // The image, video or sound on screen, as the share menu's Save…
             // writes it: a format, its quality.
@@ -1859,6 +1866,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     case "alone": m.toggleLatentsOnly(id)
                     case "move" where args.count > 1:
                         m.moveReference(id, to: args[1])
+                    // "cursor=n:at": the words' caret put at `at`, then
+                    // the n-th medium's Insert at Cursor.
+                    case "cursor":
+                        if let tv = m.promptTextView {
+                            let at = args.count > 1 ? args[1]
+                                                    : tv.string.utf16.count
+                            tv.setSelectedRange(NSRange(location: at,
+                                                        length: 0))
+                        }
+                        m.mentionAtCursor(id)
+                        print("snapshot: refs cursor can=\(m.canMentionAtCursor) text=\(m.promptTextView?.string.debugDescription ?? "-")")
                     case "mention":
                         if let win = NSApp.windows.first(where: {
                                $0.isVisible }),
@@ -4796,11 +4814,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         guard p.count == 2, let c = named(p[0]) else {
                             return nil
                         }
-                        let l = p[1] == "0" ? "" : p[1]
-                        return m.atlas?.graph.nodes.first {
-                            $0.type == "layer" && $0.into == c
-                                && $0.layer == l
+                        // ("<comp>/<layer>:look": that step of its chain;
+                        // else the node that places it)
+                        let q = p[1].split(separator: ":").map(String.init)
+                        let l = q[0] == "0" ? "" : q[0]
+                        if q.count > 1 {
+                            return m.atlas?.graph.nodes.first {
+                                $0.type == "layer" && $0.into == c
+                                    && $0.layer == l && $0.step == q[1]
+                            }
                         }
+                        let id = "l:\(c):\(l)"
+                        return m.atlas?.graph.nodes.first { $0.id == id }
                     }
                     switch kv[0] {
                     case "open": m.show(.atlas)
@@ -4820,6 +4845,92 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     case "stop": m.atlasStop()
                     case "disconnect":
                         if let n = layerNode(arg) { m.atlasDisconnect(n) }
+                    // "trim:<comp>/<layer>": its placement node opened
+                    // out (AtlasPlacementPanel); "trimset:<comp>/<layer>@
+                    // in=12,out=40,speed=2,start=24,length=48" its values
+                    // set as the panel sets them (marks in the source's
+                    // frames, -1 none; start and length the timeline's) --
+                    // each printing `snapshot: atlas-trim <step> open=
+                    // editable= time=in/out/offset/duration speed=`.
+                    // "chain:<comp>/<layer>": the layer's chain, step by
+                    // step (`snapshot: atlas-chain steps=look>place>time
+                    // columns= addable=`); "step:<comp>/<layer>:<step>"
+                    // [@<step to add>] that step set in the editor's
+                    // card (`snapshot: atlas-step screen= panel= layer=`).
+                    // "cutstep:<comp>/<layer>:<step>": that adjustment's
+                    // node cut (its scissors), printing the chain after.
+                    case "cutstep":
+                        if let n = layerNode(arg) {
+                            m.atlasRemoveStep(n)
+                            try? await Task.sleep(for: .milliseconds(900))
+                            let chain = (m.atlas?.graph.nodes ?? []).filter {
+                                $0.type == "layer" && $0.into == n.into
+                                    && $0.layer == n.layer
+                            }.sorted { $0.column < $1.column }
+                            FileHandle.standardError.write(Data(
+                                "snapshot: atlas-cutstep steps=\(chain.map { $0.step ?? "-" }.joined(separator: ">")) undo=\(m.document.undo ?? "-")\n".utf8))
+                        }
+                    case "chain", "step":
+                        let p = arg.split(separator: "@").map(String.init)
+                        if let n = layerNode(p[0]), let g = m.atlas {
+                            if kv[0] == "step" {
+                                m.atlasOpenStep(n, as: p.count > 1 ? p[1]
+                                                                   : nil)
+                                try? await Task.sleep(for: .milliseconds(900))
+                                FileHandle.standardError.write(Data(
+                                    "snapshot: atlas-step screen=\(m.screen.rawValue) panel=\(m.openPanel.map { "\($0)" } ?? "-") layer=\(m.selectedLayer.isEmpty ? "0" : m.selectedLayer)\n".utf8))
+                            } else {
+                                let chain = g.graph.nodes.filter {
+                                    $0.type == "layer" && $0.into == n.into
+                                        && $0.layer == n.layer
+                                }.sorted { $0.column < $1.column }
+                                FileHandle.standardError.write(Data(
+                                    "snapshot: atlas-chain steps=\(chain.map { $0.step ?? "-" }.joined(separator: ">")) columns=\(chain.map { String($0.column) }.joined(separator: ",")) kinds=\((g.graph.columnKinds ?? []).joined(separator: ",")) addable=\(m.atlasAddable(n).joined(separator: ","))\n".utf8))
+                            }
+                        }
+                    case "trim", "trimset":
+                        let p = arg.split(separator: "@", maxSplits: 1)
+                            .map(String.init)
+                        if let n = layerNode(p.first ?? "") {
+                            if kv[0] == "trim" {
+                                m.atlasSelected = n.id
+                                m.atlasNodeOpen = n.id
+                            } else if p.count == 2 {
+                                var v: [String: Double] = [:]
+                                for e in p[1].split(separator: ",") {
+                                    let x = e.split(separator: "=")
+                                    if x.count == 2, let d = Double(x[1]) {
+                                        v[String(x[0])] = d
+                                    }
+                                }
+                                if v["in"] != nil || v["out"] != nil {
+                                    m.atlasSetPlacement(
+                                        n, markIn: v["in"].map { Int($0) },
+                                        markOut: v["out"].map { Int($0) })
+                                }
+                                if let o = v["start"] {
+                                    m.atlasSetPlacement(n, offset: Int(o))
+                                }
+                                if let d = v["length"] {
+                                    m.atlasSetPlacement(n, duration: Int(d))
+                                }
+                                if let r = v["speed"] {
+                                    m.atlasSetPlacementSpeed(n, r)
+                                }
+                            }
+                            try? await Task.sleep(for: .milliseconds(600))
+                            let t = m.atlasPlacement(n).map {
+                                $0.comp.time(of: $0.layer.id)
+                            } ?? LayerTimeDTO()
+                            let sp = m.atlasPlacement(n).map {
+                                $0.comp.speedKeys(layer: $0.layer.id).keys
+                                    .map { String(format: "%g@%d",
+                                                  $0.value.rate, $0.frame) }
+                                    .joined(separator: "/")
+                            } ?? "-"
+                            FileHandle.standardError.write(Data(
+                                "snapshot: atlas-trim \(kv[0]) open=\(m.atlasNodeOpen == n.id) editable=\(m.atlasPlacementEditable(n)) time=\(t.in)/\(t.out)/\(t.offset)/\(t.duration) speed=\(sp.isEmpty ? "-" : sp)\n".utf8))
+                        }
                     case "place":
                         let p = arg.split(separator: "@").map(String.init)
                         if p.count == 2, let a = named(p[0]),
@@ -5144,6 +5255,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                             $0.position == Int(arg) }) {
                             m.cancel(job: t.job)
                         }
+                    // File › Insert Valtz Mark, as its menu item; waited
+                    // for, then printed: what the stage holds, the layers,
+                    // the assets listed (the mark's hidden).
+                    case "insertmark":
+                        m.insertValtzMark()
+                        for _ in 0..<200 where m.insertingMark {
+                            try? await Task.sleep(for: .milliseconds(50))
+                        }
+                        let stage = m.stageStack
+                        print("snapshot: insertmark stage="
+                              + "\(stage?.name ?? "-"):\(stage?.assetClass ?? "-")"
+                              + " layers=\(stage?.layers?.count ?? 0)"
+                              + " listed=\(m.listedAssets.count)"
+                              + " hidden=\(m.assets.filter(\.isHidden).count)"
+                              + " selected=\(m.activeLayer)"
+                              + " banner=\(m.banner ?? "-")")
                     case "undo": m.undoProject()
                     // "click:x,y": a click posted to the window, points
                     // from its top left (a card's button, say);
@@ -5352,6 +5479,56 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                               }.max { $0.created < $1.created }?.id
                             : arg
                         if let a { m.snapshotLand(a) }
+                    // The model field's pop-up (the generation card's,
+                    // open): its items, `+` the one shown -- `snapshot:
+                    // modelmenu items=Auto_(…)+|-|…|Add_Model…` -- and
+                    // `modelmenu:add` its Add Model… picked as a click
+                    // picks it (Settings › Capabilities then, the field
+                    // still on its model).
+                    case "modelmenu":
+                        var found: NSPopUpButton?
+                        for w in NSApp.windows where w.isVisible {
+                            guard let root = w.contentView else { continue }
+                            var queue: [NSView] = [root]
+                            while !queue.isEmpty, found == nil {
+                                let v = queue.removeFirst()
+                                if let b = v as? NSPopUpButton,
+                                   b.menu?.items.contains(where: {
+                                       ($0.representedObject as? String)
+                                           == ModelPicker.addModelTag
+                                   }) == true {
+                                    found = b
+                                }
+                                queue += v.subviews
+                            }
+                        }
+                        let list = { (b: NSPopUpButton) -> String in
+                            (b.menu?.items ?? []).enumerated().map {
+                                $1.isSeparatorItem ? "-"
+                                    : $1.title.replacingOccurrences(
+                                        of: " ", with: "_")
+                                      + ($0 == b.indexOfSelectedItem
+                                         ? "+" : "")
+                            }.joined(separator: "|")
+                        }
+                        guard let b = found else {
+                            FileHandle.standardError.write(Data(
+                                "snapshot: modelmenu none\n".utf8))
+                            break
+                        }
+                        if arg == "add", let i = b.menu?.items.firstIndex(
+                            where: { ($0.representedObject as? String)
+                                     == ModelPicker.addModelTag }) {
+                            b.menu?.performActionForItem(at: i)
+                            try? await Task.sleep(for: .seconds(1.5))
+                        }
+                        let settings = NSApp.windows.contains {
+                            $0.isVisible
+                                && $0.identifier?.rawValue.contains(
+                                    "Settings") == true
+                        }
+                        FileHandle.standardError.write(Data(
+                            "snapshot: modelmenu \(arg) items=\(list(b)) choice=\(m.modelChoice.isEmpty ? "auto" : m.modelChoice) settings=\(settings) page=\(m.settingsPageRequest ?? "-")\n".utf8))
                     // The AppKit views SwiftUI hosts in the window --
                     // a player, a preview, the canvas -- each with its
                     // frame and alpha: one left behind shows here.
@@ -7239,6 +7416,67 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     "snapshot: settings-click \(Int(xy[0])),\(Int(xy[1]))\n".utf8))
             }
         }
+        // Settings STEPS, in turn ("scroll:bottom|<points>;click:x,y;
+        // wait:<s>"): each printing `snapshot: settings-step <step>
+        // scroll=<y> of <room> doc=<height>` -- where the page lies after
+        // it (a family opened near the end of Capabilities jumped).
+        if settings, let spec = env["VALTZ_SNAPSHOT_SETTINGS_STEPS"] {
+            try? await Task.sleep(for: .milliseconds(1500))
+            let win = NSApp.windows.first(where: {
+                $0.isVisible && $0.identifier?.rawValue
+                    .contains("Settings") == true
+            }) ?? NSApp.keyWindow
+            func scrolls(_ v: NSView) -> [NSScrollView] {
+                (v as? NSScrollView).map { [$0] } ?? []
+                    + v.subviews.flatMap(scrolls)
+            }
+            func page() -> NSScrollView? {
+                scrolls(win?.contentView ?? NSView()).max(by: {
+                    ($0.documentView?.frame.height ?? 0)
+                        < ($1.documentView?.frame.height ?? 0)
+                })
+            }
+            func at() -> String {
+                guard let sv = page(), let doc = sv.documentView else {
+                    return "-"
+                }
+                let room = max(0, doc.frame.height
+                               - sv.contentView.bounds.height)
+                let y = doc.isFlipped ? sv.contentView.bounds.minY
+                    : room - sv.contentView.bounds.minY
+                return "\(Int(y)) of \(Int(room)) doc=\(Int(doc.frame.height))"
+            }
+            for step in spec.split(separator: ";").map(String.init) {
+                let kv = step.split(separator: ":", maxSplits: 1)
+                    .map(String.init)
+                let arg = kv.count > 1 ? kv[1] : ""
+                switch kv[0] {
+                case "scroll":
+                    if let sv = page(), let doc = sv.documentView {
+                        let room = max(0, doc.frame.height
+                                       - sv.contentView.bounds.height)
+                        let y = arg == "bottom" ? room
+                            : min(room, Double(arg) ?? 0)
+                        sv.contentView.scroll(to: NSPoint(
+                            x: 0, y: doc.isFlipped ? y : room - y))
+                        sv.reflectScrolledClipView(sv.contentView)
+                    }
+                case "click":
+                    let xy = arg.split(separator: ",").compactMap {
+                        Double($0)
+                    }
+                    if xy.count == 2, let win {
+                        Self.postClick(x: xy[0], y: xy[1], in: win)
+                    }
+                case "wait":
+                    try? await Task.sleep(for: .seconds(Double(arg) ?? 1))
+                default: break
+                }
+                try? await Task.sleep(for: .milliseconds(1000))
+                FileHandle.standardError.write(Data(
+                    "snapshot: settings-step \(step) scroll=\(at())\n".utf8))
+            }
+        }
         try? await Task.sleep(for: .seconds(max(0, delay - 1)))
         // The Settings page scrolled down before it is drawn
         // ("<points>", or "bottom"): what lies below its first screen.
@@ -7688,7 +7926,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 + "marked=\(m.promptMarked.replacingOccurrences(of: "\u{FFFC}", with: "[*]").replacingOccurrences(of: " ", with: "_")) "
                 + "languages=\(L10n.available.joined(separator: ",")) "
                 + "baseHint=\(m.baseHint.flatMap { h in m.promptAttachments.first { $0.id == h }?.url.lastPathComponent } ?? "-") "
-                + "refs=\(m.promptAttachments.map { a in (a.isBase ? "*" : "") + (a.ownCopy ? "+" : "") + (m.cutsToLength(a) == false ? "~" : "") + (m.readsLatentsOnly(a) == true ? "^" : "") + a.url.lastPathComponent + (m.referenceNumber(a).map { "#\($0)" } ?? "") }.joined(separator: ",")) cutTo=\(String(format: "%.3f", m.referenceCutSeconds)) "
+                + "refs=\(m.promptAttachments.map { a in (a.isBase ? "*" : "") + (a.ownCopy ? "+" : "") + (m.cutsToLength(a) == false ? "~" : "") + (m.readsLatentsOnly(a) == true ? "^" : "") + a.url.lastPathComponent + (m.referenceNumber(a).map { "#\($0)" } ?? "") }.joined(separator: ",")) cutTo=\(String(format: "%.3f", m.referenceCutSeconds)) rowMissing=\(m.promptAttachments.filter { a in a.asset.map { id in !m.assets.contains { $0.id == id } } ?? false }.count) "
                 + "active=\((m.stageAssetId.flatMap { m.asset(id: $0) }?.name ?? "-").replacingOccurrences(of: " ", with: "_")) "
                 + "assets=\(m.assets.count) ops=\(Dictionary(grouping: m.assets, by: { $0.op ?? "import" }).map { "\($0.key):\($0.value.count)" }.sorted().joined(separator: ",")) stale=\(m.staleCount) folders=\(m.assetFolders.map { f in "\(f.name)\(m.closedFolders.contains(f.id) ? "-folded" : ""):\(m.assets.filter { $0.folder == f.id }.count)" }.joined(separator: "|").replacingOccurrences(of: " ", with: "_")) renaming=\(m.renamingAsset ?? "-") "
                 + "mentions=\(m.promptMentions.count) focus=\(m.promptAttachments.firstIndex { $0.id == m.focusedReference }.map(String.init) ?? "-") "

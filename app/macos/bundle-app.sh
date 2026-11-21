@@ -557,6 +557,11 @@ fi
 if [ -f "$CONTENTS/Helpers/valtz-procedural" ]; then
   codesign "${sign_args[@]}" "$CONTENTS/Helpers/valtz-procedural"
 fi
+# The mark's renderer (File › Insert Valtz Mark): Metal and AVFoundation
+# alone.
+if [ -f "$CONTENTS/Helpers/valtz-mark" ]; then
+  codesign "${sign_args[@]}" "$CONTENTS/Helpers/valtz-mark"
+fi
 
 codesign "${sign_exe_args[@]}" "$APP"
 codesign --verify --deep --strict --verbose=1 "$APP"

@@ -222,6 +222,7 @@ to_json(const Config& c)
           {"withheld", withheld_json(c)},
           {"pair", pair_json(c)},
           {"send_weights", c.send_weights},
+          {"lend", c.lend},
           {"joined", c.joined()},
           {"accepting", c.accepting_at(std::time(nullptr))}};
 }
@@ -264,6 +265,7 @@ load_config(const fs::path& path)
       c.pair_decode = "auto";
     }
     c.send_weights = jget(j, "send_weights", false);
+    c.lend = jget<std::string>(j, "lend", "auto");
   }
   if (c.member_id.empty()) {
     c.member_id = Uuid::v7().str();
@@ -287,7 +289,8 @@ save_config(const fs::path& path, const Config& c)
             {"offload", offload_json(c)},
             {"withheld", withheld_json(c)},
             {"pair", pair_json(c)},
-            {"send_weights", c.send_weights}};
+            {"send_weights", c.send_weights},
+            {"lend", c.lend}};
   std::error_code ec;
   fs::create_directories(path.parent_path(), ec);
   const fs::path tmp = path.string() + ".tmp";

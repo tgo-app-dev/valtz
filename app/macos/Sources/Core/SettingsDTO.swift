@@ -285,7 +285,10 @@ struct ModelCheck: Sendable, Equatable {
 struct UpscalerSettings: Identifiable, Equatable, Sendable {
     let id: String
     let name: String
-    let kind: String        // "video" | "image"
+    let kind: String        // "video" | "image": what it is listed under
+    /// Every kind it restores (RelayVSR: clips and pictures): what the
+    /// pickers offer it for.
+    let kinds: [String]
     let state: String       // "installed", "not-installed", ...
     let runs: Bool          // what Render Upscaled runs for its kind now
     let custom: Bool        // anything set apart from the defaults
@@ -305,6 +308,10 @@ struct UpscalerSettings: Identifiable, Equatable, Sendable {
     /// `requires`): VOSR its DINOv2, a refiner its latent upscaler and
     /// model.
     let needs: [String]
+    /// Its CHECKLIST: itself, what it needs beside it, what it may use,
+    /// and the engine's support -- each with its state; shown while it is
+    /// not ready.
+    let checklist: [UpscalerPart]
 
     init?(_ j: [String: Any]) {
         guard let id = j["id"] as? String,
@@ -314,6 +321,7 @@ struct UpscalerSettings: Identifiable, Equatable, Sendable {
         self.id = id
         name = j["name"] as? String ?? id
         kind = j["kind"] as? String ?? "image"
+        kinds = j["kinds"] as? [String] ?? [kind]
         state = j["state"] as? String ?? ""
         runs = j["runs"] as? Bool ?? false
         custom = j["custom"] as? Bool ?? false
@@ -322,6 +330,8 @@ struct UpscalerSettings: Identifiable, Equatable, Sendable {
         inContext = j["in_context"] as? Bool ?? false
         ready = j["ready"] as? Bool ?? (j["state"] as? String == "installed")
         needs = j["needs"] as? [String] ?? []
+        checklist = (j["checklist"] as? [[String: Any]] ?? [])
+            .map(UpscalerPart.init)
         let options = opts.map(TuningOption.init)
         info = TuningInfo(family: t["family"] as? String ?? "",
                           tuning: Tuning(values, options), options: options,
@@ -332,6 +342,34 @@ struct UpscalerSettings: Identifiable, Equatable, Sendable {
     var options: [TuningOption] {
         info.options.filter { $0.why != "not-for-model" && $0.type != "list" }
     }
+}
+
+/// A part of an upscaler's checklist (core Controller::upscale_settings):
+/// a model -- the upscaler itself, one it needs beside it, one it may use
+/// -- or the engine's support for it.
+struct UpscalerPart: Identifiable, Equatable, Sendable {
+    let id: String          // the catalog id; "" for the engine's line
+    let name: String
+    /// "model" (itself), "needs", "fast-decoder" or "x2" (optional), or
+    /// "engine"
+    let role: String
+    let optional: Bool
+    let gated: Bool
+    /// installed | downloading | partial | missing; the engine's ok |
+    /// missing
+    let state: String
+
+    init(_ j: [String: Any]) {
+        id = j["id"] as? String ?? ""
+        name = j["name"] as? String ?? ""
+        role = j["role"] as? String ?? ""
+        optional = j["optional"] as? Bool ?? false
+        gated = j["gated"] as? Bool ?? false
+        state = j["state"] as? String ?? ""
+    }
+
+    var done: Bool { state == "installed" || state == "ok" }
+    var isEngine: Bool { role == "engine" }
 }
 
 /// Which interpolator Render Interpolated runs (core

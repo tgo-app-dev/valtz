@@ -38,9 +38,11 @@ struct AtlasLayout {
         var idx: [String: Int] = [:]
         var byAsset: [String: Int] = [:]
         var maxX: CGFloat = 0
+        let starts = Self.starts(g)
         for (i, n) in g.nodes.enumerated() {
             let w = n.isAsset ? Self.assetWidth : Self.opWidth
-            let x = Self.margin + Self.x(column: n.column)
+            let x = Self.margin + (n.column < starts.count
+                ? starts[n.column] : Self.x(column: n.column))
             let r = CGRect(x: x, y: Self.margin + n.row * Self.slot,
                            width: w, height: n.height * Self.slot)
             f.append(r)
@@ -59,7 +61,21 @@ struct AtlasLayout {
                       height: g.height * Self.slot + 2 * Self.margin)
     }
 
-    /// Where a column starts: assets in the even ones, ops between.
+    /// Where each column starts, by its kind's width: a layer's chain
+    /// is several op columns side by side.
+    static func starts(_ g: AtlasDTO) -> [CGFloat] {
+        guard let kinds = g.columnKinds, !kinds.isEmpty else { return [] }
+        var x: CGFloat = 0
+        return kinds.map { k in
+            defer {
+                x += (k == "asset" ? assetWidth : opWidth) + columnGap
+            }
+            return x
+        }
+    }
+
+    /// Where a column starts: assets in the even ones, ops between (a
+    /// graph without its columns' kinds).
     static func x(column c: Int) -> CGFloat {
         let pairs = CGFloat(c / 2)
         return pairs * (assetWidth + opWidth + 2 * columnGap)
@@ -780,7 +796,7 @@ struct AtlasView: View {
     /// The node opened out, once it is in the graph.
     private func openShown(_ g: AtlasLayout) -> String? {
         guard let open = model.atlasNodeOpen,
-              g.graph.nodes.contains(where: { $0.generate?.id == open })
+              g.graph.nodes.contains(where: { $0.opens(open) })
         else { return nil }
         return open
     }
@@ -795,9 +811,8 @@ struct AtlasView: View {
     private func room(_ g: AtlasLayout, _ content: CGSize, _ inset: CGSize,
                       _ z: CGFloat) -> CGSize {
         guard let open = model.atlasNodeOpen,
-              let i = g.graph.nodes.firstIndex(where: {
-                  $0.generate?.id == open
-              }) else { return content }
+              let i = g.graph.nodes.firstIndex(where: { $0.opens(open) })
+        else { return content }
         let at = g.panelOrigin(i, g.frames, inset: inset, zoom: z)
         return CGSize(
             width: max(content.width, at.x + AtlasGenerateExpanded.wide + 40),
@@ -809,14 +824,14 @@ struct AtlasView: View {
     /// -- gliding there, as the panel unfolds.
     private func revealPanel() {
         guard let g = model.atlas, let open = model.atlasNodeOpen,
-              let i = g.graph.nodes.firstIndex(where: {
-                  $0.generate?.id == open
-              }) else { return }
+              let i = g.graph.nodes.firstIndex(where: { $0.opens(open) })
+        else { return }
         let z = model.atlasZoom
         let v = model.atlasViewport
         let inset = g.inset(zoom: z, in: v)
         let at = g.panelOrigin(i, g.frames, inset: inset, zoom: z)
-        let w = model.atlasNodeTuneOpen ? AtlasGenerateExpanded.wide
+        let w = g.graph.nodes[i].generate == nil ? AtlasPlacementPanel.wide
+            : model.atlasNodeTuneOpen ? AtlasGenerateExpanded.wide
             : AtlasGenerateExpanded.narrow
         let pad = model.atlasInsets
         let x0 = model.atlasVisible.minX + pad.width
@@ -1009,12 +1024,21 @@ private struct AtlasStage: View, @preconcurrency Animatable {
             // opens, folding back there as it shuts, moving with its card.
             ZStack(alignment: .topLeading) {
                 if let o = opened {
-                    AtlasGenerateExpanded(model: model, gen: o.gen)
-                        .transition(.scale(scale: 0.92, anchor: .topLeading)
-                            .combined(with: .opacity))
+                    Group {
+                        if let gen = o.gen {
+                            AtlasGenerateExpanded(model: model, gen: gen)
+                        } else {
+                            AtlasPlacementPanel(model: model,
+                                                node: g.graph.nodes[o.i])
+                        }
+                    }
+                    .transition(.scale(scale: 0.92, anchor: .topLeading)
+                        .combined(with: .opacity))
                 }
             }
-            .animation(AppModel.motion, value: opened?.gen.id)
+            .animation(AppModel.motion, value: opened.map {
+                g.graph.nodes[$0.i].id
+            })
             .offset(x: at.x, y: at.y)
             .zIndex(10)
         }
@@ -1041,19 +1065,20 @@ private struct AtlasStage: View, @preconcurrency Animatable {
     }
 
     /// The generate node opened out, in this graph.
+    /// The node opened out, in this graph: a generate node, or a
+    /// placement node (its gen nil).
     private func openNode(_ g: AtlasLayout)
-        -> (i: Int, gen: GenerateNodeDTO)? {
+        -> (i: Int, gen: GenerateNodeDTO?)? {
         guard let open = model.atlasNodeOpen,
-              let i = g.graph.nodes.firstIndex(where: {
-                  $0.generate?.id == open
-              }), let gen = g.graph.nodes[i].generate else { return nil }
-        return (i, gen)
+              let i = g.graph.nodes.firstIndex(where: { $0.opens(open) })
+        else { return nil }
+        return (i, g.graph.nodes[i].generate)
     }
 
     /// Where it is drawn: beside its card as drawn now -- and, shut,
     /// where it last was, folding away there.
     private func panelAt(_ g: AtlasLayout, _ frames: [CGRect],
-                         _ o: (i: Int, gen: GenerateNodeDTO)?,
+                         _ o: (i: Int, gen: GenerateNodeDTO?)?,
                          _ inset: CGSize) -> CGPoint {
         guard let o else { return panel.at }
         let at = g.panelOrigin(o.i, frames, inset: inset, zoom: zoom)
@@ -1202,7 +1227,8 @@ struct AtlasEdges: View {
         var path = Path()
         path.move(to: p0)
         path.addCurve(to: p1, control1: c1, control2: c2)
-        let placing = edge.kind == "layer" || edge.kind == "into"
+        let placing = edge.kind == "layer" || edge.kind == "chain"
+            || edge.kind == "into"
         let colour: Color = on ? .accentColor
             : placing ? Color.accentColor.opacity(0.45)
             : Color.secondary.opacity(0.55)
@@ -1611,14 +1637,32 @@ struct AtlasOpNode: View {
                     .font(.system(size: u(11.5), weight: .semibold))
                     .lineLimit(1)
                 Spacer(minLength: 0)
-                if isLayer && (hovering || selected) {
-                    Button { model.atlasDisconnect(node) } label: {
-                        Image(systemName: "scissors")
+                if editable && (hovering || selected || opened) {
+                    Button { toggleOpen() } label: {
+                        Image(systemName: "timeline.selection")
                             .font(.system(size: u(10.5), weight: .semibold))
                     }
                     .buttonStyle(.borderless)
-                    .disabled(!model.atlasCanDisconnect(node))
-                    .help(disconnectHelp)
+                    .help(opened ? "Close" : "Trim, speed and start: set here")
+                }
+                if isLayer && (hovering || selected) {
+                    if removesStep {
+                        Button { model.atlasRemoveStep(node) } label: {
+                            Image(systemName: "scissors")
+                                .font(.system(size: u(10.5), weight: .semibold))
+                        }
+                        .buttonStyle(.borderless)
+                        .disabled(layer?.locked == true || model.agentHolds)
+                        .help(removeStepTitle)
+                    } else {
+                        Button { model.atlasDisconnect(node) } label: {
+                            Image(systemName: "scissors")
+                                .font(.system(size: u(10.5), weight: .semibold))
+                        }
+                        .buttonStyle(.borderless)
+                        .disabled(!model.atlasCanDisconnect(node))
+                        .help(disconnectHelp)
+                    }
                 }
             }
             Text(verbatim: detail)
@@ -1645,8 +1689,39 @@ struct AtlasOpNode: View {
         .padding(.vertical, u(6))
         .contentShape(Rectangle())
         .onHover { hovering = $0 }
+        .onTapGesture(count: 2) {
+            if editable {
+                toggleOpen()
+            } else if isLayer {
+                model.atlasOpenStep(node)
+            }
+        }
         .onTapGesture { model.atlasSelected = node.id }
         .contextMenu {
+            if editable {
+                Button(opened ? "Close Trim and Time" : "Trim and Time…") {
+                    toggleOpen()
+                }
+            }
+            if isLayer, let card = AppModel.atlasStepCard(node.step),
+               node.step != "time" {
+                Button("Edit in the \(card.title) Panel") {
+                    model.atlasOpenStep(node)
+                }
+            }
+            if isLayer, !model.atlasAddable(node).isEmpty {
+                Menu("Add Adjustment") {
+                    ForEach(model.atlasAddable(node), id: \.self) { s in
+                        Button(AppModel.atlasStepCard(s)?.title ?? s) {
+                            model.atlasOpenStep(node, as: s)
+                        }
+                    }
+                }
+            }
+            if removesStep {
+                Button(removeStepTitle) { model.atlasRemoveStep(node) }
+                    .disabled(layer?.locked == true || model.agentHolds)
+            }
             if isLayer {
                 Button(disconnectTitle) { model.atlasDisconnect(node) }
                     .disabled(!model.atlasCanDisconnect(node))
@@ -1662,10 +1737,40 @@ struct AtlasOpNode: View {
         .help(Text(verbatim: isLayer ? "\(title) — \(detail)" : detail))
     }
 
+    /// A placement on a timeline: opened out, its trim, speed and start
+    /// set beside it (AtlasPlacementPanel).
+    private var editable: Bool { model.atlasPlacementEditable(node) }
+    private var removesStep: Bool { model.atlasStepRemovable(node) }
+    private var removeStepTitle: String {
+        switch node.step {
+        case "adjust", "look": String(localized: "Remove the Adjustment")
+        case "color": String(localized: "Remove the Color Mix")
+        case "grade": String(localized: "Remove the Color Grade")
+        case "place": String(localized: "Remove the Crop and Placement")
+        case "sound": String(localized: "Remove the Sound Changes")
+        default: String(localized: "Remove")
+        }
+    }
+    private var opened: Bool { model.atlasNodeOpen == node.id }
+
+    private func toggleOpen() {
+        model.atlasSelected = node.id
+        model.atlasNodeOpen = opened ? nil : node.id
+    }
+
     private var symbol: String {
         if isLayer {
-            return composition?.kind == "audio" ? "slider.vertical.3"
-                : "square.3.layers.3d.down.right"
+            switch node.step {
+            case "time": return "timeline.selection"
+            case "adjust", "look": return "slider.horizontal.3"
+            case "color": return "paintpalette"
+            case "grade": return "circle.lefthalf.striped.horizontal"
+            case "place": return "crop"
+            case "sound": return "speaker.wave.2"
+            default:
+                return composition?.kind == "audio" ? "slider.vertical.3"
+                    : "square.3.layers.3d.down.right"
+            }
         }
         return AppModel.atlasOpSymbol(node.op ?? "")
     }
@@ -1675,16 +1780,31 @@ struct AtlasOpNode: View {
     /// op.
     private var title: String {
         guard isLayer else { return AppModel.atlasOpTitle(node.op ?? "") }
-        return composition?.kind == "audio"
-            ? String(localized: "Sound + Time")
-            : String(localized: "Adjust + Place")
+        switch node.step {
+        case "time":
+            return composition?.kind == "audio"
+                ? String(localized: "Trim + Time")
+                : String(localized: "Trim + Place")
+        case "adjust", "look": return String(localized: "Adjust")
+        case "color": return String(localized: "Color Mixer")
+        case "grade": return String(localized: "Color Grade")
+        case "place": return String(localized: "Crop + Place")
+        case "sound": return String(localized: "Sound")
+        default:
+            return composition?.kind == "audio"
+                ? String(localized: "Sound + Time")
+                : String(localized: "Adjust + Place")
+        }
     }
 
     /// The layer and where it lies; a recipe's model, or a note's word.
     private var detail: String {
         if isLayer {
             var parts = [layer?.title ?? String(localized: "Layer")]
-            if let c = composition {
+            // (its time the time step's, or a still's placing node's)
+            let says = node.step == nil || node.step == "time"
+                || (node.step == "place" && composition?.isTimeline != true)
+            if says, let c = composition {
                 let first = node.offset ?? 0
                 let run = node.duration ?? 0
                 if c.isPaged {
@@ -1747,6 +1867,8 @@ struct AtlasOpNode: View {
     static func lookSymbol(_ l: String) -> String? {
         switch l {
         case "adjust": "slider.horizontal.3"
+        case "mix": "paintpalette"
+        case "grade": "circle.lefthalf.striped.horizontal"
         case "place": "crop"
         case "turn": "rotate.right"
         case "keyed": "diamond"
@@ -1764,6 +1886,8 @@ struct AtlasOpNode: View {
     static func lookName(_ l: String) -> String {
         switch l {
         case "adjust": String(localized: "Adjusted")
+        case "mix": String(localized: "Its colors mixed")
+        case "grade": String(localized: "Graded")
         case "place": String(localized: "Placed or cropped")
         case "turn": String(localized: "Turned")
         case "keyed": String(localized: "Keyed")

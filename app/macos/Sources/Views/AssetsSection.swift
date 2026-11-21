@@ -35,12 +35,14 @@ extension AppModel {
                                 category: "assets-drop")
 
     /// The asset list's rows, newest first: every asset but the project's
-    /// compositions (pinned on top) -- versionless compositions (drawn)
-    /// and a task's asset being made too.
+    /// compositions (pinned on top) and the HIDDEN ones (the Valtz mark's)
+    /// -- versionless compositions (drawn) and a task's asset being made
+    /// too.
     var listedAssets: [AssetDTO] {
         assets.filter {
             ($0.head > 0 || $0.isComposition || task(of: $0.id) != nil)
                 && $0.op != "project" && !$0.isProject
+                && !$0.isHidden
         }
             .sorted { $0.created > $1.created }
     }
@@ -616,6 +618,43 @@ extension AppModel {
             putOnStage(u)
         }
         return true
+    }
+
+    /// File › Insert Valtz Mark (core insert_valtz_mark): the mark and
+    /// its sonic logo -- a hidden asset of the project, not listed -- a
+    /// new layer on top of what the stage works on, where the player is
+    /// (a still's page shown): a timeline the clip, a still the mark, a
+    /// sound the chord; the picture in the frame's middle third. With
+    /// nothing on the stage, the project's composition -- else a 960 x
+    /// 544 timeline made for it. Drawn off the main thread (a second or
+    /// so the first time at a size).
+    func insertValtzMark() {
+        guard let core, let projectId, !insertingMark else { return }
+        guard !refusedForAgent(), !refusedForColorTarget() else { return }
+        let onto = stageStack.map { composedTarget($0.id) }
+        let offset = onto == nil ? 0
+            : pagedOnStage ? stagePage
+            : clipOnStage ? videoFrame : 0
+        insertingMark = true
+        Task { @MainActor [weak self] in
+            let r = await Task.detached {
+                var extra: [String: Any] = ["offset": offset]
+                if let onto { extra["onto"] = onto }
+                return core.assetOp(project: projectId, "insert-mark", extra)
+            }.value
+            guard let self else { return }
+            self.insertingMark = false
+            guard r.ok, let comp = r["asset"] as? String else {
+                self.flash(r.message, level: .error)
+                return
+            }
+            self.reloadAssets(force: true)
+            if self.stageAssetId != comp, let c = self.asset(id: comp) {
+                self.putOnStage(c)
+            }
+            self.layersChanged()
+            self.selectLayer(r["layer"] as? String ?? "")
+        }
     }
 
     /// Files dropped on the stage: imported, then each instantiated as an

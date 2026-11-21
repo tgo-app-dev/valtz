@@ -473,6 +473,7 @@ struct TuningPanel: View {
         case "generate_at": String(localized: "Generate at")
         case "read_at": String(localized: "Read at")
         case "window": String(localized: "Keyframe window")
+        case "model_scale": String(localized: "Model scale")
         default: key
         }
     }
@@ -543,6 +544,7 @@ struct TuningPanel: View {
         case "generate_at": String(localized: "Where a size under 4 megapixels is made")
         case "read_at": String(localized: "What it reads: it makes exactly four times that")
         case "window": String(localized: "A keyframe every this many frames, less one")
+        case "model_scale": String(localized: "At 2x or less: the 2x model, or the 4x fitted down")
         default: ""
         }
     }
@@ -577,6 +579,7 @@ struct TuningPanel: View {
         case "color_fix": String(localized: "Corrects each restored frame's colour toward its source frame, so the upscaled layer keeps the colours of the clip it replaces. FlashVSR 1.1 moves each channel's mean and spread to the source's (AdaIN); FlashVSR+ takes the source's low frequencies and keeps its own detail (a wavelet fix).")
         case "generate_at": String(localized: "MiniMax-H3-Image works best from 4 to 20 megapixels. As released, a size under 4 megapixels is made on a 4-megapixel canvas of the same shape and resized back, so a 1024 × 1024 picture takes as long as a 2048 × 2048 one. The Size Asked makes it at its own size: several times faster, outside the range the model was trained at.")
         case "read_at": String(localized: "RelayVSR makes exactly four times the frames it reads. Its Own Size, the default, reads the clip as it is wherever four times that reaches the size shown, then fits the four-times frames down to it by lanczos: all of the clip's detail read, at more memory and time. A Quarter of the Size reads the clip at a quarter of the size it is shown at, so a layer scaled 2x is read at half its clip's size: the least memory and time. Its memory grows with the frames it reads: about 12 GB at 480 × 270 read, 22 GB at 960 × 540, 32 GB at 1280 × 720.")
+        case "model_scale": String(localized: "Where a layer is scaled up 2x or less, which RelayVSR makes it. The 2x model -- RelayVSR retrained by the LightX2V team for exactly twice the size, in ComfyUI's int8 files -- reads the frames as they are and makes twice them: about a third of the time and half the memory of the 4x model. The 4x model makes four times the frames and fits them down by lanczos; some find its detail finer at 2x, fur and foliage especially. Past 2x the 4x model runs either way. Needs RelayVSR 2x, in Settings › Capabilities › Upscalers.")
         case "window": String(localized: "RelayVSR's large model writes a keyframe every this many frames less one (16: every 15th, as released), and its small decoder makes every frame against the two keyframes around it. Larger is faster, leaning more on the small decoder; smaller runs the large model more often. A frame comes out at most this many frames after it went in.")
         case "guidance_scale": String(localized: "Classifier-free guidance: each step runs the model twice, with the prompt and with an empty one, and moves the picture away from the empty one's by this much. MOSS-Image's own setting is 3. Higher follows the words more literally, with harder colours; 1 runs one forward a step, about twice as fast, the prompt followed less.")
         case "refine_start": String(localized: "How much of the draft the refine keeps. It puts the enlarged draft back to a level of noise and denoises it again in three steps. Keep the Draft starts at 0.7: in a test at 1920×1088, a woman's face and the words on a sign stayed the draft's, their detail sharper. NVIDIA's Recipe, Open-H3-Regenerate-2K as released, starts at 0.909, keeping about 9% of the draft: it redraws more, and in the same test it gave the woman another face and garbled the sign. The refine follows the prompt's words only weakly either way, so they do not bring back what it redraws.")
@@ -625,6 +628,8 @@ struct TuningPanel: View {
         case ("generate_at", "asked"): String(localized: "The Size Asked")
         case ("read_at", "quarter"): String(localized: "A Quarter of the Size")
         case ("read_at", "source"): String(localized: "Its Own Size")
+        case ("model_scale", "x4"): String(localized: "4x, Fitted Down")
+        case ("model_scale", "x2"): String(localized: "The 2x Model")
         default: value
         }
     }
@@ -681,6 +686,10 @@ struct TuningPanel: View {
             String(localized: "Read at a quarter of the size shown: the least memory")
         case ("read_at", "source"):
             String(localized: "Read as it is, the result fitted down: more memory")
+        case ("model_scale", "x4"):
+            String(localized: "Four times made, fitted down: finer detail, more time")
+        case ("model_scale", "x2"):
+            String(localized: "Made at twice: faster, less memory")
         default: ""
         }
     }

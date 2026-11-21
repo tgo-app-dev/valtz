@@ -654,6 +654,9 @@ struct AtlasDTO: Decodable, Sendable {
     var nodes: [AtlasNodeDTO]
     var edges: [AtlasEdgeDTO]
     var columns: Int
+    /// Each column's kind: "asset" or "op" (a layer's chain spans
+    /// several op columns); none from an older core: assets the even.
+    var columnKinds: [String]?
     var height: Double
     /// What the project had written as it was read.
     var revision: String?
@@ -678,6 +681,10 @@ struct AtlasNodeDTO: Decodable, Sendable, Hashable, Identifiable {
     /// The asset an op makes; a layer's composition.
     var into: String?
     var layer: String?
+    /// A layer's node: which step of its chain -- "look", "place",
+    /// "sound", then "time" next to its composition -- each adjustment a
+    /// node of its own.
+    var step: String?
     var source: String?
     /// What a layer does: adjust, place, turn, keyed, speed, sound,
     /// timed, mask, hidden, locked, pinned.
@@ -694,6 +701,15 @@ struct AtlasNodeDTO: Decodable, Sendable, Hashable, Identifiable {
     var height: Double
 
     var isAsset: Bool { type == "asset" }
+}
+
+extension AtlasNodeDTO {
+    /// It is what `open` (AppModel.atlasNodeOpen) names: a generate
+    /// node's id, or a placement node's own.
+    func opens(_ open: String) -> Bool {
+        generate?.id == open
+            || (type == "layer" && step == "time" && id == open)
+    }
 }
 
 /// An Atlas GENERATE NODE (DESIGN §10a Atlas; core generate_nodes): a
@@ -989,6 +1005,9 @@ struct AssetDTO: Decodable, Sendable, Identifiable, Hashable {
     /// video summaries attached to it, which its timelines' layers mark.
     var bookmarks: [String]?
 
+    /// Kept out of the asset list (core tag "hidden": the Valtz mark's
+    /// clip, still and sound), shown by the layers it is on.
+    var isHidden: Bool { (tags ?? []).contains("hidden") }
     /// A beats asset: Detect Beats' text (core tag "beats").
     var isBeats: Bool { kind == "text" && (tags ?? []).contains("beats") }
     /// A text whose moments may be bookmarks (DESIGN §4w): Transcribe's

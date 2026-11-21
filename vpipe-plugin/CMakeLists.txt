@@ -22,6 +22,8 @@ vpipe_add_plugin(valtz-vpipe SOURCES
   src/scene-cut.cc
   src/summary-stage.cc
   src/tp-transport.cc
+  src/far-memory.cc
+  src/far-rdma.cc
   src/tp-rdma.cc)
 target_include_directories(valtz-vpipe PRIVATE
   "${CMAKE_CURRENT_SOURCE_DIR}/src")

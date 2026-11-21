@@ -114,6 +114,10 @@ struct Config {
   // (over Thunderbolt where a cable is), keeping them for the next. Off:
   // such a job runs here, as before.
   bool send_weights = false;
+  // MEMORY LENT to a member's expert cache (DESIGN §11e): "auto" (what
+  // this Mac can spare when it is asked, less a reserve), "off", or at
+  // most so many GB ("24").
+  std::string lend = "auto";
 
   bool joined() const { return !fleet.empty() && !key.empty(); }
   // Takes fleet jobs at `t`: its policy, its schedule.

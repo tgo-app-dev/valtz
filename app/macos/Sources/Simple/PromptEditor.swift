@@ -97,13 +97,64 @@ final class PromptTextView: NSTextView {
         return gave
     }
 
-    /// The caret only while the box has the keyboard -- or while media
-    /// dragged over it show where they will be mentioned.
+    /// The caret only while the box has the keyboard. (Media dragged over
+    /// it are shown where they will land by a marker of its own: AppKit
+    /// draws no insertion point in a view without the keyboard, which a
+    /// drag from the row never gives it.)
     override var shouldDrawInsertionPoint: Bool {
-        super.shouldDrawInsertionPoint
-            && (window?.firstResponder === self || showsDropCaret)
+        super.shouldDrawInsertionPoint && window?.firstResponder === self
+            && dropIndex == nil
     }
-    private var showsDropCaret = false
+    /// Where media dragged over the words would be mentioned: a steady
+    /// vertical line there, the selection left as it is.
+    private var dropIndex: Int? {
+        didSet {
+            if dropIndex != oldValue { needsDisplay = true }
+        }
+    }
+
+    /// The line a mention inserted at `index` would start on: its glyph's
+    /// left edge (the last glyph's right edge at the end), its line's
+    /// height, in the view's points.
+    func insertionRect(at index: Int) -> NSRect? {
+        guard let lm = layoutManager, let tc = textContainer,
+              let storage = textStorage else { return nil }
+        let origin = textContainerOrigin
+        let n = storage.length
+        let i = min(max(0, index), n)
+        lm.ensureLayout(for: tc)
+        // At the end after a line break, or of nothing: the empty last
+        // line's.
+        if n == 0 || (i == n && (storage.string as NSString)
+                          .character(at: n - 1) == 0x0a) {
+            var r = lm.extraLineFragmentRect
+            if r.isEmpty {
+                let f = (typingAttributes[.font] as? NSFont)
+                    ?? NSFont.systemFont(ofSize: NSFont.systemFontSize)
+                r = NSRect(x: 0, y: 0, width: 1,
+                           height: lm.defaultLineHeight(for: f))
+            }
+            return NSRect(x: origin.x + tc.lineFragmentPadding + r.minX,
+                          y: origin.y + r.minY, width: 2,
+                          height: r.height)
+        }
+        let at = i == n ? n - 1 : i
+        let g = lm.glyphIndexForCharacter(at: at)
+        let line = lm.lineFragmentRect(forGlyphAt: g, effectiveRange: nil)
+        let glyph = lm.boundingRect(forGlyphRange: NSRange(location: g,
+                                                           length: 1),
+                                    in: tc)
+        let x = i == n ? glyph.maxX : glyph.minX
+        return NSRect(x: origin.x + x - 1, y: origin.y + line.minY,
+                      width: 2, height: line.height)
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        super.draw(dirtyRect)
+        guard let i = dropIndex, let r = insertionRect(at: i) else { return }
+        NSColor.controlAccentColor.setFill()
+        NSBezierPath(roundedRect: r, xRadius: 1, yRadius: 1).fill()
+    }
 
     /// ⌘B, ⌘I, ⌘U: Markdown's bold, italic and underline (PromptMarkdown)
     /// -- the text stays plain.
@@ -164,7 +215,8 @@ final class PromptTextView: NSTextView {
         if Self.draggedReference(sender.draggingPasteboard) == nil {
             onDropTargeted?(true)
         }
-        showsDropCaret = true
+        let p = convert(sender.draggingLocation, from: nil)
+        dropIndex = characterIndexForInsertion(at: p)
         return .copy
     }
 
@@ -172,10 +224,9 @@ final class PromptTextView: NSTextView {
         guard carriesMedia(sender.draggingPasteboard) else {
             return super.draggingUpdated(sender)
         }
-        // Show the caret where the mention will land.
+        // Marked where the mention will land.
         let p = convert(sender.draggingLocation, from: nil)
-        setSelectedRange(NSRange(location: characterIndexForInsertion(at: p),
-                                 length: 0))
+        dropIndex = characterIndexForInsertion(at: p)
         return .copy
     }
 
@@ -225,13 +276,20 @@ final class PromptTextView: NSTextView {
         return true
     }
 
-    /// The drag over the words gone: the caret shows again only where
-    /// the box has the keyboard.
+    /// The drag over the words gone: its marker with it, the caret
+    /// shown again only where the box has the keyboard.
     private func dropCaretGone() {
-        guard showsDropCaret else { return }
-        showsDropCaret = false
+        guard dropIndex != nil else { return }
+        dropIndex = nil
         updateInsertionPointStateAndRestartTimer(
             window?.firstResponder === self)
+    }
+
+    /// Where the caret is -- its selection's end -- for a mention put in
+    /// from the row's menu (Insert at Cursor): the words keep it while the
+    /// box has not the keyboard.
+    var cursorIndex: Int {
+        min(NSMaxRange(selectedRange()), textStorage?.length ?? 0)
     }
 
     /// ⌘V: files copied in the Finder, and a PICTURE copied -- a

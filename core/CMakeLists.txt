@@ -38,6 +38,7 @@ set(VALTZ_CORE_SOURCES
   src/media/sound.mm
   src/media/space.cc
   src/media/stamp.mm
+  src/media/valtz-mark.cc
   src/media/text-flow.cc
   src/media/thumbnail.mm
   src/media/timing.cc
@@ -70,6 +71,10 @@ set(VALTZ_CORE_SOURCES
   src/agent/compaction.cc
   src/agent/cloud.mm
   src/ext/extension.cc
+  src/fleet/far-lend.cc
+  src/fleet/far-compute.mm
+  # the lender's end of far memory over RDMA, shared with the plugin
+  ${PROJECT_SOURCE_DIR}/vpipe-plugin/src/far-rdma.cc
   src/fleet/fleet-config.cc
   src/fleet/fleet.mm
   src/fleet/model-share.cc
@@ -82,6 +87,7 @@ set(VALTZ_CORE_SOURCES
   src/controller/asset-ops.cc
   src/controller/atlas.cc
   src/controller/compositions.cc
+  src/controller/valtz-mark.cc
   src/controller/procedural.cc
   src/controller/split.cc
   src/controller/fleet-models.cc
@@ -205,7 +211,12 @@ add_library(valtz::core ALIAS valtz_core)
 target_include_directories(valtz_core PUBLIC
   "${CMAKE_CURRENT_SOURCE_DIR}/include")
 target_include_directories(valtz_core PRIVATE
-  "${CMAKE_CURRENT_SOURCE_DIR}/src")
+  "${CMAKE_CURRENT_SOURCE_DIR}/src"
+  # far memory's wire (fleet/far-lend.cc), shared with the plugin
+  "${PROJECT_SOURCE_DIR}/vpipe-plugin/include")
+# RDMA's verbs (far-rdma.cc) WEAKLY, as the plugin's: a macOS without
+# librdma runs all the same, its lender over TCP alone.
+target_link_options(valtz_core INTERFACE "LINKER:-weak-lrdma")
 # The system's SQLite: a Draw Things checkpoint's table of contents
 # (models/drawthings.h).
 target_link_libraries(valtz_core
@@ -242,7 +253,7 @@ target_compile_definitions(valtz_core PRIVATE
   $<$<BOOL:${VALTZ_HAVE_VPIPE}>:VALTZ_HAVE_VPIPE=1>)
 set_source_files_properties(
   src/media/camera.mm src/media/capture.mm
-  src/fleet/fleet.mm src/agent/cloud.mm
+  src/fleet/fleet.mm src/fleet/far-compute.mm src/agent/cloud.mm
   src/media/exif.mm src/media/markup.mm src/media/model-input.mm
   src/media/movie.mm src/media/pdf.mm src/media/reverb.mm
   src/media/stamp.mm

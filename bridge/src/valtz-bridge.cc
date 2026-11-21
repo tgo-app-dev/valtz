@@ -1354,6 +1354,24 @@ Core::asset_op(const std::string& request_json)
       auto r = c.generate_node_op(*pid, *j);
       return r.ok() ? ok(std::move(*r)) : err(r.error());
     }
+    // File › Insert Valtz Mark -- {"onto"?, "offset"?} -> {"asset": the
+    // composition, "layer", "mark"} (Controller::insert_valtz_mark).
+    if (op == "insert-mark") {
+      std::optional<AssetId> onto;
+      if (!jget<std::string>(*j, "onto", "").empty()) {
+        auto o = asset("onto");
+        if (!o.ok()) {
+          return err(o.error());
+        }
+        onto = *o;
+      }
+      auto put = c.insert_valtz_mark(*pid, onto,
+                                     jget<std::int64_t>(*j, "offset", 0));
+      return put.ok() ? ok({{"asset", put->composition.str()},
+                            {"layer", put->layer},
+                            {"mark", put->mark.str()}})
+                      : err(put.error());
+    }
     if (op == "create-folder") {
       auto f = c.create_folder(*pid, name);
       return f.ok() ? ok({{"folder", *f}}) : err(f.error());
@@ -1530,7 +1548,9 @@ Core::asset_op(const std::string& request_json)
       auto put = c.place_result(*pid, *aid, onto, at,
                                 jget<std::int64_t>(*j, "offset", 0), job,
                                 jget(*j, "at_end", false),
-                                jget(*j, "new_page", false));
+                                jget(*j, "new_page", false),
+                                Controller::landing_fit_of(
+                                    jget<std::string>(*j, "fit", "")));
       return put.ok() ? ok({{"asset", put->first.str()},
                             {"layer", put->second}})
                       : err(put.error());
@@ -2715,6 +2735,10 @@ Core::layer_op(const std::string& request_json)
       // The layer's composition made flat, in its place (Flatten First).
       auto made = c.flatten_layer(*pid, *aid, layer);
       return made.ok() ? ok({{"asset", made->str()}}) : err(made.error());
+    } else if (op == "remove-adjustment") {
+      // "step": look | place | sound | speed (the Atlas's chain)
+      st = c.remove_adjustment(*pid, *aid, layer,
+                               jget<std::string>(*j, "step", ""));
     } else if (op == "speed") {
       st = c.set_speed_keys(*pid, *aid,
                             media::keyed_speed_from_json(

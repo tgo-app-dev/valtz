@@ -638,6 +638,16 @@ private:
     nw_endpoint_t ep = nw_browse_result_copy_endpoint(r);
     const char* svc = nw_endpoint_get_bonjour_service_name(ep);
     const std::string key = svc ? svc : "";
+    // What the Fleet page lists of it (a fleet, a member): told the app
+    // when it changes -- found, gone, or its record now naming another
+    // fleet. It was published and never said, so the page showed a new
+    // fleet only once something else (Discoverable switched) re-read it.
+    auto seen = [&]() -> std::string {
+      const auto it = _found.find(key);
+      return it == _found.end() ? std::string()
+                                : it->second.fleet + "/" + it->second.id;
+    };
+    const std::string before = seen();
     if (changes & nw_browse_result_change_result_removed) {
       _found.erase(key);
     } else {
@@ -650,6 +660,9 @@ private:
     }
     connect_found_();
     publish_();
+    if (seen() != before) {
+      _host.fleet_note("fleet.changed", Json::object());
+    }
   }
 
   // Each member of this fleet found and not yet reached: connected to --

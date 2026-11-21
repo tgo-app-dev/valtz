@@ -32,6 +32,8 @@
 
 #include "valtz/base/text.h"
 #include "valtz/controller/controller.h"
+#include "valtz/fleet/far-lend.h"
+#include "valtz-vpipe/far-wire.h"
 #include "valtz/media/camera.h"
 #include "valtz/ext/extension.h"
 #include "valtz/media/model-input.h"
@@ -40,6 +42,8 @@
 #include "valtz/media/procedural.h"
 
 #include <algorithm>
+#include <atomic>
+#include <csignal>
 #include <cmath>
 #include <cstdio>
 #include <chrono>
@@ -52,6 +56,7 @@
 #include <fstream>
 #include <iostream>
 #include <iterator>
+#include <deque>
 #include <map>
 #include <mutex>
 #include <readpassphrase.h>
@@ -71,6 +76,13 @@ usage()
   std::fputs(
       "usage: valtzctl <command> [args]\n"
       "  hw | caps | models\n"
+      "  far-lend [--gb N|auto] [--port P] [--key HEX] [--seconds S]\n"
+      "         [--files <models root>]  (its copies of a model's files\n"
+      "         read for the user off this drive too)\n"
+      "         (this Mac's memory lent to another's expert cache, over\n"
+      "         Thunderbolt: held until stopped)\n"
+      "  far-bench '<valtz-far params json>' [--mb 4,16,64] [--rounds 20]\n"
+      "         [--parallel 6]  (memory lent, measured: written, read)\n"
       "  tp-bench '<tensor_parallel json>' [--mb 1,16,64] [--rounds 20]\n"
       "         (a split's link measured, no model: the other Mac runs\n"
       "         the other rank)\n"
@@ -187,15 +199,23 @@ usage()
       "         [--offset F]  (a NEW layer showing it, on onto -- else the\n"
       "         project's composition -- above L, or in L when blank; at\n"
       "         timeline frame F; refused into itself)\n"
+      "  insert-mark <project.valtz> [onto-comp-id] [--offset F]\n"
+      "         (File > Insert Valtz Mark: the mark and its sonic logo on\n"
+      "         onto -- else the project's composition, else a 960x544\n"
+      "         timeline made for it -- a new layer at frame / page F: a\n"
+      "         timeline the clip, a still the mark, a sound the chord)\n"
       "  land <project.valtz> <asset-id> [onto-comp-id] [--at L]\n"
       "         [--offset F | --end | --new-page]\n"
+      "         [--fit center|fit|canvas]\n"
       "         (a result landing, as the app places a generation's: a new\n"
       "         layer of onto -- the composition active at Start -- else\n"
       "         a composition of its own, the project's when it has none;\n"
       "         --end: a clip on a timeline after its content, as\n"
       "         Settings' At the End; --new-page: a picture on a still on\n"
       "         a page of its own after the last, as Settings' On a New\n"
-      "         Page)\n"
+      "         Page; --fit: a size other than the canvas's -- centred at\n"
+      "         its own (the default), scaled to fit inside, or the canvas\n"
+      "         made its size -- as Settings' Size Mismatch)\n"
       "  compose <project.valtz> still|timeline <W>x<H> [--rate N[/D]]\n"
       "         [--project] [name]  (a new composition -- 0x0: sound\n"
       "         alone; --project, or none yet: the project's)\n"
@@ -615,7 +635,9 @@ usage()
       "        | fleet set [name=N] [discoverable=on|off]\n"
       "            [accept=always|ask|never]\n"
       "            [schedule=mon-fri@09:00-18:00|off]\n"
-      "            [send_weights=on|off]\n"
+      "            [send_weights=on|off] [lend=auto|off|<GB>]\n"
+      "            (lend: this Mac's memory lent to a member's expert\n"
+      "            cache over Thunderbolt -- what it can spare when asked)\n"
       "            (send_weights: a job with Custom's own LoRAs, DiT or\n"
       "            VAE goes to a member too, its files copied there\n"
       "            first where it has the disk; off: such jobs run here)\n"
@@ -1608,6 +1630,8 @@ print_fleet(const Json& s)
   std::printf("fleet     %s%s%s\n", fleet.empty() ? "(none)" : fleet.c_str(),
               jget(c, "discoverable", false) ? "  discoverable" : "",
               jget(c, "send_weights", false) ? "  sends weights" : "");
+  std::printf("lends     %s\n",
+              jget<std::string>(c, "lend", "auto").c_str());
   std::string when;
   if (jget(sch, "on", false)) {
     const int from = jget(sch, "from", 0), to = jget(sch, "to", 0);
@@ -1753,6 +1777,8 @@ fleet_command(Controller& c, std::vector<std::string>& args)
         j["discoverable"] = v == "on" || v == "true" || v == "1";
       } else if (k == "send_weights") {
         j["send_weights"] = v == "on" || v == "true" || v == "1";
+      } else if (k == "lend") {
+        j["lend"] = v;
       } else if (k == "accept") {
         j["accept"] = v;
       } else if (k == "schedule") {
@@ -2099,6 +2125,10 @@ agent_command(Controller& c, std::vector<std::string> args)
   bool autonomous = false;
   bool speed = false;
   std::string prompt;
+  // --then <words>: said when the turn before is done, in the same
+  // session (repeatable) -- a model's later turns timed warm
+  std::deque<std::string> thens;
+  int then_turn = 0;   // the turn the last --then followed
   for (std::size_t i = 1; i < args.size(); ++i) {
     const std::string& a = args[i];
     auto next = [&]() -> std::string {
@@ -2108,6 +2138,8 @@ agent_command(Controller& c, std::vector<std::string> args)
       autonomous = true;
     } else if (a == "--speed") {
       speed = true;
+    } else if (a == "--then") {
+      thens.push_back(next());
     } else if (a == "--backend") {
       req.backend = next();
     } else if (a == "--skills") {
@@ -2319,6 +2351,19 @@ agent_command(Controller& c, std::vector<std::string> args)
                    state.c_str(), secs, jget(st, "turns", 0),
                    jget(st, "steps", Json::array()).size(),
                    to_text(jget(st, "usage", Json())).c_str());
+      // the next only once this turn is done -- its "done" is reported
+      // again until the words said start the next
+      if (state == "done" && !thens.empty() &&
+          jget(st, "turns", 0) > then_turn) {
+        then_turn = jget(st, "turns", 0);
+        const std::string t = thens.front();
+        thens.pop_front();
+        (void)c.agent_say(*id, t);
+        continue;
+      }
+      if (state == "done" && jget(st, "turns", 0) <= then_turn) {
+        continue;
+      }
       const std::string more = tty ? line("\n> ") : std::string();
       if (more.empty() || more == "\x04" || more == "q") {
         (void)c.agent_stop(*id);
@@ -2541,6 +2586,7 @@ main(int argc, char** argv)
                     cmd == "sources" || cmd == "wired" ||
                     // Read as the engine reads a checkpoint.
                     cmd == "read-speed" || cmd == "tp-bench" ||
+                    cmd == "far-bench" ||
                     cmd == "auto" || cmd == "agent" ||
                     (cmd == "micro" && !args.empty() && args[0] == "ask") ||
                     // A generate node run.
@@ -3034,6 +3080,122 @@ main(int argc, char** argv)
       return linked ? 0 : 1;
     }
     return jget(*r, "usable", false) ? 0 : 1;
+  }
+  if (cmd == "far-lend") {
+    // far-lend [--gb N|auto] [--port P] [--key HEX] [--seconds S]: this
+    // Mac's memory lent to another's expert cache (DESIGN §11e), each
+    // session sized as it starts, until stopped (Ctrl-C) or S seconds.
+    std::string gb = "auto";
+    std::string files;
+    std::vector<std::uint8_t> key;
+    int port = 0;
+    double seconds = 0;
+    for (std::size_t i = 0; i + 1 < args.size(); ++i) {
+      if (args[i] == "--gb") {
+        gb = args[i + 1];
+      } else if (args[i] == "--files") {
+        files = args[i + 1];
+      } else if (args[i] == "--port") {
+        port = std::atoi(args[i + 1].c_str());
+      } else if (args[i] == "--key") {
+        key = far_wire::from_hex(args[i + 1].data(), args[i + 1].size());
+        if (key.empty()) { return usage(); }
+      } else if (args[i] == "--seconds") {
+        seconds = std::atof(args[i + 1].c_str());
+      }
+    }
+    fleet::FarLender::Options o;
+    o.size = [gb] { return fleet::lend_bytes_for(gb); };
+    o.key = [key] { return key; };
+    o.port = port;
+    o.files = files;
+    std::printf("lendable now: %llu GB (lends %s)\n",
+                (unsigned long long)(fleet::lendable_bytes() >> 30),
+                gb.c_str());
+    auto l = fleet::FarLender::start(std::move(o));
+    if (!l.ok()) { return fail(l.error()); }
+    std::printf("lending on port %d%s\n", (*l)->port(),
+                key.empty() ? " (no key)" : "");
+    std::fflush(stdout);
+    static std::atomic<bool> g_far_stop{false};
+    std::signal(SIGINT, [](int) { g_far_stop.store(true); });
+    std::signal(SIGTERM, [](int) { g_far_stop.store(true); });
+    const auto t0 = std::chrono::steady_clock::now();
+    fleet::FarLender::Traffic last{};
+    while (!g_far_stop.load()) {
+      std::this_thread::sleep_for(std::chrono::seconds(5));
+      const double el = std::chrono::duration<double>(
+                            std::chrono::steady_clock::now() - t0).count();
+      const auto t = (*l)->traffic();
+      const double gd = t.gpu_calls > last.gpu_calls
+                            ? (double)(t.gpu_calls - last.gpu_calls)
+                            : 0.0;
+      if (t.read != last.read || t.written != last.written ||
+          t.connections != last.connections || t.lent != last.lent ||
+          t.compute_calls != last.compute_calls) {
+        std::printf("%6.0f s  lent %llu GB  %d connections  read %.2f GB "
+                    "(%.2f GB/s)  written %.2f GB (%.2f GB/s)  run here "
+                    "%llu experts in %llu calls (%.0f calls/s, %.0f us "
+                    "on the GPU: lag %.0f, run %.0f, notice %.0f)\n",
+                    el, (unsigned long long)(t.lent >> 30), t.connections,
+                    (double)t.read / 1e9,
+                    (double)(t.read - last.read) / 5e9,
+                    (double)t.written / 1e9,
+                    (double)(t.written - last.written) / 5e9,
+                    (unsigned long long)t.computed,
+                    (unsigned long long)t.compute_calls,
+                    (double)(t.compute_calls - last.compute_calls) / 5.0,
+                    t.compute_calls > last.compute_calls
+                        ? (double)(t.compute_us - last.compute_us) /
+                              (double)(t.compute_calls - last.compute_calls)
+                        : 0.0,
+                    gd > 0 ? (t.gpu_lag_us - last.gpu_lag_us) / gd : 0.0,
+                    gd > 0 ? (t.gpu_run_us - last.gpu_run_us) / gd : 0.0,
+                    gd > 0 ? (t.gpu_notice_us - last.gpu_notice_us) / gd
+                           : 0.0);
+        std::fflush(stdout);
+        last = t;
+      }
+      if (seconds > 0 && el >= seconds) { break; }
+    }
+    return 0;
+  }
+  if (cmd == "far-bench") {
+    // far-bench '<valtz-far params>' [--mb 4,16,64] [--rounds 20]
+    // [--parallel 6]: memory lent, measured (DESIGN §11e).
+    if (args.empty()) { return usage(); }
+    const Json params = Json::parse(args[0], nullptr, false);
+    if (params.is_discarded() || !params.is_object()) { return usage(); }
+    std::vector<std::size_t> sizes = {4u << 20, 16u << 20, 64u << 20};
+    int rounds = 20, parallel = 6;
+    for (std::size_t i = 1; i + 1 < args.size(); ++i) {
+      if (args[i] == "--rounds") {
+        rounds = std::max(1, std::atoi(args[i + 1].c_str()));
+      } else if (args[i] == "--parallel") {
+        parallel = std::max(1, std::atoi(args[i + 1].c_str()));
+      } else if (args[i] == "--mb") {
+        sizes.clear();
+        std::stringstream ss(args[i + 1]);
+        for (std::string t; std::getline(ss, t, ',');) {
+          sizes.push_back(static_cast<std::size_t>(std::atof(t.c_str()) *
+                                                   (1 << 20)));
+        }
+      }
+    }
+    auto r = c.far_bench(params, sizes, rounds, parallel);
+    if (!r.ok()) { return fail(r.error()); }
+    std::cout << std::format("{}\nsetup {:.0f} ms\n",
+                             jget<std::string>(*r, "describe", ""),
+                             jget(*r, "setup_ms", 0.0));
+    for (const Json& row : jget(*r, "sizes", Json::array())) {
+      std::cout << std::format(
+          "{:>10} bytes x {}  write {:>6.2f} GB/s  read {:>6.2f} GB/s "
+          "({:.0f} us a round)\n",
+          jget<std::uint64_t>(row, "bytes", 0), parallel,
+          jget(row, "write_gbs", 0.0), jget(row, "read_gbs", 0.0),
+          jget(row, "read_us", 0.0));
+    }
+    return 0;
   }
   if (cmd == "tp-bench") {
     // tp-bench '<tensor_parallel json>' [--mb 1,16,64] [--rounds 20]:
@@ -3929,6 +4091,11 @@ main(int argc, char** argv)
     } else if (op == "separator") {
       // `separator <L> on|off`: a track of its own in the track view.
       st = c.set_layer_separator(*pid, *aid, layer, arg != "off");
+    } else if (op == "unadjust") {
+      // `unadjust <L> adjust|color|grade|look|place|sound|speed`: that
+      // adjustment taken off (look: adjust, color and grade at once)
+      // the layer (the Atlas's node for it cut from the layer's chain).
+      st = c.remove_adjustment(*pid, *aid, layer, arg);
     } else if (op == "rename") {
       st = c.rename_layer(*pid, *aid, layer, arg);
     } else if (op == "source") {
@@ -4548,6 +4715,19 @@ main(int argc, char** argv)
                   lacks ? "  (not ready: what it needs is missing)" : "",
                   jget(u, "runs", false) ? "  (in use)" : "",
                   jget(u, "custom", false) ? "  (changed)" : "");
+      // not ready: its checklist -- each part and its state
+      if (!jget(u, "ready", true)) {
+        for (const auto& c : jget(u, "checklist", Json::array())) {
+          const auto st = jget<std::string>(c, "state", "");
+          const bool ok = st == "installed" || st == "ok";
+          const auto role = jget<std::string>(c, "role", "");
+          std::printf("    [%s] %-36s %s%s\n", ok ? "x" : " ",
+                      role == "engine" ? "engine support"
+                          : jget<std::string>(c, "name", "").c_str(),
+                      st.c_str(),
+                      jget(c, "optional", false) ? "  (optional)" : "");
+        }
+      }
       const Json& t = u["tuning"];
       for (const auto& o : t["options"]) {
         const auto key = o["key"].get<std::string>();
@@ -4781,6 +4961,33 @@ main(int argc, char** argv)
     std::printf("%s\n", made->str().c_str());
     return 0;
   }
+  if (cmd == "insert-mark") {
+    if (args.empty()) {
+      return usage();
+    }
+    auto pid = open_or_fail(c, args[0]);
+    if (!pid.ok()) {
+      return usage();
+    }
+    std::optional<AssetId> onto;
+    std::int64_t offset = 0;
+    for (std::size_t i = 1; i < args.size(); ++i) {
+      if (args[i] == "--offset" && i + 1 < args.size()) {
+        offset = std::atoll(args[++i].c_str());
+      } else if (auto id = AssetId::parse(args[i])) {
+        onto = *id;
+      } else {
+        return usage();
+      }
+    }
+    auto put = c.insert_valtz_mark(*pid, onto, offset);
+    if (!put.ok()) {
+      return fail(put.error());
+    }
+    std::printf("%s layer %s (mark %s)\n", put->composition.str().c_str(),
+                put->layer.c_str(), put->mark.str().c_str());
+    return 0;
+  }
   if (cmd == "folders" || cmd == "folder" || cmd == "mv" || cmd == "rm" ||
       cmd == "rename" || cmd == "modify" || cmd == "capture" ||
       cmd == "instantiate" || cmd == "land" || cmd == "place" ||
@@ -4939,9 +5146,13 @@ main(int argc, char** argv)
       std::int64_t offset = 0;
       bool at_end = false;
       bool new_page = false;
+      auto fit = Controller::LandingFit::kCenter;
       for (std::size_t i = 2; i < args.size(); ++i) {
         if (args[i] == "--new-page" && cmd == "land") {
           new_page = true;
+        } else if (args[i] == "--fit" && cmd == "land" &&
+                   i + 1 < args.size()) {
+          fit = Controller::landing_fit_of(args[++i]);
         } else if (args[i] == "--at" && i + 1 < args.size()) {
           at = layer_id(args[++i]);
         } else if (args[i] == "--offset" && i + 1 < args.size()) {
@@ -4957,7 +5168,7 @@ main(int argc, char** argv)
       }
       auto put = cmd == "land"
                      ? c.place_result(*pid, *aid, onto, at, offset,
-                                      std::nullopt, at_end, new_page)
+                                      std::nullopt, at_end, new_page, fit)
                      : c.instantiate(*pid, *aid, onto, at, offset);
       if (!put.ok()) {
         return fail(put.error());
@@ -5227,8 +5438,10 @@ main(int argc, char** argv)
           look += (look.empty() ? "" : ",") + l.get<std::string>();
         }
         const auto layer = jget<std::string>(n, "layer", "");
+        // (each adjustment of its chain a node: its step)
         what = std::format(
-            "layer {} -> {}  {}", layer.empty() ? "0" : layer,
+            "layer {} {} -> {}  {}", layer.empty() ? "0" : layer,
+            jget<std::string>(n, "step", ""),
             name(jget<std::string>(n, "into", "")),
             look.empty() ? "as it is" : look);
       } else if (type == "generate") {
@@ -6784,8 +6997,24 @@ main(int argc, char** argv)
         }
       });
     }
-    const int rc = follow(c, *j);
+    int rc = follow(c, *j);
     stopper.request_stop();
+    // What came with it (a drafter, catalog `comes_with`) downloads after
+    // it: waited for, or the process's end would cancel it.
+    if (rc == 0 && pause_after < 0 && cancel_after < 0) {
+      if (const auto* e = c.catalog().find(id)) {
+        std::vector<std::string> with = e->comes_with;
+        with.push_back(jget<std::string>(
+            jget(e->engine, "vpipe", Json::object()), "mtp_drafter", ""));
+        for (const auto& w : with) {
+          if (w.empty() || !c.downloading(w)) { continue; }
+          std::fprintf(stderr, "  then %s\n", w.c_str());
+          while (c.downloading(w)) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(500));
+          }
+        }
+      }
+    }
     left();
     return rc;
   }

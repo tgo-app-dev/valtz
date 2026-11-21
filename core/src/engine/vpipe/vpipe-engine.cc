@@ -70,6 +70,7 @@
 #include "valtz-vpipe/exchange.h"
 
 #include "common/perf-flops.h"
+#include "generative-models/far-memory.h"
 #include "generative-models/tensor-parallel.h"
 #include "plugin/plugin-abi.h"
 #include "plugin/plugin-context.h"
@@ -358,6 +359,14 @@ public:
       _split_families.emplace_back("h3-long-prompts");
     }
 #endif
+    // ...and an H3 rank that binds TaoMate-H3's adapter as a plain LoRA
+    // (its streaming still a whole clip's).
+#ifdef VPIPE_FEATURE_TENSOR_PARALLEL_TAOMATE_LORA
+    if (_splits_dit &&
+        vpipe::host_has_feature(VPIPE_FEATURE_TENSOR_PARALLEL_TAOMATE_LORA)) {
+      _split_families.emplace_back("h3-taomate-lora");
+    }
+#endif
     // Each backend vpipe was given: loaded when every stage it says it
     // registers is there.
     for (std::size_t i = 0; i < _backends.size(); ++i) {
@@ -613,6 +622,117 @@ public:
   split_families() const override
   {
     return _split_families;
+  }
+
+  Result<Json>
+  far_bench(const Json& params, const std::vector<std::size_t>& sizes,
+            int rounds, int parallel) override
+  {
+    namespace g = vpipe::genai;
+    if (!g::far_memory_available()) {
+      return make_error(Code::Unsupported, "vpipe has no far-memory/1");
+    }
+    using Clock = std::chrono::steady_clock;
+    const auto t0 = Clock::now();
+    std::string err;
+    const Json bag = {{"transport", "valtz-far"}, {"params", params}};
+    std::shared_ptr<g::FarMemory> far = g::open_far_memory(vp::to_flex(bag),
+                                                           &err);
+    if (!far) { return make_error(Code::Engine, "valtz-far: " + err); }
+    Json out = Json::object();
+    out["setup_ms"] = std::chrono::duration<double, std::milli>(
+                          Clock::now() - t0).count();
+    out["bytes"] = far->bytes();
+    out["describe"] = far->describe();
+    parallel = std::max(1, parallel);
+    std::size_t most = 0;
+    for (std::size_t b : sizes) { most = std::max(most, b); }
+    // Each reader its own region, written first: `parallel` regions of the
+    // largest size at the start of the memory lent.
+    if ((std::uint64_t)most * (std::uint64_t)parallel > far->bytes()) {
+      return make_error(Code::InvalidArgument,
+                        "the sizes asked do not fit the memory lent");
+    }
+    std::vector<std::vector<std::uint8_t>> src((std::size_t)parallel),
+        dst((std::size_t)parallel);
+    for (int p = 0; p < parallel; ++p) {
+      src[(std::size_t)p].resize(most);
+      dst[(std::size_t)p].resize(most);
+      for (std::size_t i = 0; i < most; i += 4096) {
+        src[(std::size_t)p][i] = static_cast<std::uint8_t>(i / 4096 + p);
+      }
+    }
+    Json rows = Json::array();
+    for (std::size_t b : sizes) {
+      // Written by every region at once, timed.
+      std::atomic<bool> bad{false};
+      std::string why;
+      std::mutex why_mu;
+      auto run = [&](bool write, int reps) {
+        std::vector<std::thread> ts;
+        for (int p = 0; p < parallel; ++p) {
+          ts.emplace_back([&, p] {
+            for (int r = 0; r < reps && !bad.load(); ++r) {
+              g::FarPiece pc{(std::uint64_t)p * most,
+                             write ? src[(std::size_t)p].data()
+                                   : dst[(std::size_t)p].data(),
+                             b};
+              std::string e;
+              const bool ok = write ? far->write(&pc, 1, &e)
+                                    : far->read(&pc, 1, &e);
+              if (!ok) {
+                bad.store(true);
+                std::lock_guard<std::mutex> lk(why_mu);
+                why = e;
+              }
+            }
+          });
+        }
+        for (std::thread& t : ts) { t.join(); }
+      };
+      const auto w0 = Clock::now();
+      run(true, 1);
+      const double wus = std::chrono::duration<double, std::micro>(
+                             Clock::now() - w0).count();
+      run(false, 1);   // unmeasured
+      // VALTZ_FAR_BENCH_GAP_MS: idle between rounds, not counted -- as a
+      // model's reads come, a few at a time with the GPU's work between.
+      const char* gv = std::getenv("VALTZ_FAR_BENCH_GAP_MS");
+      const int gap = gv != nullptr ? std::atoi(gv) : 0;
+      double rus = 0;
+      if (gap > 0) {
+        for (int r = 0; r < rounds; ++r) {
+          std::this_thread::sleep_for(std::chrono::milliseconds(gap));
+          const auto r0 = Clock::now();
+          run(false, 1);
+          rus += std::chrono::duration<double, std::micro>(
+                     Clock::now() - r0).count();
+        }
+      } else {
+        const auto r0 = Clock::now();
+        run(false, rounds);
+        rus = std::chrono::duration<double, std::micro>(
+                  Clock::now() - r0).count();
+      }
+      if (bad.load()) { return make_error(Code::Engine, "valtz-far: " + why); }
+      for (int p = 0; p < parallel; ++p) {
+        if (std::memcmp(src[(std::size_t)p].data(),
+                        dst[(std::size_t)p].data(), b) != 0) {
+          return make_error(Code::Corrupt,
+                            "valtz-far: a read did not return what was "
+                            "written");
+        }
+      }
+      const double total = (double)b * parallel;
+      rows.push_back(Json{
+          {"bytes", b},
+          {"write_gbs", total / (wus * 1e3)},
+          {"read_gbs", total * rounds / (rus * 1e3)},
+          {"read_us", rus / rounds},
+      });
+    }
+    out["sizes"] = std::move(rows);
+    return out;
   }
 
   Result<Json>

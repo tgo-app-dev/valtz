@@ -439,6 +439,22 @@ public:
   // (vpipe's tensor-parallel-flux3/1), "qwen-image-21"
   // (tensor-parallel-qwen-image-21/1).
   virtual std::vector<std::string> split_families() const { return {}; }
+  // FAR MEMORY MEASURED (valtzctl far-bench; DESIGN §11e): valtz-far
+  // opened with `params` -- the lender's links, as a chat's far_memory
+  // names them -- `sizes` written, then read back `rounds` times by
+  // `parallel` readers at once (as an expert cache's readers ask), the
+  // bytes checked. {"setup_ms", "bytes", "sizes": [{"bytes", "write_gbs",
+  // "read_gbs", "read_us"}]}.
+  virtual Result<Json>
+  far_bench(const Json& params, const std::vector<std::size_t>& sizes,
+            int rounds, int parallel)
+  {
+    (void)params;
+    (void)sizes;
+    (void)rounds;
+    (void)parallel;
+    return make_error(Code::Unsupported, "this engine has no far memory");
+  }
   // A SPLIT's LINK MEASURED, no model loaded (valtzctl tp-bench; DESIGN
   // §11c): valtz-tp opened as a rank opens it -- `tp` the request's
   // tensor_parallel (rank, ranks, params) -- and `rounds` exchanges of

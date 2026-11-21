@@ -516,6 +516,71 @@ Controller::set_crop_keys(ProjectId pid, AssetId aid,
 }
 
 Status
+Controller::remove_adjustment(ProjectId pid, AssetId aid,
+                              const std::string& layer,
+                              const std::string& step)
+{
+  const bool card = step == "adjust" || step == "color" || step == "grade";
+  const char* kind = step == "look" || card ? "adjust"
+                     : step == "place" ? "crop"
+                     : step == "sound" ? "audio"
+                     : step == "speed" ? "speed"
+                                       : nullptr;
+  if (kind == nullptr) {
+    return make_error(Code::InvalidArgument,
+                      "an adjustment is look, place, sound or speed");
+  }
+  auto undo = command_(pid, "remove-adjustment", aid, layer);
+  if (!card) {
+    return set_modifier_(pid, aid, kind, layer, Json::object());
+  }
+  // One card's keys out of the look, flat and in each key; what is left
+  // kept (nothing left: the modifier goes).
+  project::Project* p = project(pid);
+  if (!p) {
+    return make_error(Code::NotFound, msg::kProjectNotOpen);
+  }
+  VALTZ_ASSIGN(project::Asset a, p->asset(aid));
+  Json params = modifier_of_(a, "adjust", layer);
+  if (!params.is_object()) {
+    return ok_status();
+  }
+  bool left = false;
+  auto strip = [&](Json& o) {
+    Json out = Json::object();
+    for (const auto& [k, v] : o.items()) {
+      const bool meta = k == "keys" || k == "frame" || k == "interp" ||
+                        k == "rate_num" || k == "rate_den";
+      if (meta || look_card(k) != step) {
+        out[k] = v;
+        left = left || !meta;
+      }
+    }
+    o = std::move(out);
+  };
+  strip(params);
+  if (auto ks = params.find("keys"); ks != params.end() && ks->is_array()) {
+    for (auto& k : *ks) {
+      strip(k);
+    }
+  }
+  return set_modifier_(pid, aid, "adjust", layer,
+                       left ? std::move(params) : Json::object());
+}
+
+std::string
+Controller::look_card(const std::string& key)
+{
+  if (key.starts_with("mix_")) {
+    return "color";
+  }
+  if (key.starts_with("grade_")) {
+    return "grade";
+  }
+  return "adjust";
+}
+
+Status
 Controller::set_speed_keys(ProjectId pid, AssetId aid,
                            const media::KeyedSpeed& k,
                            const std::string& layer)
@@ -3959,12 +4024,54 @@ Controller::overlay_cleaned_head_(ProjectId pid, project::Project& p,
   return shift;
 }
 
+Controller::LandingFit
+Controller::landing_fit_of(std::string_view s)
+{
+  return s == "fit"      ? LandingFit::kFit
+         : s == "canvas" ? LandingFit::kCanvas
+                         : LandingFit::kCenter;
+}
+
+Status
+Controller::fit_landed_(ProjectId pid, AssetId comp, const std::string& layer,
+                        AssetId asset, LandingFit fit)
+{
+  project::Project* p = project(pid);
+  if (!p || fit == LandingFit::kCenter) {
+    return ok_status();
+  }
+  VALTZ_ASSIGN(project::Asset a, p->asset(asset));
+  VALTZ_ASSIGN(project::Asset t, p->asset(comp));
+  if (a.kind == AssetKind::Audio || t.kind == AssetKind::Audio ||
+      !is_comp(t) || t.layers.size() < 2) {
+    return ok_status();    // its first layer sized it already
+  }
+  VALTZ_ASSIGN(const media::PixelSize own, shown_size_(*p, asset, 0, 0));
+  VALTZ_ASSIGN(const media::PixelSize frame, own_frame_(*p, t, 0));
+  if (own.width <= 0 || own.height <= 0 || frame.width <= 0 ||
+      frame.height <= 0 ||
+      (own.width == frame.width && own.height == frame.height)) {
+    return ok_status();
+  }
+  if (fit == LandingFit::kCanvas) {
+    // the canvas made its size, what was there kept about the centre
+    return set_canvas(pid, comp, own, 0.5, 0.5);
+  }
+  // scaled to fit inside, its shape kept, centred (its crop's zoom)
+  const double k = std::min(static_cast<double>(frame.width) / own.width,
+                            static_cast<double>(frame.height) / own.height);
+  media::Crop c = crop_of(t, layer);
+  c.scale_x *= k;
+  c.scale_y *= k;
+  return set_crop(pid, comp, c, layer);
+}
+
 Result<std::pair<AssetId, std::string>>
 Controller::place_result(ProjectId pid, AssetId asset,
                          std::optional<AssetId> onto,
                          std::optional<std::string> at, std::int64_t offset,
                          std::optional<JobId> job, bool at_end,
-                         bool new_page)
+                         bool new_page, LandingFit fit)
 {
   auto undo = job ? join_(pid, *job) : command_(pid, "asset.place", asset);
   project::Project* p = project(pid);
@@ -4011,9 +4118,14 @@ Controller::place_result(ProjectId pid, AssetId asset,
             }
           }
         }
-        return instantiate(pid, asset, *onto, std::nullopt, page);
+        VALTZ_ASSIGN(auto put,
+                     instantiate(pid, asset, *onto, std::nullopt, page));
+        VALTZ_TRY(fit_landed_(pid, put.first, put.second, asset, fit));
+        return put;
       }
-      return instantiate(pid, asset, *onto, at, offset);
+      VALTZ_ASSIGN(auto put, instantiate(pid, asset, *onto, at, offset));
+      VALTZ_TRY(fit_landed_(pid, put.first, put.second, asset, fit));
+      return put;
     }
   }
   // Its own: the size it is, a clip's rate.

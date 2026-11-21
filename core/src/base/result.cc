@@ -79,6 +79,7 @@ all_messages()
     kFleetNoSuchMember, kSplitPairAway, kSplitNoLink, kSplitCannotHere,
     kSplitCannotThere, kSplitNoModelThere, kSplitBusyHere,
     kSplitNeuralEngine, kSplitNeuralEngineModel, kSplitVdnTaomate,
+    kSplitTaomateLora, kFleetNoMemory,
     kSplitOwnFiles, kSplitOwnLoras,
     kSplitNoAdapters, kSplitModelHere, kSplitModelThere,
     kSplitContinued, kSplitPeerFailed,

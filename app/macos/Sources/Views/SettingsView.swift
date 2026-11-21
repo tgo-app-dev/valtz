@@ -260,7 +260,7 @@ enum SettingsPage: String, CaseIterable, Identifiable, Hashable {
         case .helper:
             String(localized: "The model that writes prompts with you, reads what you ask for and watches your clips: which one, and how it runs.")
         case .upscaling:
-            String(localized: "How Render Upscaled restores a layer at the size it is shown — FlashVSR+, FlashVSR 1.1 or RelayVSR for clips, or Open-H3-Regenerate-2K to regenerate one; VOSR for pictures: which one, and the arithmetic each runs with.")
+            String(localized: "How Render Upscaled restores a layer at the size it is shown — FlashVSR+, FlashVSR 1.1 or RelayVSR for clips, or Open-H3-Regenerate-2K to regenerate one; VOSR or RelayVSR for pictures: which one, and the arithmetic each runs with.")
         case .resampling:
             String(localized: "How Render Interpolated makes a clip at the rate its timeline shows it — slowed down, or on a timeline of more frames a second — the frames in between made by RIFE: which release, and how it reads the motion.")
         case .fleet:
@@ -697,6 +697,26 @@ private struct GeneralSettings: View {
                 }
                 .settingsMark(String(localized: "New Page"),
                               String(localized: "Place a generated picture on a still"))
+                // A result of another size than its canvas
+                // (AppModel.landingFit).
+                Picker(selection: $model.landingFit) {
+                    Text("Don't Scale, Centred")
+                        .tag(AppModel.LandingFit.center)
+                    Text("Scale to Fit the Canvas")
+                        .tag(AppModel.LandingFit.fit)
+                    Text("Resize the Canvas to It")
+                        .tag(AppModel.LandingFit.canvas)
+                } label: {
+                    Text("When a generation's size differs from the canvas")
+                    Text(model.landingFit == .center
+                         ? "It keeps its own size, centred on the canvas: a larger one is cut at the canvas's edges, a smaller one leaves the canvas around it."
+                         : model.landingFit == .fit
+                         ? "It is scaled up or down to fit inside the canvas, keeping its shape. Where its shape differs from the canvas's, the rest of the canvas is left empty."
+                         : "The canvas takes its size. Nothing already there is scaled: it keeps its size and stays centred on the new canvas.")
+                }
+                .settingsMark(String(localized: "Size"),
+                              String(localized: "Canvas"),
+                              String(localized: "When a generation's size differs from the canvas"))
                 // How a result is named (core Controller::asset_naming).
                 if let naming = model.assetNaming {
                     Picker(selection: Binding(

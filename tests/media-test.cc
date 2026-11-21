@@ -16,6 +16,7 @@
 #include "valtz/media/reverb.h"
 #include "valtz/media/sound.h"
 #include "valtz/media/space.h"
+#include "valtz/media/valtz-mark.h"
 #include "valtz/project/records.h"
 
 #include <CoreGraphics/CoreGraphics.h>
@@ -1983,4 +1984,51 @@ TEST(media, a_sound_is_panned_widened_and_placed)
               "%.3f at 5 kHz\n", low_over, high_over);
   CHECK(low_over > 0.4);
   CHECK(high_over < 0.15);
+}
+
+// File › Insert Valtz Mark's sonic logo (media/valtz-mark.h): A7(no3)
+// struck at 0 -- A3 E4 G4 -- D/A at 350 ms -- A3 D4 F#4 -- the first
+// damped, the whole faded to nothing, peaking at -3 dBFS.
+TEST(media, the_sonic_logo_strikes_its_two_chords)
+{
+  constexpr int R = 48000;
+  const std::vector<float> s = media::sonic_logo(R);
+  REQUIRE(s.size() == 2 * static_cast<std::size_t>(media::kMarkSeconds * R));
+  float peak = 0;
+  for (float v : s) {
+    peak = std::max(peak, std::abs(v));
+  }
+  CHECK(std::abs(peak - 0.708f) < 0.01f);
+  // A note's level over a span (the two channels summed), by Goertzel.
+  const auto level = [&](double hz, double from, double to) {
+    const double w = 2 * std::cos(2 * M_PI * hz / R);
+    double s1 = 0, s2 = 0;
+    const auto a = static_cast<std::size_t>(from * R);
+    const auto b = static_cast<std::size_t>(to * R);
+    for (std::size_t i = a; i < b; ++i) {
+      const double x = s[2 * i] + s[2 * i + 1];
+      const double y = x + w * s1 - s2;
+      s2 = s1;
+      s1 = y;
+    }
+    return std::sqrt(s1 * s1 + s2 * s2 - w * s1 * s2) / double(b - a);
+  };
+  const double a3 = 220.0, d4 = 293.66, cs4 = 277.18, e4 = 329.63,
+               fs4 = 369.99, g4 = 392.0;
+  // The first chord: A, E, G -- no third, nothing of the second.
+  for (double f : {a3, e4, g4}) {
+    CHECK(level(f, 0.03, 0.33) > 8 * level(cs4, 0.03, 0.33));
+    CHECK(level(f, 0.03, 0.33) > 4 * level(fs4, 0.03, 0.33));
+  }
+  // The second: A, D, F# -- E and G damped.
+  for (double f : {a3, d4, fs4}) {
+    CHECK(level(f, 0.5, 0.85) > 4 * level(g4, 0.5, 0.85));
+  }
+  CHECK(level(e4, 0.5, 0.85) < 0.25 * level(e4, 0.03, 0.33));
+  // Nothing at its end; silent before nothing.
+  float tail = 0;
+  for (std::size_t i = s.size() - 2 * 480; i < s.size(); ++i) {
+    tail = std::max(tail, std::abs(s[i]));
+  }
+  CHECK(tail < 0.01f);
 }

@@ -95,6 +95,7 @@ set(VALTZ_APP_SOURCES
   Sources/Views/AssetsSection.swift
   Sources/Views/AtlasView.swift
   Sources/Views/AtlasGenerate.swift
+  Sources/Views/AtlasPlacement.swift
   Sources/Views/AtlasPlayback.swift
   Sources/Views/DroppedMedia.swift
   Sources/Views/MemoryPopover.swift
@@ -170,6 +171,24 @@ set_target_properties(valtz-icon PROPERTIES Swift_LANGUAGE_VERSION 6
                                             Swift_MODULE_NAME valtz_icon)
 target_link_libraries(valtz-icon PRIVATE
   "-framework Metal" "-framework CoreGraphics" "-framework ImageIO")
+
+# valtz-mark: the Valtz mark as media (core media/valtz-mark.h) -- File ›
+# Insert Valtz Mark's clip and still, drawn by the same renderer, in a
+# process of its own the core starts (valtzctl's too). In
+# Contents/Helpers; the core told where the build's is.
+add_executable(valtz-mark
+  "${PROJECT_SOURCE_DIR}/tools/valtz-mark/main.swift"
+  ${VALTZ_MARK_SOURCES})
+set_target_properties(valtz-mark PROPERTIES Swift_LANGUAGE_VERSION 6
+                                            Swift_MODULE_NAME valtz_mark)
+target_link_libraries(valtz-mark PRIVATE
+  "-framework Metal" "-framework CoreGraphics" "-framework ImageIO"
+  "-framework CoreText" "-framework CoreVideo" "-framework CoreMedia"
+  "-framework AVFoundation" "-framework UniformTypeIdentifiers")
+add_dependencies(valtz_core valtz-mark)
+set_property(SOURCE "${PROJECT_SOURCE_DIR}/core/src/media/valtz-mark.cc"
+  TARGET_DIRECTORY valtz_core APPEND PROPERTY COMPILE_DEFINITIONS
+  "VALTZ_MARK_HELPER_BUILD_PATH=\"$<TARGET_FILE:valtz-mark>\"")
 
 # Bundle resources (Contents/Resources). The mark in the app is drawn
 # live by Sources/Mark, so there is no bitmap of it here.
@@ -411,7 +430,7 @@ endif()
 # three.js and Babylon.js in Contents/Resources/procedural, where the
 # core finds them (media/procedural.h). Nested code signed before the
 # bundle.
-add_dependencies(Valtz valtz-procedural)
+add_dependencies(Valtz valtz-procedural valtz-mark)
 set_property(TARGET Valtz APPEND PROPERTY
   LINK_DEPENDS "$<TARGET_FILE:valtz-procedural>")
 add_custom_command(TARGET Valtz POST_BUILD
@@ -422,6 +441,11 @@ add_custom_command(TARGET Valtz POST_BUILD
           "$<TARGET_BUNDLE_CONTENT_DIR:Valtz>/Helpers/"
   COMMAND codesign --force --sign - --options runtime
           "$<TARGET_BUNDLE_CONTENT_DIR:Valtz>/Helpers/valtz-procedural"
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different
+          "$<TARGET_FILE:valtz-mark>"
+          "$<TARGET_BUNDLE_CONTENT_DIR:Valtz>/Helpers/"
+  COMMAND codesign --force --sign - --options runtime
+          "$<TARGET_BUNDLE_CONTENT_DIR:Valtz>/Helpers/valtz-mark"
   COMMAND ${CMAKE_COMMAND} -E copy_directory_if_different
           "${PROJECT_SOURCE_DIR}/3rd-party/three"
           "$<TARGET_BUNDLE_CONTENT_DIR:Valtz>/Resources/procedural/three"

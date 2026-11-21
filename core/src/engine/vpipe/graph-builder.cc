@@ -7,6 +7,8 @@
 #include "valtz/base/version.h"
 #include "valtz-vpipe/exchange.h"
 
+#include "generative-models/far-memory.h"
+
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -2927,6 +2929,14 @@ helper_chat_config(const JobSpec& job)
   if (jget(job.params, "ngram_resident", false)) {
     chat_cfg["ngram_resident"] = true;
   }
+  // Far memory for its expert cache (vpipe's far_memory, DESIGN §11e):
+  // another Mac's, through the plugin's valtz-far.
+  // Only to a libvpipe with far-memory/1: an older one's text-chat
+  // refuses a key it does not know.
+  if (const Json fm = jget(job.params, "far_memory", Json());
+      fm.is_object() && vpipe::genai::far_memory_available()) {
+    chat_cfg["far_memory"] = fm;
+  }
   // The dtype it computes in where the model wants one (Ternary-Bonsai's
   // f16, its scales' own); else vpipe's bf16.
   if (const auto d = jget<std::string>(job.params, "compute_dtype", "");
@@ -2945,6 +2955,12 @@ helper_chat_config(const JobSpec& job)
       !dm.empty()) {
     chat_cfg["draft_model"] = dm;
     chat_cfg["draft_bits"] = jget(job.params, "draft_bits", 8);
+  }
+  // A vision tower the checkpoint does not carry (a DeepSeek-V4.1 GGUF's:
+  // the release's, catalog `eyes`; vpipe's vision_model).
+  if (auto vm = jget<std::string>(job.params, "vision_model", "");
+      !vm.empty()) {
+    chat_cfg["vision_model"] = vm;
   }
   return chat_cfg;
 }
@@ -3465,6 +3481,44 @@ build_export(const JobSpec& job)
 
 namespace {
 
+// A relayvsr-upscale stage's arithmetic -- Settings › Upscaling's (vpipe
+// 81891d62): the int8 tiers, SageAttention and its int8 P*V, the ANE's
+// feed-forward and its share -- and its SCALE where the folder holds both
+// (ComfyUI's Comfy-Org/RelayVSR: the 2x model, RelayVSR's Model Scale x2;
+// vpipe 1ebb0b3c). The release's folder is the 4x model alone.
+void
+relay_arithmetic(const JobSpec& job, int scale, Json& up_cfg)
+{
+  const Json all = accel_of(job);
+  for (const char* k : {"i8_gemm", "i8_gemm_tier", "sage_attn",
+                        "sage_pv8", "ane_ffn", "ane_rows"}) {
+    if (all.contains(k)) {
+      up_cfg[k] = all[k];
+    }
+  }
+  if (scale == 2) {
+    up_cfg["scale"] = 2;
+  }
+}
+
+// RelayVSR's input size for an output of W x H at `scale`: the source's
+// own where `own` (Read At's As It Is) and scale times it reaches W x H,
+// else W x H over the scale (Read At's A Quarter of the Size, or a
+// source too small) -- each side 8 at least.
+media::PixelSize
+relay_input(int W, int H, int scale, int SW, int SH, bool own)
+{
+  int IW = std::max(8, static_cast<int>(std::lround(
+                           static_cast<double>(W) / scale)));
+  int IH = std::max(8, static_cast<int>(std::lround(
+                           static_cast<double>(H) / scale)));
+  if (own && SW >= IW && SH >= IH) {
+    IW = SW;
+    IH = SH;
+  }
+  return {IW, IH};
+}
+
 // upscale-video by RelayVSR (the `upscale` block's `kind` "relayvsr";
 // vpipe's relayvsr-upscale, DESIGN §4f): frames in, the same frames at
 // exactly four times their size out, one for one. Read at the clip's
@@ -3489,14 +3543,8 @@ build_relayvsr_video(const JobSpec& job, const Json& up)
   const bool own = jget<std::string>(t, "read_at", "source") != "quarter";
   const int SW = in.info.frame.width;
   const int SH = in.info.frame.height;
-  int IW = std::max(8, static_cast<int>(std::lround(
-                           static_cast<double>(W) / scale)));
-  int IH = std::max(8, static_cast<int>(std::lround(
-                           static_cast<double>(H) / scale)));
-  if (own && SW >= IW && SH >= IH) {
-    IW = SW;
-    IH = SH;
-  }
+  const media::PixelSize is = relay_input(W, H, scale, SW, SH, own);
+  const int IW = is.width, IH = is.height;
   const Rational rate = in.info.frame_rate.num > 0 ? in.info.frame_rate
                                                    : Rational{24, 1};
   const double fps = rate.to_double();
@@ -3589,17 +3637,7 @@ build_relayvsr_video(const JobSpec& job, const Json& up)
                  // from before the key books 960 x 544 whatever comes.)
                  {"output_width", scale * IW},
                  {"output_height", scale * IH}};
-  // Settings › Upscaling's arithmetic (vpipe 81891d62): the int8 tiers,
-  // SageAttention and its int8 P*V, the ANE's feed-forward and its share.
-  {
-    const Json all = accel_of(job);
-    for (const char* k : {"i8_gemm", "i8_gemm_tier", "sage_attn",
-                          "sage_pv8", "ane_ffn", "ane_rows"}) {
-      if (all.contains(k)) {
-        up_cfg[k] = all[k];
-      }
-    }
-  }
+  relay_arithmetic(job, scale, up_cfg);
   stages.push_back(stage("upscale", "relayvsr-upscale",
                          Json::array({port(last)}), std::move(up_cfg)));
   last = "upscale";
@@ -4104,6 +4142,79 @@ build_regenerate_video(const JobSpec& job)
   return g;
 }
 
+namespace {
+
+// upscale-image by RelayVSR (the `upscale` block's `kind` "relayvsr";
+// DESIGN §4f): the picture a clip of ONE frame -- its keyframe the
+// frame, the decoder its 4x (or 2x) -- read as Read At says, fitted to
+// the size asked by lanczos, written as an 8-bit PNG (the stage's u8
+// frames: the release writes its frames so).
+Result<BuiltGraph>
+build_relayvsr_image(const JobSpec& job, const Json& up)
+{
+  const JobInput& in = job.inputs.front();
+  const int W = jget(job.params, "width", 0);
+  const int H = jget(job.params, "height", 0);
+  const int scale = std::max(2, jget(up, "scale", 4));
+  const Json t = jget(job.params, "tuning", Json::object());
+  const bool own = jget<std::string>(t, "read_at", "source") != "quarter";
+  VALTZ_ASSIGN(media::PixelSize src, media::oriented_size(in.path));
+  const media::PixelSize is =
+      relay_input(W, H, scale, src.width, src.height, own);
+  BuiltGraph g;
+  const std::string jid = job.id.str();
+  g.output = job.output_dir / std::format("{}.png", jid);
+  g.width = W;
+  g.height = H;
+  // read at the size RelayVSR takes (bicubic, as its makers degrade
+  // their training frames, where that is not the picture's own)
+  RefFeed f;
+  f.stage = "read";
+  f.path = in.path;
+  f.size = src;
+  f.fitted = src;
+  f.channels = 3;
+  g.references.push_back(f);
+  Json stages = Json::array();
+  stages.push_back(stage("read", ex::kSourceType, Json::array(),
+                         Json::object()));
+  std::string last = "read";
+  if (is.width != src.width || is.height != src.height) {
+    stages.push_back(stage("fit-in", "image-resample",
+                           Json::array({port("read")}),
+                           {{"width", is.width}, {"height", is.height},
+                            {"fit", "stretch"}, {"algorithm", "bicubic"}}));
+    last = "fit-in";
+  }
+  const auto seed = jget<std::int64_t>(job.params, "seed", 0);
+  Json up_cfg = {{"hf_dir", job.model.dir.string()},
+                 {"seed", seed > 0 ? seed : 42},
+                 {"output_dtype", "u8"},
+                 {"output_width", scale * is.width},
+                 {"output_height", scale * is.height}};
+  relay_arithmetic(job, scale, up_cfg);
+  stages.push_back(stage("upscale", "relayvsr-upscale",
+                         Json::array({port(last)}), std::move(up_cfg)));
+  last = "upscale";
+  if (scale * is.width != W || scale * is.height != H) {
+    stages.push_back(stage("fit", "image-resample",
+                           Json::array({port(last)}),
+                           {{"width", W}, {"height", H}, {"fit", "stretch"},
+                            {"algorithm", "lanczos"}}));
+    last = "fit";
+  }
+  stages.push_back(stage("write", "save-image", Json::array({port(last)}),
+                         {{"path", g.output.string()},
+                          {"format", "png"},
+                          {"bit_depth", 8}}));
+  g.spec = {{"id", "valtz-" + jid},
+            {"stages", stages},
+            {"subpipelines", Json::array()}};
+  return g;
+}
+
+}  // namespace
+
 Result<BuiltGraph>
 build_upscale_image(const JobSpec& job)
 {
@@ -4120,6 +4231,9 @@ build_upscale_image(const JobSpec& job)
   }
   const Json up = jget(jget(job.model.engine, "vpipe", Json::object()),
                        "upscale", Json::object());
+  if (jget<std::string>(up, "kind", "") == "relayvsr") {
+    return build_relayvsr_image(job, up);
+  }
   // The restorer's latent is in patches of two: sides of 16.
   const int grid = std::max(8, jget(up, "grid", 16));
   const int PW = ceil_to(W, grid);

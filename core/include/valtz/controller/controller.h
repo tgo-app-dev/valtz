@@ -50,6 +50,7 @@
 #include "valtz/engine/engine.h"
 #include "valtz/ext/extension.h"
 #include "valtz/fleet/fleet.h"
+#include "valtz/fleet/far-lend.h"
 #include "valtz/fleet/model-share.h"
 #include "valtz/fleet/thunderbolt.h"
 #include "valtz/media/adjust.h"
@@ -746,6 +747,11 @@ public:
                                   double seconds = 10.0) const;
   // A split's link measured with no model (Engine::tp_bench): valtzctl
   // tp-bench, the two Macs each running one rank. Blocks.
+  // Far memory measured (Engine::far_bench): valtzctl far-bench, the
+  // other Mac lending (valtzctl far-lend). Blocks.
+  Result<Json> far_bench(const Json& params,
+                         const std::vector<std::size_t>& sizes, int rounds,
+                         int parallel) const;
   Result<Json> tp_bench(const Json& tp,
                         const std::vector<std::size_t>& sizes,
                         int rounds) const;
@@ -811,6 +817,18 @@ public:
                              const std::string& layer = "");
   Status set_crop_keys(ProjectId, AssetId, const media::KeyedCrop&,
                        const std::string& layer = "");
+  // One ADJUSTMENT taken off a layer, as the Atlas's node for it is cut
+  // from the layer's chain: "adjust" (the Adjust card's sliders and
+  // opacity), "color" (the mixer), "grade" -- each only its own keys --
+  // "look" (all three),
+  // "place" (the crop, placement and turn), "sound" (the Audio panel's),
+  // "speed". One command ("remove-adjustment"); a locked layer refused.
+  Status remove_adjustment(ProjectId, AssetId comp,
+                           const std::string& layer,
+                           const std::string& step);
+  // Which card a key of the adjust modifier is set in: "color" (the
+  // mixer's mix_...), "grade" (grade_...), "adjust" (the rest).
+  static std::string look_card(const std::string& key);
   Status set_speed_keys(ProjectId, AssetId, const media::KeyedSpeed&,
                         const std::string& layer = "");
   // `follow_speed`: the layer's pitch follows its speed (a tape's) or is
@@ -1309,12 +1327,19 @@ public:
   // nothing under it, no gap before it. `new_page` (its New Page): a
   // PICTURE put on a still gets a page of its own, added after the last
   // -- what ran to the last page stops before it -- not a layer on the
-  // page shown.
+  // page shown. `fit` (its Size Mismatch): a picture or clip of another
+  // size than the canvas it lands on lies at its own size, centred
+  // (kCenter, as ever); is SCALED to fit inside the canvas, its shape
+  // kept, the rest of the canvas left clear (kFit); or the canvas is
+  // made ITS size, what was there kept at its own size about the centre
+  // (kCanvas).
+  enum class LandingFit { kCenter, kFit, kCanvas };
+  static LandingFit landing_fit_of(std::string_view);  // "" -> kCenter
   Result<std::pair<AssetId, std::string>> place_result(
       ProjectId, AssetId asset, std::optional<AssetId> onto,
       std::optional<std::string> at = std::nullopt, std::int64_t offset = 0,
       std::optional<JobId> job = std::nullopt, bool at_end = false,
-      bool new_page = false);
+      bool new_page = false, LandingFit fit = LandingFit::kCenter);
   // An asset INSTANTIATED in `onto` (what the stage works on; none: the
   // project's composition, made of it when there is none): a NEW LAYER
   // showing it -- in `at` when that layer is blank, else right above it;
@@ -1330,6 +1355,24 @@ public:
       ProjectId, AssetId asset, std::optional<AssetId> onto,
       std::optional<std::string> at = std::nullopt,
       std::int64_t offset = 0, bool fill = true);
+  // File › Insert Valtz Mark (DESIGN §10a, controller/valtz-mark.cc):
+  // the mark -- the V beside the word "valtz" -- and its sonic logo, a
+  // HIDDEN asset of the project (tagged "hidden", never listed), made
+  // once for each size and rate and reused, put on `onto` (none: the
+  // project's composition; none either: a 960 x 544 timeline made the
+  // project's for it) as a new layer on top at `offset` (a timeline's
+  // frame, a still's page): a timeline the clip -- the sweep once, the
+  // chord with it -- a still the mark settled, a composition of sound the
+  // chord alone; a picture a third of the frame each way, in its middle.
+  // One command.
+  struct MarkInserted {
+    AssetId     composition;
+    std::string layer;
+    AssetId     mark;
+  };
+  Result<MarkInserted> insert_valtz_mark(ProjectId,
+                                         std::optional<AssetId> onto,
+                                         std::int64_t offset = 0);
   // The timeline's SCISSORS (DESIGN §10a Timeline): a layer's clip cut
   // at timeline frame `frame` in two PARTS, each a composition of one
   // layer showing its span of the source -- a flat clip or sound, or a
@@ -3015,6 +3058,10 @@ private:
                                        std::uint32_t version, int depth);
   Result<media::PixelSize> own_frame_(project::Project&,
                                       const project::Asset&, int depth);
+  // A result just landed as `layer` of `comp`, laid out as `fit` says
+  // (place_result's Size Mismatch).
+  Status fit_landed_(ProjectId, AssetId comp, const std::string& layer,
+                     AssetId asset, LandingFit fit);
   // A FRAMED composition resized (Canvas Size): its canvas made its frame
   // -- every layer kept where it lies -- so the frame IS its size. Nothing
   // to do unframed, or with no canvas set.
@@ -3278,6 +3325,12 @@ private:
   std::string                        _host;
   std::unique_ptr<FleetHost>         _fleet_host;
   std::unique_ptr<fleet::ShareServer> _share;
+  // Memory lent to a member's expert cache (DESIGN §11e), while in a
+  // fleet and Lend Memory is not off.
+  std::unique_ptr<fleet::FarLender> _lender;
+  // A paired member's lent memory for the agent's model, as valtz-far's
+  // params; null where there is none.
+  Json far_params_(const models::ModelEntry& m) const;
   std::filesystem::path              _fleet_files;
   mutable std::mutex                 _share_jobs_mu;
   std::map<std::string, fleet::ShareList> _share_jobs;

@@ -166,6 +166,15 @@ struct ModelEntry {
   // encoder, which FL2VA, Ref2VA and the encoder's own download each
   // carry.
   std::vector<std::string> requires_one_of;
+  // What is DOWNLOADED WITH it (catalog `comes_with`): files a model
+  // reads that are published as a record of their own -- DeepSeek V4.1's
+  // GGUFs read the n-gram table from ISTA-DASLab's repo, 110.6 GB, the
+  // backbone's files without it. Usually `requires` too.
+  std::vector<std::string> comes_with;
+  // What it SEES with where it carries no eyes of its own (catalog
+  // `eyes`: a GGUF's vision tower, the release's, beside it): the
+  // catalog id -- installed, it sees as a model with `caption` does.
+  std::string eyes;
   // Another entry whose files these are (catalog `files_of`): a link of
   // that one's is this one's. The RefMod maker runs on Ref2VA's folder
   // (DESIGN §4s).

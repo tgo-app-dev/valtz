@@ -193,6 +193,81 @@ Controller::tb_links_(bool now, double fresh)
   return out;
 }
 
+// ---- memory lent ----------------------------------------------------------
+
+// The paired member's lent memory for `m`'s expert cache (DESIGN §11e):
+// where `m` streams its experts, the member lends (Settings › Fleet's
+// Lend Memory not off, something to spare now) and a Thunderbolt cable
+// joins the two -- each cable a link, bound to its port here; over the
+// network it would be slower than the drive. The probe's last cables, as
+// they are -- probed now where none are known.
+Json
+Controller::far_params_(const models::ModelEntry& m) const
+{
+  const double disk = std::max(0.0, m.disk_gb);
+  if (!_fleet || !(m.resident_gb > 0 && m.resident_gb < disk)) {
+    return Json();
+  }
+  const fleet::Config c = _fleet->config();
+  if (!c.joined() || c.pair_member.empty()) { return Json(); }
+  Json self;
+  for (const auto& mem : _fleet->members()) {
+    if (jget<std::string>(mem, "id", "") == c.pair_member) {
+      self = jget(mem, "self", Json::object());
+    }
+  }
+  const int port = jget(self, "far_port", 0);
+  // Less than a few GB buys little against the setup.
+  if (port <= 0 || jget<std::uint64_t>(self, "far_bytes", 0) < (4ull << 30)) {
+    return Json();
+  }
+  std::vector<fleet::TbLink> links;
+  {
+    std::lock_guard lk(_tb_mu);
+    if (auto it = _tb_members.find(c.pair_member); it != _tb_members.end()) {
+      links = it->second.links;
+    }
+  }
+  // None known yet (a run just started: the probe the member's arrival
+  // asks for not landed): probed now, once -- ~200 ms a pair.
+  if (links.empty()) {
+    links = const_cast<Controller*>(this)->tb_links_(true)[c.pair_member];
+  }
+  Json addr = Json::array(), ifs = Json::array();
+  std::set<std::pair<std::string, std::string>> seen;
+  for (const auto& l : links) {
+    if (l.remote_address.empty() ||
+        !seen.insert({l.local_interface, l.remote_address}).second) {
+      continue;
+    }
+    addr.push_back(std::format("{}:{}", l.remote_address, port));
+    ifs.push_back(l.local_interface);
+  }
+  if (addr.empty()) { return Json(); }
+  Json out = {{"links", std::move(addr)},
+              {"interfaces", std::move(ifs)},
+              {"key", c.key},
+              {"streams", 8},
+              {"chunk_kb", 1024}};
+  // Over RDMA where the pair says so: each cable's two devices, the
+  // connections kept for where it cannot be set up.
+  if (c.pair_rdma) {
+    Json here = Json::array(), there = Json::array();
+    std::set<std::string> took;
+    for (const auto& l : links) {
+      if (l.rdma() && took.insert(l.local_rdma).second) {
+        here.push_back(l.local_rdma);
+        there.push_back(l.remote_rdma);
+      }
+    }
+    if (!here.empty()) {
+      out["rdma"] = std::move(here);
+      out["rdma_peer"] = std::move(there);
+    }
+  }
+  return out;
+}
+
 // ---- the pair -----------------------------------------------------------
 
 Json
@@ -433,7 +508,9 @@ Controller::split_plan_(const project::Recipe& r, const engine::ModelRef& ref,
   // The Neural Engine's share -- the draft's, or the 2K refine's (its own
   // tuning) -- on both ranks, each its share's modules: where both Macs'
   // engines say so ("h3-ane", vpipe's tensor-parallel-ane/1; the member's
-  // checked below). VDN and TaoMate: not on a rank.
+  // checked below). VDN and TaoMate's streaming: not on a rank --
+  // TaoMate as a LoRA only (`taomate_lora`: its adapter over the whole
+  // clip at its own shifts, no chunks or cache) is any adapter's.
   const Json t = jget(r.params, "tuning", Json::object());
   const Json rt = jget(r.params, "regenerate_tuning", Json::object());
   const bool regen = !jget<std::string>(r.params, "regenerate", "").empty();
@@ -448,12 +525,26 @@ Controller::split_plan_(const project::Recipe& r, const engine::ModelRef& ref,
   if (ane && std::ranges::find(families, "h3-ane") == families.end()) {
     return no(msg::kSplitNeuralEngine);
   }
-  if (jget(t, "vdn", false) || jget(t, "taomate", false) ||
-      !ref.branch.empty() || (regen && jget(rt, "vdn", false))) {
+  const bool taomate_streams =
+      jget(t, "taomate", false) && !jget(t, "taomate_lora", false);
+  if (jget(t, "vdn", false) || taomate_streams || !ref.branch.empty() ||
+      (regen && jget(rt, "vdn", false))) {
     return no(msg::kSplitVdnTaomate);
   }
-  if (jget<std::string>(carried, "latent", "") == "kept" ||
-      carried.contains("cleaned") || r.params.contains("clean_guide")) {
+  // TaoMate's adapter as a LoRA: where both Macs' vpipe binds it on a
+  // rank ("h3-taomate-lora", vpipe's tensor-parallel-taomate-lora/1;
+  // the member's checked below) -- an older one refuses it at load.
+  const bool taomate_lora = jget(t, "taomate", false) && !taomate_streams;
+  if (taomate_lora &&
+      std::ranges::find(families, "h3-taomate-lora") == families.end()) {
+    return no(msg::kSplitTaomateLora);
+  }
+  // A continuation from the clip's KEPT latents splits: both ranks read
+  // the same windows (sent as the job's inputs, by hash). Its guide
+  // CLEANED does not: that runs image edits inside the job, a frame at a
+  // time, which a rank does not.
+  (void)carried;
+  if (carried.contains("cleaned") || r.params.contains("clean_guide")) {
     return no(msg::kSplitContinued);
   }
   if (busy_here_(r_job)) {
@@ -484,6 +575,10 @@ Controller::split_plan_(const project::Recipe& r, const engine::ModelRef& ref,
   }
   if (ane && !in_list(jget(self, "split_families", Json()), "h3-ane")) {
     return no(msg::kSplitNeuralEngine);
+  }
+  if (taomate_lora &&
+      !in_list(jget(self, "split_families", Json()), "h3-taomate-lora")) {
+    return no(msg::kSplitTaomateLora);
   }
   // Each Mac its share of the heads, by its GPU (or as set), the
   // feed-forward rows alike.
@@ -709,6 +804,13 @@ Controller::run_split_(SplitPlan plan, engine::JobSpec spec,
   s->title = title;
   // The member's rank: the same request, its share, its inputs by hash.
   fleet::Offer offer{spec.id, r.op, r.model, title, r.params, spec.inputs};
+  // A continuation's kept latents (carry_latents_): its windows in the
+  // job's params, its files among its inputs -- the member's rank reads
+  // the same.
+  if (const Json win = jget(spec.params, "continue_latent", Json());
+      win.is_object()) {
+    offer.params["continue_latent"] = win;
+  }
   for (auto& in : offer.inputs) {
     if (in.hash.is_zero()) {
       VALTZ_ASSIGN(in.hash, hash_file(in.path));

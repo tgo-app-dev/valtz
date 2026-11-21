@@ -750,6 +750,120 @@ TEST(graph_builder, relayvsr_reads_its_own_size_and_makes_four_times)
   CHECK(find_stage(big->spec, "fit") == nullptr);
 }
 
+// RelayVSR restores a PICTURE too: a clip of one frame through its
+// stage, read as Read At says, fitted to the size by lanczos -- and its
+// 2x checkpoint (Model Scale x2: a folder of ComfyUI's holding both)
+// told its scale.
+TEST(graph_builder, relayvsr_restores_a_picture_at_4x_or_2x)
+{
+  const auto png = test::temp_dir("gb-relay-pic") / "pic.png";
+  {
+    std::vector<std::uint8_t> px(320 * 176 * 4, 120);
+    CGColorSpaceRef cs = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
+    CGContextRef ctx = CGBitmapContextCreate(
+        px.data(), 320, 176, 8, 320 * 4, cs,
+        static_cast<std::uint32_t>(kCGImageAlphaNoneSkipLast));
+    CGImageRef img = CGBitmapContextCreateImage(ctx);
+    CFURLRef url = CFURLCreateFromFileSystemRepresentation(
+        nullptr, reinterpret_cast<const UInt8*>(png.c_str()),
+        static_cast<CFIndex>(std::strlen(png.c_str())), false);
+    CGImageDestinationRef dst = CGImageDestinationCreateWithURL(
+        url, CFSTR("public.png"), 1, nullptr);
+    CGImageDestinationAddImage(dst, img, nullptr);
+    REQUIRE(CGImageDestinationFinalize(dst));
+    CFRelease(dst);
+    CFRelease(url);
+    CGImageRelease(img);
+    CGContextRelease(ctx);
+    CGColorSpaceRelease(cs);
+  }
+  JobSpec job = job_for("relayvsr", kOpUpscaleImage);
+  job.model.dir = "/m/kopper/RelayVSR";
+  job.params = {{"width", 960}, {"height", 528},
+                {"tuning", {{"i8_gemm", true}}}};
+  JobInput in;
+  in.role = "source";
+  in.path = png;
+  in.info.type = media::MediaType::Image;
+  in.info.frame.width = 320;
+  in.info.frame.height = 176;
+  job.inputs.push_back(in);
+
+  // 3x asked of the 4x model: read as it is, 1280 x 704 made, fitted.
+  auto g = vp::build_upscale_image(job);
+  REQUIRE_OK(g);
+  CHECK(find_stage(g->spec, "generate") == nullptr);
+  CHECK(find_stage(g->spec, "fit-in") == nullptr);
+  const Json* up = find_stage(g->spec, "upscale");
+  REQUIRE(up);
+  CHECK(jget<std::string>(*up, "type", "") == "relayvsr-upscale");
+  CHECK(src_of(up, 0) == "read");
+  CHECK(jget(config_of(up), "output_width", 0) == 1280);
+  CHECK(jget(config_of(up), "output_height", 0) == 704);
+  CHECK(jget(config_of(up), "i8_gemm", false));
+  CHECK(!config_of(up).contains("scale"));    // the release's: 4x alone
+  CHECK(!config_of(up).contains("window"));
+  const Json* fit = find_stage(g->spec, "fit");
+  REQUIRE(fit);
+  CHECK(jget(config_of(fit), "width", 0) == 960);
+  CHECK(src_of(find_stage(g->spec, "write"), 0) == "fit");
+  CHECK(jget<std::string>(config_of(find_stage(g->spec, "write")),
+                          "format", "") == "png");
+  REQUIRE(g->references.size() == 1);
+  CHECK(g->references[0].size.width == 320);
+
+  // The 2x checkpoint, 2x asked: 640 x 352 made, nothing fitted after.
+  JobSpec x2 = job_for("relayvsr-x2", kOpUpscaleImage);
+  x2.model.dir = "/m/Comfy-Org/RelayVSR";
+  x2.params = {{"width", 640}, {"height", 352}};
+  x2.inputs = job.inputs;
+  auto h = vp::build_upscale_image(x2);
+  REQUIRE_OK(h);
+  const Json* up2 = find_stage(h->spec, "upscale");
+  REQUIRE(up2);
+  CHECK(jget(config_of(up2), "scale", 0) == 2);
+  CHECK(jget<std::string>(config_of(up2), "hf_dir", "") ==
+        "/m/Comfy-Org/RelayVSR");
+  CHECK(jget(config_of(up2), "output_width", 0) == 640);
+  CHECK(find_stage(h->spec, "fit") == nullptr);
+  // ...and a quarter of the size: read at half of 1.5x's 480 x 264.
+  x2.params = {{"width", 480}, {"height", 264},
+               {"tuning", {{"read_at", "quarter"}}}};
+  auto q = vp::build_upscale_image(x2);
+  REQUIRE_OK(q);
+  const Json* fin = find_stage(q->spec, "fit-in");
+  REQUIRE(fin);
+  CHECK(jget(config_of(fin), "width", 0) == 240);
+  CHECK(jget(config_of(fin), "height", 0) == 132);
+  CHECK(find_stage(q->spec, "fit") == nullptr);
+}
+
+// RelayVSR's 2x checkpoint on a clip: its scale told the stage, the
+// clip read at its own size where twice it reaches the size asked.
+TEST(graph_builder, relayvsr_x2_restores_a_clip_at_twice)
+{
+  JobSpec job = job_for("relayvsr-x2", kOpUpscaleVideo);
+  job.model.dir = "/m/Comfy-Org/RelayVSR";
+  job.params = {{"width", 1280}, {"height", 704}, {"count", 40}};
+  JobInput in;
+  in.role = "source";
+  in.path = "/tmp/clip.mp4";
+  in.info.type = media::MediaType::Video;
+  in.info.frame.width = 640;
+  in.info.frame.height = 352;
+  in.info.frame_rate = {24, 1};
+  in.info.frame_count = 56;
+  job.inputs.push_back(in);
+  auto g = vp::build_upscale_video(job);
+  REQUIRE_OK(g);
+  const Json* up = find_stage(g->spec, "upscale");
+  REQUIRE(up);
+  CHECK(jget(config_of(up), "scale", 0) == 2);
+  CHECK(jget(config_of(up), "output_width", 0) == 1280);
+  CHECK(find_stage(g->spec, "fit") == nullptr);
+  CHECK(find_stage(g->spec, "fit-in") == nullptr);
+}
+
 // VOSR's restorer takes the same arithmetic, Sol among it, on its
 // generate stage -- the one step it was distilled for left to vpipe.
 TEST(graph_builder, a_picture_upscale_runs_as_tuned)
@@ -2388,7 +2502,7 @@ TEST(graph_builder, chat_decodes_with_the_mtp_head)
     ++qwen;
   }
   CHECK(qwen >= 4);
-  CHECK(deepseek == 2);
+  CHECK(deepseek == 3);
   j.params["sampling"] = jget(jget(cat->find("qwen3.8-27b")->engine,
                                    "vpipe", Json::object()),
                               "sampling", Json::object());

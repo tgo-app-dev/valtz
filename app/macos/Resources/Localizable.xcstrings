@@ -435,6 +435,16 @@
         }
       }
     },
+    "%@ is no longer in this project, and left the prompt." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "%@ 已不在此项目中，已从提示中移除。"
+          }
+        }
+      }
+    },
     "%@ is not downloaded yet: %@ runs until it is." : {
       "localizations" : {
         "en" : {
@@ -513,6 +523,16 @@
         }
       }
     },
+    "%@ is not ready yet." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "%@ 尚未就绪。"
+          }
+        }
+      }
+    },
     "%@ is offered from %@ GB of memory. On this Mac its weights may not all stay in memory, and it can write very slowly." : {
       "localizations" : {
         "en" : {
@@ -525,6 +545,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "%1$@ 适用于 %2$@ GB 及以上内存。在这台 Mac 上，它的权重可能无法全部留在内存中，写作可能非常缓慢。"
+          }
+        }
+      }
+    },
+    "%@ is ready once these are in place:" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "以下各项就位后，%@ 即可使用："
           }
         }
       }
@@ -592,11 +622,22 @@
       }
     },
     "%@ needs a newer engine than this build has." : {
+      "extractionState" : "stale",
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "%@ 需要比此版本更新的引擎。"
+          }
+        }
+      }
+    },
+    "%@ needs these before it can run:" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "%@ 运行前需要以下各项："
           }
         }
       }
@@ -842,6 +883,7 @@
       }
     },
     "%@ runs with %@ beside it: get them in Settings › Capabilities." : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -1874,6 +1916,16 @@
         }
       }
     },
+    "4x, Fitted Down" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "4 倍后缩小"
+          }
+        }
+      }
+    },
     "5 minutes" : {
       "localizations" : {
         "zh-Hans" : {
@@ -2123,6 +2175,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "图层文件夹：将图层行拖到它上面即可放入"
+          }
+        }
+      }
+    },
+    "A gated model: its license is accepted and a token given in Settings › Capabilities." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "受限模型：需在“设置 › 功能”中接受其许可并提供令牌。"
           }
         }
       }
@@ -2638,6 +2700,16 @@
         }
       }
     },
+    "Add Adjustment" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "添加调整"
+          }
+        }
+      }
+    },
     "Add Clip" : {
       "localizations" : {
         "zh-Hans" : {
@@ -2714,6 +2786,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "添加歌词…"
+          }
+        }
+      }
+    },
+    "Add Model…" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "添加模型…"
           }
         }
       }
@@ -3805,6 +3887,16 @@
         }
       }
     },
+    "At 2x or less: the 2x model, or the 4x fitted down" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "放大 2 倍以内时：用 2 倍模型，或 4 倍后缩小"
+          }
+        }
+      }
+    },
     "At 4 bits its results lose some detail and follow the prompt a little less closely." : {
       "localizations" : {
         "zh-Hans" : {
@@ -4221,7 +4313,18 @@
         }
       }
     },
+    "Auto runs VOSR 2.0 where it is downloaded. RelayVSR restores a picture as a clip of one frame -- exactly four times what it reads, or twice with its 2x model -- and runs when chosen here, or when it is the only one downloaded." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "自动：已下载 VOSR 2.0 时运行它。RelayVSR 把图片当作只有一帧的片段来修复——正好放大到读入尺寸的四倍，用其 2 倍模型时为两倍——在此选中，或只下载了它时运行。"
+          }
+        }
+      }
+    },
     "Auto runs the best one downloaded." : {
+      "extractionState" : "stale",
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
@@ -5587,6 +5690,16 @@
         }
       }
     },
+    "Clips and Pictures" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "视频片段和图片"
+          }
+        }
+      }
+    },
     "Clips made here — generated, upscaled, rendered — are kept in the intermediate format." : {
       "localizations" : {
         "zh-Hans" : {
@@ -5669,6 +5782,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "关闭提示词"
+          }
+        }
+      }
+    },
+    "Close Trim and Time" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "关闭修剪与时间"
           }
         }
       }
@@ -5793,12 +5916,42 @@
         }
       }
     },
+    "Collapsed" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "已收起"
+          }
+        }
+      }
+    },
     "Color" : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "色彩"
+          }
+        }
+      }
+    },
+    "Color Grade" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "色彩分级"
+          }
+        }
+      }
+    },
+    "Color Mixer" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "色彩混合器"
           }
         }
       }
@@ -6739,6 +6892,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "裁剪"
+          }
+        }
+      }
+    },
+    "Crop + Place" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "裁剪 + 放置"
           }
         }
       }
@@ -7748,6 +7911,16 @@
         }
       }
     },
+    "Don't Scale, Centred" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "不缩放，居中"
+          }
+        }
+      }
+    },
     "Done" : {
       "localizations" : {
         "zh-Hans" : {
@@ -7956,6 +8129,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "正在下载 %@"
+          }
+        }
+      }
+    },
+    "Download…" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "下载…"
           }
         }
       }
@@ -8659,6 +8842,16 @@
         }
       }
     },
+    "Edit in the %@ Panel" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "在“%@”面板中编辑"
+          }
+        }
+      }
+    },
     "Edit the prompt the window's height, several at once (⇧⌘E)" : {
       "localizations" : {
         "zh-Hans" : {
@@ -8806,6 +8999,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "引擎"
+          }
+        }
+      }
+    },
+    "Engine support" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "引擎支持"
           }
         }
       }
@@ -9055,6 +9258,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "完整协方差"
+          }
+        }
+      }
+    },
+    "Expanded" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "已展开"
           }
         }
       }
@@ -9823,6 +10036,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "已发现 · 尚未连接"
+          }
+        }
+      }
+    },
+    "Four times made, fitted down: finer detail, more time" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "先做四倍再缩小：细节更细，耗时更长"
           }
         }
       }
@@ -10611,6 +10834,16 @@
         }
       }
     },
+    "Graded" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "已调色"
+          }
+        }
+      }
+    },
     "Gradient" : {
       "localizations" : {
         "zh-Hans" : {
@@ -10919,6 +11152,26 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "隐藏音频面板"
+          }
+        }
+      }
+    },
+    "Hide the call" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "隐藏调用"
+          }
+        }
+      }
+    },
+    "Hide the code" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "隐藏代码"
           }
         }
       }
@@ -11286,11 +11539,22 @@
       }
     },
     "How Render Upscaled restores a layer at the size it is shown — FlashVSR+, FlashVSR 1.1 or RelayVSR for clips, or Open-H3-Regenerate-2K to regenerate one; VOSR for pictures: which one, and the arithmetic each runs with." : {
+      "extractionState" : "stale",
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "“渲染放大版本”如何按图层显示的尺寸还原它——视频片段用 FlashVSR+、FlashVSR 1.1 或 RelayVSR，或用 Open-H3-Regenerate-2K 重新生成；图片用 VOSR：用哪一个，以及各自运行时采用的运算方式。"
+          }
+        }
+      }
+    },
+    "How Render Upscaled restores a layer at the size it is shown — FlashVSR+, FlashVSR 1.1 or RelayVSR for clips, or Open-H3-Regenerate-2K to regenerate one; VOSR or RelayVSR for pictures: which one, and the arithmetic each runs with." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "“渲染放大版本”如何按图层显示的尺寸还原它——视频片段用 FlashVSR+、FlashVSR 1.1 或 RelayVSR，或用 Open-H3-Regenerate-2K 重新生成；图片用 VOSR 或 RelayVSR：用哪一个，以及各自运行时采用的运算方式。"
           }
         }
       }
@@ -11335,6 +11599,16 @@
         }
       }
     },
+    "How fast it plays: 2× (or 200%) twice as fast, 0.5× half -- it then takes less, or more, of the timeline" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "播放速度：2×（或 200%）为两倍速，0.5× 为一半——随之占用的时间线更短或更长"
+          }
+        }
+      }
+    },
     "How fast the clip plays: 2× (or 200%) twice as fast, 0.5× half -- the clip then takes less, or more, of the timeline" : {
       "localizations" : {
         "zh-Hans" : {
@@ -11361,6 +11635,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "生成方式"
+          }
+        }
+      }
+    },
+    "How long the still is shown on the timeline" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "静态图在时间线上显示的时长"
           }
         }
       }
@@ -11777,6 +12061,26 @@
         }
       }
     },
+    "Insert Valtz Mark" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "插入 Valtz 标志"
+          }
+        }
+      }
+    },
+    "Insert at Cursor" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "在光标处插入"
+          }
+        }
+      }
+    },
     "Inspector" : {
       "localizations" : {
         "zh-Hans" : {
@@ -11959,6 +12263,26 @@
         }
       }
     },
+    "It is scaled up or down to fit inside the canvas, keeping its shape. Where its shape differs from the canvas's, the rest of the canvas is left empty." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "放大或缩小以装入画布，保持其比例。比例与画布不同时，画布其余部分留空。"
+          }
+        }
+      }
+    },
+    "It keeps its own size, centred on the canvas: a larger one is cut at the canvas's edges, a smaller one leaves the canvas around it." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "保持其原尺寸，居中放在画布上：较大的在画布边缘被裁切，较小的四周露出画布。"
+          }
+        }
+      }
+    },
     "It looks at your project — pictures, pages, clips, sounds — and adds to Assets: pictures it makes, texts it keeps. It changes nothing that is there: the tab with Valtz’s tools does. Paste or drop pictures here to talk about them." : {
       "localizations" : {
         "zh-Hans" : {
@@ -12105,6 +12429,16 @@
         }
       }
     },
+    "Its colors mixed" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "已混合色彩"
+          }
+        }
+      }
+    },
     "Its file is missing: %@" : {
       "localizations" : {
         "zh-Hans" : {
@@ -12221,6 +12555,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "声音已更改"
+          }
+        }
+      }
+    },
+    "Its source's last frame shown" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "所显示的源素材最后一帧"
           }
         }
       }
@@ -12569,6 +12913,16 @@
         }
       }
     },
+    "Kept" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "保留"
+          }
+        }
+      }
+    },
     "Kept loaded, the next request starts at once instead of reading the whole model again. A generation that needs the memory unloads it first." : {
       "localizations" : {
         "zh-Hans" : {
@@ -12605,6 +12959,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "有关键帧"
+          }
+        }
+      }
+    },
+    "Keyed: changed in the Trim panel" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "已设关键帧：请在修剪面板中更改"
           }
         }
       }
@@ -13778,6 +14142,16 @@
         }
       }
     },
+    "Made at twice: faster, less memory" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "直接做两倍：更快，占用内存更少"
+          }
+        }
+      }
+    },
     "Made from" : {
       "localizations" : {
         "zh-Hans" : {
@@ -13969,11 +14343,22 @@
       }
     },
     "Makes every frame at exactly four times the size it reads: a one-step 5B model writes a keyframe every few frames, and a small decoder makes each frame against the keyframes around it. Its 8.4 GB of weights stay loaded through the clip, beside a working set that grows with the frames it reads." : {
+      "extractionState" : "stale",
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "每一帧都恰好是读取尺寸的四倍：一个单步 5B 模型每隔几帧写一个关键帧，小解码器参照前后的关键帧生成每一帧。它的 8.4 GB 权重在整个片段期间保持加载，另有随读取帧尺寸增长的工作内存。"
+          }
+        }
+      }
+    },
+    "Makes every frame at exactly four times the size it reads: a one-step 5B model writes a keyframe every few frames, and a small decoder makes each frame against the keyframes around it. Its 8.4 GB of weights stay loaded through the clip, beside a working set that grows with the frames it reads. It restores a picture too, as a clip of one frame, when chosen for pictures above. With RelayVSR 2x downloaded, its Model Scale can run the 2x model where a layer is scaled 2x or less." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "每一帧都正好放大到读入尺寸的四倍：一个单步 5B 模型每隔几帧写一个关键帧，一个小解码器参照前后的关键帧生成每一帧。其 8.4 GB 权重在整个片段期间保持加载，另有一块随读入帧尺寸增长的工作内存。在上方选为图片的放大器时，它也把图片当作只有一帧的片段来修复。下载了 RelayVSR 2x 后，其“模型倍数”可在图层放大 2 倍以内时运行 2 倍模型。"
           }
         }
       }
@@ -14461,6 +14846,16 @@
         }
       }
     },
+    "Model scale" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "模型倍数"
+          }
+        }
+      }
+    },
     "ModelScope" : {
       "localizations" : {
         "zh-Hans" : {
@@ -14862,6 +15257,16 @@
         }
       }
     },
+    "Needed beside it" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "需一并具备"
+          }
+        }
+      }
+    },
     "Needs a Mac with more memory" : {
       "localizations" : {
         "zh-Hans" : {
@@ -14878,6 +15283,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "需要 Turbo LoRA"
+          }
+        }
+      }
+    },
+    "Needs a newer engine than this build has." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "需要比此版本更新的引擎。"
           }
         }
       }
@@ -15220,6 +15635,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "不限"
+          }
+        }
+      }
+    },
+    "No Models Yet" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "尚无模型"
           }
         }
       }
@@ -16645,6 +17070,16 @@
         }
       }
     },
+    "Open the composition in the editor, the Trim panel there" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "在编辑器中打开该合成，使用其修剪面板"
+          }
+        }
+      }
+    },
     "Open this section" : {
       "localizations" : {
         "zh-Hans" : {
@@ -16701,6 +17136,26 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "操作"
+          }
+        }
+      }
+    },
+    "Optional: its 2x model" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "可选：其 2 倍模型"
+          }
+        }
+      }
+    },
+    "Optional: its Fast Decoder" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "可选：其快速解码器"
           }
         }
       }
@@ -18479,6 +18934,16 @@
         }
       }
     },
+    "Read %@ tokens." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "已读取 %@ 个词元。"
+          }
+        }
+      }
+    },
     "Read a Photo's EXIF" : {
       "localizations" : {
         "zh-Hans" : {
@@ -18970,6 +19435,16 @@
         }
       }
     },
+    "Remove Adjustment" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "移除调整"
+          }
+        }
+      }
+    },
     "Remove Asset" : {
       "localizations" : {
         "zh-Hans" : {
@@ -19147,6 +19622,56 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "从提示中移除"
+          }
+        }
+      }
+    },
+    "Remove the Adjustment" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "移除此调整"
+          }
+        }
+      }
+    },
+    "Remove the Color Grade" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "移除色彩分级"
+          }
+        }
+      }
+    },
+    "Remove the Color Mix" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "移除色彩混合"
+          }
+        }
+      }
+    },
+    "Remove the Crop and Placement" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "移除裁剪与放置"
+          }
+        }
+      }
+    },
+    "Remove the Sound Changes" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "移除声音更改"
           }
         }
       }
@@ -19487,6 +20012,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "重置旋转"
+          }
+        }
+      }
+    },
+    "Resize the Canvas to It" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "将画布改为其尺寸"
           }
         }
       }
@@ -20226,6 +20761,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "说出要画什么。它会编写一个程序——Canvas、SVG、WebGL、three.js 或 Babylon.js——将其绘制为图片或视频片段，查看画出的结果并加以修正。程序在沙盒页面中运行，不能访问网络和文件；绘制结果会与其代码一起放入素材。"
+          }
+        }
+      }
+    },
+    "Scale to Fit the Canvas" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "缩放以适合画布"
           }
         }
       }
@@ -21152,6 +21697,16 @@
         }
       }
     },
+    "Show the call" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "显示调用"
+          }
+        }
+      }
+    },
     "Show the cards after" : {
       "localizations" : {
         "zh-Hans" : {
@@ -21168,6 +21723,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "显示前面的卡片"
+          }
+        }
+      }
+    },
+    "Show the code" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "显示代码"
           }
         }
       }
@@ -22079,6 +22644,16 @@
         }
       }
     },
+    "Starts At" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "开始于"
+          }
+        }
+      }
+    },
     "Starts at" : {
       "extractionState" : "stale",
       "localizations" : {
@@ -22949,6 +23524,16 @@
         }
       }
     },
+    "The 2x Model" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "2 倍模型"
+          }
+        }
+      }
+    },
     "The Agent tab over the prompt: ask for a deck, a poster or a video of your clips with music, and a model builds it in your document with the editor's tools, a step at a time. Switched off, the tab goes, and a session at work stops. Switched on, its settings are in Agentic Helper." : {
       "localizations" : {
         "zh-Hans" : {
@@ -23185,6 +23770,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "缓存现在位于“%@”。"
+          }
+        }
+      }
+    },
+    "The canvas takes its size. Nothing already there is scaled: it keeps its size and stays centred on the new canvas." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "画布改为它的尺寸。已有内容都不缩放：保持原尺寸，居中放在新画布上。"
           }
         }
       }
@@ -23442,6 +24037,26 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "图像已生成并保存在项目中，但无法显示：%@"
+          }
+        }
+      }
+    },
+    "The last round's averages: its prompt read, and its reply written, in tokens a second." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "上一轮的平均速度：读取提示与写出回复，单位为每秒词元数。"
+          }
+        }
+      }
+    },
+    "The layer is locked: unlock it to change its time" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "该图层已锁定：解锁后才能更改其时间"
           }
         }
       }
@@ -24070,6 +24685,16 @@
         }
       }
     },
+    "The upscaler itself" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "放大器本身"
+          }
+        }
+      }
+    },
     "The video model draws on its latents alone; the prompt never reads or names it" : {
       "localizations" : {
         "zh-Hans" : {
@@ -24352,6 +24977,26 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "此引擎不统计该数据。"
+          }
+        }
+      }
+    },
+    "This engine runs it." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "此引擎可运行它。"
+          }
+        }
+      }
+    },
+    "This layer is gone." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "该图层已不存在。"
           }
         }
       }
@@ -24712,6 +25357,16 @@
         }
       }
     },
+    "Tool call" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "工具调用"
+          }
+        }
+      }
+    },
     "Tools" : {
       "localizations" : {
         "zh-Hans" : {
@@ -24942,12 +25597,42 @@
         }
       }
     },
+    "Trim + Place" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "修剪 + 放置"
+          }
+        }
+      }
+    },
+    "Trim + Time" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "修剪 + 时间"
+          }
+        }
+      }
+    },
     "Trim Layer" : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "修剪图层"
+          }
+        }
+      }
+    },
+    "Trim and Time…" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "修剪与时间…"
           }
         }
       }
@@ -24968,6 +25653,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "修剪声音"
+          }
+        }
+      }
+    },
+    "Trim, speed and start: set here" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "在此设置修剪、速度和开始时间"
           }
         }
       }
@@ -26612,6 +27307,16 @@
         }
       }
     },
+    "When a generation's size differs from the canvas" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "生成内容的尺寸与画布不同时"
+          }
+        }
+      }
+    },
     "Where Valtz keeps its cache: moved there, left or deleted" : {
       "localizations" : {
         "zh-Hans" : {
@@ -26642,12 +27347,32 @@
         }
       }
     },
+    "Where a layer is scaled up 2x or less, which RelayVSR makes it. The 2x model -- RelayVSR retrained by the LightX2V team for exactly twice the size, in ComfyUI's int8 files -- reads the frames as they are and makes twice them: about a third of the time and half the memory of the 4x model. The 4x model makes four times the frames and fits them down by lanczos; some find its detail finer at 2x, fur and foliage especially. Past 2x the 4x model runs either way. Needs RelayVSR 2x, in Settings › Capabilities › Upscalers." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "图层放大 2 倍以内时，由哪个 RelayVSR 模型来做。2 倍模型——LightX2V 团队为正好两倍重新训练的 RelayVSR，用 ComfyUI 的 int8 文件——按原样读入帧并生成两倍尺寸：耗时约为 4 倍模型的三分之一，内存约一半。4 倍模型先生成四倍尺寸的帧，再用 lanczos 缩小；有人觉得 2 倍时它的细节更细，尤其是毛发和枝叶。超过 2 倍时总是运行 4 倍模型。需要 RelayVSR 2x，在“设置 › 能力 › 放大器”中下载。"
+          }
+        }
+      }
+    },
     "Where a size under 4 megapixels is made" : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "小于 400 万像素的尺寸在何处生成"
+          }
+        }
+      }
+    },
+    "Where it starts on %@ -- a timecode, #frame or seconds" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "它在 %@ 上的开始位置——时间码、#帧号或秒数"
           }
         }
       }
@@ -26668,6 +27393,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "回到录制时的位置：所有关键帧中居中、宽度与距离照旧，低频不合为单声道，无交叉馈送"
+          }
+        }
+      }
+    },
+    "Where its source starts being shown -- a timecode, #frame or seconds" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "源素材开始显示的位置——时间码、#帧号或秒数"
           }
         }
       }
@@ -27226,6 +27961,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "本轮已写 %@ 个词元。"
+          }
+        }
+      }
+    },
+    "Written %@ tokens." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "已写出 %@ 个词元。"
           }
         }
       }
@@ -29325,6 +30070,23 @@
         }
       }
     },
+    "core.fleet_no_memory" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "{member} does not have the memory for this job: it goes to another member, or waits here."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "{member} 的内存不足以运行此任务：它将转给其他成员，或在本机排队。"
+          }
+        }
+      }
+    },
     "core.fleet_no_room" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -31218,13 +31980,13 @@
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Not a clip continued from its kept latents, or cleaned, yet."
+            "value" : "Not a clip continued through its end with its guide cleaned, yet."
           }
         },
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "needs_review",
-            "value" : "暂不支持从保留的潜变量延续或经过清理的片段。"
+            "value" : "暂不支持引导经过清理的“延续至片段末尾”。"
           }
         }
       }
@@ -31450,19 +32212,36 @@
         }
       }
     },
+    "core.split_taomate_lora" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "With TaoMate as a LoRA only where both Macs run an engine that splits it."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "仅当两台 Mac 的引擎都支持拆分时，才可使用仅作为 LoRA 的 TaoMate。"
+          }
+        }
+      }
+    },
     "core.split_vdn_taomate" : {
       "extractionState" : "manual",
       "localizations" : {
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Not with VDN or TaoMate."
+            "value" : "Not with VDN or TaoMate's streaming (TaoMate as a LoRA only splits)."
           }
         },
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "needs_review",
-            "value" : "不支持 VDN 或 TaoMate。"
+            "value" : "不支持 VDN 或 TaoMate 的流式生成（仅作为 LoRA 的 TaoMate 可以拆分）。"
           }
         }
       }
@@ -31999,6 +32778,26 @@
         }
       }
     },
+    "downloaded" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "已下载"
+          }
+        }
+      }
+    },
+    "downloading" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "正在下载"
+          }
+        }
+      }
+    },
     "ends on its picture" : {
       "localizations" : {
         "zh-Hans" : {
@@ -32290,6 +33089,16 @@
         }
       }
     },
+    "not downloaded" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "未下载"
+          }
+        }
+      }
+    },
     "not kept: let go when nothing uses it" : {
       "localizations" : {
         "zh-Hans" : {
@@ -32336,6 +33145,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "原模型 · 保留 %@ 位副本"
+          }
+        }
+      }
+    },
+    "partly downloaded" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "部分已下载"
           }
         }
       }

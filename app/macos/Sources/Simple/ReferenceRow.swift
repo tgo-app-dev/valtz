@@ -272,6 +272,12 @@ private struct ReferenceThumb: View {
                         set: { _ in model.toggleLatentsOnly(item.id) }))
                         .help("The video model draws on its latents alone; the prompt never reads or names it")
                 }
+                // A mention without the drag: where the words' caret is.
+                Button("Insert at Cursor") {
+                    model.mentionAtCursor(item.id)
+                }
+                .disabled(!model.canMentionAtCursor)
+                Divider()
                 Button("Remove from Prompt") {
                     model.removeReference(item.id)
                 }

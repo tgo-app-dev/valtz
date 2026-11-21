@@ -22,6 +22,7 @@
 #include "valtz/media/sound.h"
 #include "valtz/media/stamp.h"
 #include "valtz/media/text-flow.h"
+#include "valtz/media/valtz-mark.h"
 #include "valtz/models/tuning.h"
 #include "valtz/project/migrate.h"
 #include "valtz/project/project-file.h"
@@ -1409,9 +1410,21 @@ public:
       std::lock_guard lk(mu);
       offered.push_back(o.op + "/" + o.model);
     }
-    std::thread([id = o.id, sink] {
+    std::thread([id = o.id, sink, oom = no_memory.load()] {
       engine::JobEvent e;
       e.job = id;
+      // Refused for memory, as vpipe's preflight there: it began, then
+      // found the plan does not fit.
+      if (oom) {
+        e.kind = engine::JobEventKind::Started;
+        sink(e);
+        e.kind = engine::JobEventKind::Failed;
+        e.error = Code::OutOfMemory;
+        e.text = "the plan does not fit";
+        e.data = {{"memory", {{"step", "denoise"}}}};
+        sink(e);
+        return;
+      }
       e.kind = engine::JobEventKind::Failed;
       e.error = Code::Io;
       e.text = "served";
@@ -1419,6 +1432,7 @@ public:
     }).detach();
     return ok_status();
   }
+  std::atomic<bool> no_memory{false};
 
   void fleet_cancel(JobId) override {}
   void fleet_note(std::string, Json) override {}
@@ -1554,6 +1568,22 @@ TEST(controller, offload_policies_send_jobs_and_sharing_withholds)
     std::lock_guard lk(host.mu);
     CHECK(host.offered.back() == "generate-image/krea2-turbo");
   }
+  // The member REFUSES it for memory (it began, its plan did not fit):
+  // the job comes back and is queued here, not lost.
+  REQUIRE(eventually([&] {
+    const Json ms = jget(ctl.fleet_status(), "members", Json::array());
+    return ms.size() == 1 &&
+           !jget(jget(ms[0], "self", Json::object()), "serving", true);
+  }, 15));
+  host.no_memory = true;
+  auto j4b = ask("a black cat");
+  REQUIRE_OK(j4b);
+  CHECK(eventually([&] { return host.count() == 3; }, 15));
+  CHECK(eventually([&] { return engine->held() == 1; }, 15));
+  CHECK(engine->spec(*j4b) != nullptr);
+  CHECK(ctl.jobs().get(*j4b)->state != JobState::Failed);
+  host.no_memory = false;
+  engine->fail(*j4b, "done");
   // Always on the fleet, the member not taking jobs: refused, nothing run
   // here -- and Krea 2 runs nowhere, for the model field.
   const auto* k2 = ctl.catalog().find("krea2-turbo");
@@ -4079,11 +4109,13 @@ TEST(controller, a_gated_download_takes_a_token_kept_nowhere)
       if (jget(m, "gated", false)) {
         ++gated;
         CHECK(id == "krea2-turbo" || id == "flux2-klein-9b" ||
-              id == "flux3-klein" || id == "fibo2-edit-turbo");
+              id == "flux3-klein" || id == "fibo2-edit-turbo" ||
+              id == "qwen3.8-flash-next-q4km" ||
+              id == "qwen3.8-flash-next-q5km");
       }
     }
   }
-  CHECK(gated == 4);
+  CHECK(gated == 6);
 
   // What everything the controller says carries: never the token.
   auto drain = [&] {
@@ -4565,6 +4597,68 @@ TEST(composition, a_result_lands_in_a_new_layer_or_its_own)
   auto again = ctl.place_result(pid, *red, std::nullopt);
   REQUIRE_OK(again);
   CHECK(b.p().asset(again->first)->name == "kite (3)");
+}
+
+// A result of another SIZE than its canvas (Settings › General ›
+// Generations' Size Mismatch): centred at its own (as ever), scaled to fit
+// inside -- its shape kept, the rest clear -- or the canvas made its size,
+// what was there kept at its own about the centre. One command each.
+TEST(composition, a_result_of_another_size_fits_as_asked)
+{
+  Bench b("comp-land-fit");
+  REQUIRE(b.ok());
+  Controller& ctl = *b.ctl;
+  const ProjectId pid = b.pid;
+  auto red = b.png("red.png", 64, 32, {0xff, 0, 0, 0xff});
+  auto blue = b.png("blue.png", 32, 32, {0, 0, 0xff, 0xff});
+  REQUIRE(red && blue);
+  using F = Controller::LandingFit;
+  CHECK(Controller::landing_fit_of("fit") == F::kFit);
+  CHECK(Controller::landing_fit_of("canvas") == F::kCanvas);
+  CHECK(Controller::landing_fit_of("") == F::kCenter);
+  auto own = ctl.place_result(pid, *red, std::nullopt, std::nullopt, 0,
+                              std::nullopt, false, false, F::kFit);
+  REQUIRE_OK(own);
+  const AssetId comp = own->first;
+  // The first layer sizes it: nothing to fit.
+  CHECK(Controller::crop_of(*b.p().asset(comp), "").scale_x == 1.0);
+  CHECK(b.p().asset(comp)->canvas.frame_w == 64);
+
+  // Fit: the 32 square on 64 x 32 -- already inside, kept; a 128 square
+  // scaled to 0.25 (its 32 high), the canvas as it was.
+  auto big = b.png("big.png", 128, 128, {0, 0xff, 0, 0xff});
+  REQUIRE(big);
+  auto fit = ctl.place_result(pid, *big, comp, std::nullopt, 0,
+                              std::nullopt, false, false, F::kFit);
+  REQUIRE_OK(fit);
+  {
+    const media::Crop c = Controller::crop_of(*b.p().asset(comp),
+                                              fit->second);
+    CHECK(std::abs(c.scale_x - 0.25) < 1e-9);
+    CHECK(std::abs(c.scale_y - 0.25) < 1e-9);
+  }
+  CHECK(b.p().asset(comp)->canvas.frame_w == 64);
+  const auto flat = b.root / "fit.png";
+  REQUIRE_OK(ctl.flatten(pid, comp, flat));
+  CHECK(pixel_at(flat, 32, 16)[1] > 200);     // green in the middle
+  CHECK(pixel_at(flat, 4, 16)[0] > 200);      // red beside it: left clear
+  REQUIRE_OK(ctl.undo(pid));
+  CHECK(b.layers(comp).size() == 1);          // one command, landing and fit
+
+  // Canvas: made the blue's 32 x 32, the red kept at its own size about
+  // the centre (cut at the new edges).
+  auto canv = ctl.place_result(pid, *blue, comp, std::nullopt, 0,
+                               std::nullopt, false, false, F::kCanvas);
+  REQUIRE_OK(canv);
+  CHECK(b.p().asset(comp)->canvas.frame_w == 32);
+  CHECK(b.p().asset(comp)->canvas.frame_h == 32);
+  CHECK(Controller::crop_of(*b.p().asset(comp), canv->second).scale_x ==
+        1.0);
+  REQUIRE_OK(ctl.set_layer_visible(pid, comp, canv->second, false));
+  const auto flat2 = b.root / "canvas.png";
+  REQUIRE_OK(ctl.flatten(pid, comp, flat2));
+  CHECK(pixel_at(flat2, 0, 0)[0] > 200);      // red's middle fills it
+  CHECK(pixel_at(flat2, 31, 31)[0] > 200);
 }
 
 // A PICTURE landing on a still ON A NEW PAGE (Settings › General ›
@@ -9216,6 +9310,91 @@ TEST(composition, the_atlas_lays_out_what_each_asset_is_made_from)
     }
     CHECK(n["id"] != locked);
   }
+  // A layer adjusted, mixed and placed: a CHAIN, a node for each -- its
+  // adjust, its color mix (one modifier, told apart by its keys), its
+  // place, and last, next to the timeline, its time (the layer's own id:
+  // what places it there) -- in the columns just before the timeline,
+  // the source before them; an op column each.
+  media::Adjustments warm;
+  warm.exposure = 0.5;
+  warm.mix.hue.points.push_back(media::MixPoint(30, 0.4));
+  REQUIRE_OK(ctl.set_adjustments(pid, *tl, warm, on_red->second));
+  media::Crop small;
+  small.scale_x = small.scale_y = 0.5;
+  REQUIRE_OK(ctl.set_crop(pid, *tl, small, on_red->second));
+  auto chained = ctl.atlas(pid);
+  REQUIRE_OK(chained);
+  std::map<std::string, Json> cn;
+  for (const auto& n : (*chained)["nodes"]) {
+    cn[n["id"].get<std::string>()] = n;
+  }
+  auto cedge = [&](const std::string& from, const std::string& to) {
+    for (const auto& e : (*chained)["edges"]) {
+      if (e["from"] == from && e["to"] == to) {
+        return e["kind"].get<std::string>();
+      }
+    }
+    return std::string();
+  };
+  const auto lk = layer + ":adjust";
+  const auto mx = layer + ":color";
+  const auto pl = layer + ":place";
+  REQUIRE(cn.contains(layer) && cn.contains(lk) && cn.contains(mx) &&
+          cn.contains(pl));
+  CHECK(!cn.contains(layer + ":grade"));
+  CHECK(cn[layer]["step"] == "time");
+  CHECK(cn[lk]["step"] == "adjust");
+  CHECK(cn[mx]["step"] == "color");
+  CHECK(cn[pl]["step"] == "place");
+  CHECK(cedge(a(*red), lk) == "layer");
+  CHECK(cedge(lk, mx) == "chain");
+  CHECK(cedge(mx, pl) == "chain");
+  CHECK(cedge(pl, layer) == "chain");
+  CHECK(cedge(layer, a(*tl)) == "into");
+  CHECK(cedge(pl, a(*tl)).empty());
+  const auto cc = [&](const std::string& id) {
+    return cn[id]["column"].get<int>();
+  };
+  CHECK(cc(layer) == cc(a(*tl)) - 1);
+  CHECK(cc(pl) == cc(layer) - 1);
+  CHECK(cc(mx) == cc(pl) - 1);
+  CHECK(cc(lk) == cc(mx) - 1);
+  CHECK(cc(a(*red)) < cc(lk));
+  const auto& kinds = (*chained)["column_kinds"];
+  REQUIRE(kinds.size() == (*chained)["columns"].get<std::size_t>());
+  CHECK(kinds[cc(a(*tl))] == "asset");
+  CHECK(kinds[cc(layer)] == "op");
+  // Each node its own part's marks: the look's adjusted, the place's.
+  const auto has = [&](const std::string& id, const char* v) {
+    const auto& l = cn[id]["look"];
+    return std::find(l.begin(), l.end(), v) != l.end();
+  };
+  CHECK(has(lk, "adjust") && !has(lk, "place") && !has(lk, "mix"));
+  CHECK(has(mx, "mix") && !has(mx, "adjust"));
+  CHECK(has(pl, "place") && !has(pl, "adjust"));
+  // The color mix's node cut: the mixer's keys alone gone, the exposure
+  // kept -- the chain adjust, place, time.
+  REQUIRE_OK(ctl.remove_adjustment(pid, *tl, on_red->second, "color"));
+  auto tl_now = ctl.project(pid)->asset(*tl);
+  REQUIRE_OK(tl_now);
+  const auto left = Controller::adjustments_of(*tl_now, on_red->second);
+  CHECK(left.exposure == 0.5);
+  CHECK(left.mix.identity());
+  auto cut = ctl.atlas(pid);
+  REQUIRE_OK(cut);
+  std::string steps;
+  for (const auto& n : (*cut)["nodes"]) {
+    if (n["type"] == "layer" && n["layer"] == on_red->second) {
+      steps += n["step"].get<std::string>() + ",";
+    }
+  }
+  CHECK(steps.find("color") == std::string::npos);
+  CHECK(steps.find("adjust") != std::string::npos);
+  // And the adjust's: nothing left of the look, the modifier gone.
+  REQUIRE_OK(ctl.remove_adjustment(pid, *tl, on_red->second, "adjust"));
+  auto tl_last = ctl.project(pid)->asset(*tl);
+  REQUIRE_OK(tl_last);
+  CHECK(Controller::adjustments_of(*tl_last, on_red->second).identity());
 }
 
 // A timeline of markup drawn for a model (rendered_, a reference's
@@ -11782,6 +11961,73 @@ TEST(controller, relayvsr_upscales_clips_where_vpipe_has_it)
   CHECK(video()["runs"] == "flashvsr-plus-base");
   engine->lacks.clear();
   CHECK(video()["runs"] == "relayvsr");
+
+  // It restores PICTURES too, picked for them; its 2x checkpoint is no
+  // upscaler of its own (not listed), but its Model Scale -- offered
+  // "not-installed" until it is here.
+  CHECK(jget(row()["tuning"], "options", Json::array()).size() > 0);
+  auto scale_opt = [&] {
+    const Json r = row();
+    for (const auto& o : r["tuning"]["options"]) {
+      if (o["key"] == "model_scale") {
+        return o;
+      }
+    }
+    return Json();
+  };
+  CHECK(!jget(scale_opt(), "available", true));
+  const Json listed = ctl.upscale_settings()["upscalers"];
+  for (const auto& u : listed) {
+    CHECK(u["id"] != "relayvsr-x2");
+  }
+  REQUIRE_OK(ctl.use_upscaler("image", "relayvsr"));
+  auto pid = ctl.create_project(root / "R.valtz", "relay");
+  REQUIRE_OK(pid);
+  REQUIRE(write_png(root / "small.png", 32, 24, {0x40, 0x80, 0xc0, 0xff}));
+  auto pic = import_and_wait(ctl, *pid, root / "small.png");
+  REQUIRE(pic);
+  auto still = ctl.create_composition(*pid, project::AssetClass::Still,
+                                      {96, 72});
+  REQUIRE_OK(still);
+  auto placed = ctl.instantiate(*pid, *pic, *still);
+  REQUIRE_OK(placed);
+  auto upscale_at = [&](double k) -> std::string {
+    media::Crop c;
+    c.scale_x = c.scale_y = k;
+    if (!ctl.set_crop(*pid, *still, c, placed->second).ok()) {
+      return "crop refused";
+    }
+    Controller::AssetOpRequest up;
+    up.project = *pid;
+    up.asset = *still;
+    up.layer = placed->second;
+    up.operation = "upscale";
+    auto made = ctl.run_asset_operation(up);
+    if (!made.ok()) {
+      return made.error().message;
+    }
+    const engine::JobSpec* spec = engine->spec(made->job);
+    if (!spec || spec->op != engine::kOpUpscaleImage) {
+      return "no picture upscale";
+    }
+    return spec->model.id;
+  };
+  CHECK(upscale_at(2) == "relayvsr");
+  // Here: offered; x2 at 2x or less runs its 2x, past 2x the 4x.
+  put("Comfy-Org/RelayVSR/diffusion_models/"
+      "relayvsr_x2_lightx2v_int8_convrot.safetensors");
+  put("Comfy-Org/RelayVSR/vae/relayvsr_flash_vae_x2_fp32.safetensors");
+  ctl.rescan_models();
+  CHECK(jget(scale_opt(), "available", false));
+  CHECK(upscale_at(2) == "relayvsr");    // x4, the default
+  REQUIRE_OK(ctl.set_upscale_tuning("relayvsr", {{"model_scale", "x2"}}));
+  CHECK(upscale_at(1.5) == "relayvsr-x2");
+  CHECK(upscale_at(2) == "relayvsr-x2");
+  CHECK(upscale_at(3) == "relayvsr");
+  // The 2x gone again: its x2 kept, the 4x model running.
+  fs::remove_all(models / "Comfy-Org");
+  ctl.rescan_models();
+  CHECK(upscale_at(2) == "relayvsr");
 }
 
 TEST(controller, a_video_upscaler_is_auto_or_picked)
@@ -13651,6 +13897,29 @@ TEST(controller, a_clip_is_regenerated_by_its_refiner)
       listed = true;
       CHECK(u["kind"] == "video");
       CHECK(u["state"] == "installed");
+      // Its CHECKLIST (Settings › Upscaling's): itself, its latent
+      // upscaler and the model it refines on, the fast decoder optional
+      // (all here, on this bench), the engine's support last.
+      std::map<std::string, Json> parts;
+      std::vector<std::string> order;
+      for (const auto& c : u["checklist"]) {
+        const std::string key = c["role"] == "engine"
+                                    ? "engine"
+                                    : c["id"].get<std::string>();
+        parts[key] = c;
+        order.push_back(key);
+      }
+      REQUIRE(!order.empty());
+      CHECK(order.front() == "open-h3-regenerate-2k");
+      CHECK(order.back() == "engine");
+      CHECK(parts["open-h3-regenerate-2k"]["role"] == "model");
+      CHECK(parts["open-h3-latent-upscaler"]["state"] == "installed");
+      CHECK(parts["open-h3-latent-upscaler"]["role"] == "needs");
+      CHECK(parts["minimax-h3-fl2va"]["state"] == "installed");
+      CHECK(parts["open-h3-fast-vae"]["optional"] == true);
+      CHECK(parts["open-h3-fast-vae"]["state"] == "installed");
+      CHECK(parts["engine"]["state"] == "ok");
+      CHECK(order.size() == 5u);
     }
   }
   CHECK(listed);
@@ -20000,6 +20269,69 @@ TEST(controller, minimax_music3_sings_a_description_to_lyrics)
 
 // TERNARY-BONSAI 2 as the helper (chosen by name): its chat at f16 --
 // its scales' own -- with no drafter, whatever Settings' Drafter says.
+// A GGUF's EYES (catalog `eyes`): DeepSeek V4.1's GGUF carries no vision
+// tower; with the release's here (deepseek-v4.1-flash-vision, downloaded
+// with it) its chats name it to vpipe's text-chat (vision_model) --
+// wherever the two lie -- and without it, nothing.
+TEST(controller, a_gguf_helper_sees_with_the_tower_beside_it)
+{
+  auto root = test::temp_dir("ctl-eyes");
+  const fs::path models = root / "models";
+  const fs::path g = models / "AtomicChat" /
+                     "DeepSeek-V4.1-Flash-1017-Uncensored-GSQ-RCO-GGUF";
+  fs::create_directories(g);
+  for (int i = 1; i <= 4; ++i) {
+    std::ofstream(g / std::format("DeepSeek-V4.1-Flash-1017-GSQ-RCO-"
+                                  "IQ2_XXS-0000{}-of-00004.gguf", i))
+        << "GGUF";
+  }
+  const fs::path ng = models / "ISTA-DASLab" /
+                      "DeepSeek-V4.1-Flash-1017-GSQ-RCO-GGUF";
+  fs::create_directories(ng);
+  std::ofstream(ng / "DeepSeek-V4.1-Flash-Engram-IQ4_NL.gguf") << "GGUF";
+  ControllerConfig cfg;
+  cfg.support_root = root / "support";
+  cfg.model_roots = {models};
+  cfg.with_engine = false;
+  cfg.extensions = false;
+  HeldEngine* engine = nullptr;
+  cfg.engine_factory = [&engine] {
+    auto e = std::make_unique<HeldEngine>();
+    engine = e.get();
+    return std::unique_ptr<engine::Engine>(std::move(e));
+  };
+  auto made = Controller::create(cfg);
+  REQUIRE_OK(made);
+  REQUIRE(engine != nullptr);
+  Controller& ctl = **made;
+  const auto* m = ctl.catalog().find("deepseek-v4.1-flash-iq2xxs");
+  REQUIRE(m != nullptr);
+  CHECK(m->eyes == "deepseek-v4.1-flash-vision");
+  CHECK(std::ranges::find(m->comes_with, "deepseek-v4.1-flash-vision") !=
+        m->comes_with.end());
+  REQUIRE_OK(ctl.choose_assistant("deepseek-v4.1-flash-iq2xxs"));
+  auto chat_params = [&] {
+    EnhancePromptRequest req;
+    req.prompt = "a fox in snow";
+    auto j = ctl.enhance_prompt(req);
+    if (!j.ok()) { return Json(); }
+    const engine::JobSpec* spec = engine->spec(*j);
+    return spec ? spec->params : Json();
+  };
+  // No tower: text only.
+  CHECK(!chat_params().contains("vision_model"));
+  // The release's three files, fetched as their own record.
+  const fs::path vd = models / "deepseek-ai" / "DeepSeek-V4.1-Flash-1017";
+  fs::create_directories(vd);
+  for (const char* f : {"config.json", "model-00001-of-00048.safetensors",
+                        "model-00002-of-00048.safetensors"}) {
+    std::ofstream(vd / f) << "{}";
+  }
+  ctl.rescan_models();
+  CHECK(jget<std::string>(chat_params(), "vision_model", "") ==
+        vd.string());
+}
+
 TEST(controller, ternary_bonsai_helps_at_f16_without_a_drafter)
 {
   auto root = test::temp_dir("ctl-bonsai");
@@ -20140,13 +20472,30 @@ TEST(agent, a_turns_live_speed_is_told_as_it_goes)
   }
   engine->turn(turns[0], {{"text", "hi"}, {"content", "hi"},
                           {"finish", "stop"}, {"prefilled", 2048},
-                          {"decoded", 20}, {"ctx_pos", 2068}});
+                          {"prefill_ms", 1000}, {"decoded", 20},
+                          {"decode_ms", 500}, {"ctx_pos", 2068}});
   REQUIRE(eventually([&] {
     return jget<std::string>(ctl.agent_state(*id), "state", "") == "done";
   }, 15));
-  // The last told stays for the row, after the turn.
-  CHECK(jget(jget(ctl.agent_state(*id), "live_speed", Json()), "decoded",
-             0) == 20);
+  // The turn over: the row's meter the ROUND's averages -- not its last
+  // piece's (60 tok/s) -- at rest, and told so.
+  const Json rested = jget(ctl.agent_state(*id), "live_speed", Json());
+  CHECK(jget<std::string>(rested, "phase", "") == "rested");
+  CHECK(jget(rested, "prefill_tps", 0.0) == 2048.0);
+  CHECK(jget(rested, "decode_tps", 0.0) == 40.0);
+  CHECK(jget(rested, "decoded", 0) == 20);
+  bool told = false;
+  {
+    Event ev;
+    while (ctl.events().wait(ev, 50)) {
+      if (ev.kind == "agent.speed" &&
+          jget<std::string>(jget(ev.data, "speed", Json()), "phase", "") ==
+              "rested") {
+        told = true;
+      }
+    }
+  }
+  CHECK(told);
 }
 
 TEST(agent, a_reply_cut_off_at_its_limit_is_said)
@@ -21565,4 +21914,60 @@ TEST(controller, minimax_h3_image_is_enhanced_by_its_own_expander)
     REQUIRE(spec != nullptr);
     CHECK(spec->model.dir == helper);
   });
+}
+
+// File › Insert Valtz Mark (controller/valtz-mark.cc): a hidden asset made
+// once a size and reused, on top of what is asked -- a timeline the clip
+// with its sound, a still the picture, a sound the chord -- and, with no
+// composition at all, a 960 x 544 timeline made the project's.
+TEST(composition, the_valtz_mark_is_inserted_as_a_hidden_asset)
+{
+  if (media::valtz_mark_helper().empty()) {
+    SKIP("valtz-mark is not built");
+  }
+  Bench b("valtz-mark");
+  REQUIRE(b.ok());
+  Controller& ctl = *b.ctl;
+  const ProjectId pid = b.pid;
+  REQUIRE(!ctl.project_composition(pid));
+  auto put = ctl.insert_valtz_mark(pid, std::nullopt, 0);
+  REQUIRE_OK(put);
+  // The project's now: a 960 x 544 timeline.
+  REQUIRE(ctl.project_composition(pid) == put->composition);
+  auto tl = b.p().asset(put->composition);
+  REQUIRE_OK(tl);
+  CHECK(tl->cls == project::AssetClass::Composition);
+  CHECK(tl->canvas.frame_w == 960 && tl->canvas.frame_h == 544);
+  auto mark = b.p().asset(put->mark);
+  REQUIRE_OK(mark);
+  CHECK(mark->kind == project::AssetKind::Video);
+  CHECK(std::find(mark->tags.begin(), mark->tags.end(), "hidden") !=
+        mark->tags.end());
+  auto len = ctl.composition_length(pid, put->composition);
+  REQUIRE_OK(len);
+  CHECK(*len == 36);  // 1.5 s at 24
+  // Again, later: the same asset, a layer of its own from frame 48.
+  auto again = ctl.insert_valtz_mark(pid, put->composition, 48);
+  REQUIRE_OK(again);
+  CHECK(again->mark == put->mark);
+  CHECK(again->layer != put->layer);
+  // A still gets the picture; a sound the chord.
+  auto st = ctl.create_composition(pid, project::AssetClass::Still,
+                                   {900, 600}, {0, 1}, "still");
+  REQUIRE_OK(st);
+  auto on_still = ctl.insert_valtz_mark(pid, *st, 0);
+  REQUIRE_OK(on_still);
+  auto pic = b.p().asset(on_still->mark);
+  REQUIRE_OK(pic);
+  CHECK(pic->kind == project::AssetKind::Image);
+  auto snd = ctl.create_composition(pid, project::AssetClass::Composition,
+                                    {0, 0}, {0, 1}, "sound");
+  REQUIRE_OK(snd);
+  auto on_sound = ctl.insert_valtz_mark(pid, *snd, 0);
+  REQUIRE_OK(on_sound);
+  auto chord = b.p().asset(on_sound->mark);
+  REQUIRE_OK(chord);
+  CHECK(chord->kind == project::AssetKind::Audio);
+  // A flat asset is no composition.
+  CHECK(!ctl.insert_valtz_mark(pid, put->mark, 0).ok());
 }

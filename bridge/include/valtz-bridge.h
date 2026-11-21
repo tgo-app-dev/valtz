@@ -477,7 +477,8 @@ public:
   // "offset"?: a timeline's frame) -> {"asset", "layer"}: a new layer
   // showing it; "place-result" ("asset", "onto"?, "at"?, "offset"?,
   // "join"?, "at_end"?: a clip after a timeline's content, not at
-  // `offset`) -> {"asset", "layer"}: a generation's result landing -- a
+  // `offset`; "fit"?: "center" | "fit" | "canvas", a size other than the
+  // canvas's -- Controller::LandingFit) -> {"asset", "layer"}: a generation's result landing -- a
   // new layer of `onto`, else a composition of its own; "place" ("asset",
   // "layer"?) -> {"placed", "asset"?}: the
   // project's composition with the asset as its new take (or on
@@ -491,6 +492,8 @@ public:
   // "latents" ("asset", "tails"?: [frames]) -> {"kept", "clip"?, "fits":
   // [bool]}: the latents a clip kept (Controller::kept_latents);
   // "grab" ("asset", "frame", "name"?) -> {"asset"}: a still of its frame.
+  // "insert-mark" ("onto"?, "offset"?) -> {"asset", "layer", "mark"}: File
+  // › Insert Valtz Mark (a hidden asset, on a new layer of onto).
   // assets_json lists
   // the "folders" too, and marks the project's composition "project".
   std::string asset_op(const std::string& request_json);

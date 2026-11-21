@@ -45,6 +45,8 @@ register_plugin(vpipe::VpipePluginContext* ctx)
   // The transport a DiT split across two Macs exchanges its partial sums
   // through; a host without tensor parallelism goes on without it.
   valtz::plugin::register_tp(ctx);
+  // Another Mac's memory lent to an expert cache (valtz-far).
+  valtz::plugin::register_far(ctx);
 }
 
 }
