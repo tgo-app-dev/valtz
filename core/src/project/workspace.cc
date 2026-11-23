@@ -405,6 +405,54 @@ Workspace::save_as(const fs::path& package_in, const Json& extensions)
 }
 
 Status
+Workspace::relocate(const fs::path& package_in)
+{
+  if (!_package) {
+    return make_error(Code::InvalidArgument,
+                      "an untitled project has no file to move");
+  }
+  const fs::path package = canonical_of(package_in);
+  if (package == *_package) {
+    return ok_status();
+  }
+  std::error_code ec;
+  if (fs::exists(package, ec)) {
+    return make_error(Code::AlreadyExists,
+                      std::format("{} is there already", package.string()));
+  }
+  VALTZ_TRY(check_local_volume(package));
+  fs::rename(*_package, package, ec);
+  if (ec) {
+    return make_error(Code::Io,
+                      ec == std::errc::cross_device_link
+                          ? std::format("{} is on another drive: save a copy "
+                                        "there with Save As",
+                                        package.string())
+                          : std::format("move {} to {}: {}",
+                                        _package->string(), package.string(),
+                                        ec.message()));
+  }
+  _package = package;
+  _project->blobs().clear_read_roots();
+  _project->blobs().add_read_root(package / "blobs");
+  // Named after it: the save's own name (its head alone), and the
+  // records' -- no change anyone undoes, nothing unsaved written.
+  const std::string name = package.stem().string();
+  if (fs::exists(package / kProjectFile, ec)) {
+    VALTZ_ASSIGN(Json doc, read_project_file(package / kProjectFile));
+    if (doc.contains("project") && doc["project"].is_object()) {
+      doc["project"]["name"] = name;
+      VALTZ_TRY(write_project_file(package / kProjectFile, doc));
+    }
+  }
+  {
+    db::Env::Unjournaled quiet;
+    VALTZ_TRY(_project->set_name(name));
+  }
+  return write_origin_();
+}
+
+Status
 Workspace::revert()
 {
   if (!_package) {

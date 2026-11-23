@@ -1207,6 +1207,31 @@ TEST(assist, a_refine_s_words_are_made_from_the_prompt)
 // alone -- segments, Markdown and the row's tags as words -- and its
 // reply read leniently: a label, quotes, end punctuation off; a sentence
 // is no title.
+// A TRAINING SAMPLE's caption (the trainer's auto captions): the request
+// names the trigger, what it means, the frames of a clip; the reply is
+// read leniently -- its label, quotes and thinking off, its first
+// paragraph alone, the trigger as given.
+TEST(assist, a_training_sample_is_captioned_by_its_trigger)
+{
+  const std::string q = assist::training_caption_request(
+      "sks", "a red tin robot", 3);
+  CHECK(q.find("3 frames") != std::string::npos);
+  CHECK(q.find("BEGINS with the word \"sks\"") != std::string::npos);
+  CHECK(q.find("a red tin robot") != std::string::npos);
+  CHECK(q.find("how things move") != std::string::npos);
+  CHECK(assist::training_caption_request("", "", 1).find("ohwx") !=
+        std::string::npos);
+  CHECK(assist::training_caption(
+            "Caption: \"SKS sits on a bench in the rain.\"", "sks") ==
+        "sks sits on a bench in the rain.");
+  CHECK(assist::training_caption(
+            "<think>look</think>\n\nsks walks a beach.\n\nNote: sunny",
+            "sks") == "sks walks a beach.");
+  CHECK(assist::training_caption("\u201csks at dusk\u201d", "sks") ==
+        "sks at dusk");
+  CHECK(assist::training_caption("   \n", "sks").empty());
+}
+
 TEST(assist, a_micro_agents_name_is_asked_and_read)
 {
   const std::string q = micro_name_request(

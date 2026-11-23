@@ -192,6 +192,12 @@ struct MovieLayer {
   // Its source's BOOKMARKS where they fall, in its seconds (DESIGN §4w):
   // the screen's stack only, as its beats.
   std::vector<Bookmark> bookmarks;
+  // What its source holds, in the source's seconds -- a part's, its span
+  // of the clip -- how far its marks can go (the timeline's edge drags,
+  // Controller::trim_layer_edge); `content_out` -1: untimed. The screen's
+  // stack only.
+  double                content_in = 0;
+  double                content_out = -1;
 };
 
 struct MovieStack {

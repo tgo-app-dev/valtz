@@ -995,6 +995,47 @@ Core::revert_project(const std::string& project_id)
 }
 
 std::string
+Core::project_file(const std::string& project_id,
+                   const std::string& request_json)
+{
+  return guarded([&] {
+    auto id = parse_id<ProjectId>(project_id);
+    if (!id.ok()) {
+      return err(id.error());
+    }
+    auto j = parse(request_json);
+    if (!j.ok()) {
+      return err(j.error());
+    }
+    Controller& c = *_impl->ctl;
+    const std::string op = jget<std::string>(*j, "op", "info");
+    Status st = ok_status();
+    if (op == "move") {
+      st = c.move_project(*id, jget<std::string>(*j, "path", ""));
+    } else if (op == "tags") {
+      std::vector<std::string> tags;
+      for (const auto& t : jget(*j, "tags", Json::array())) {
+        if (t.is_string()) {
+          tags.push_back(t.get<std::string>());
+        }
+      }
+      st = c.set_project_tags(*id, tags);
+    } else if (op == "lock") {
+      st = c.set_project_locked(*id, jget(*j, "locked", true));
+    } else if (op == "duplicate") {
+      st = c.duplicate_project(*id, jget<std::string>(*j, "path", ""));
+    } else if (op != "info") {
+      return err(Code::InvalidArgument,
+                 "op is move, tags, lock, duplicate or info");
+    }
+    if (!st.ok()) {
+      return err(st.error());
+    }
+    return ok({{"file", c.project_file(*id)}});
+  });
+}
+
+std::string
 Core::undo(const std::string& project_id)
 {
   return project_call(project_id, [&](ProjectId id) {
@@ -2204,6 +2245,13 @@ Core::stack_plan(const std::string& request_json)
                    {"video", l.video},
                    {"audio_only", l.audio_only},
                    {"file", l.file.string()}};
+      // What its source holds, in its seconds, and its speed while it is
+      // one (-1 keyed): how far its edges are dragged.
+      if (l.content_out > 0) {
+        span["content_in"] = l.content_in;
+        span["content_out"] = l.content_out;
+        span["speed"] = t.constant_speed() ? t.speed_at_local(0) : -1.0;
+      }
       // Its source's beats where they fall (DESIGN §4v), timeline
       // seconds to the millisecond.
       if (!l.beats.empty()) {
@@ -2727,6 +2775,11 @@ Core::layer_op(const std::string& request_json)
     } else if (op == "stretch") {
       st = c.stretch_layer(*pid, *aid, layer,
                            jget<std::int64_t>(*j, "length", 1));
+    } else if (op == "edge") {
+      // A timed block's edge dragged: {"left", "to"} (Controller::
+      // trim_layer_edge).
+      st = c.trim_layer_edge(*pid, *aid, layer, jget(*j, "left", true),
+                             jget<std::int64_t>(*j, "to", 0));
     } else if (op == "move-key") {
       st = c.move_layer_key(*pid, *aid, layer,
                             jget<std::int64_t>(*j, "from", 0),
@@ -3306,6 +3359,98 @@ Core::compress_model(const std::string& request_json)
                                         jget(*j, "bits", 8),
                                         jget(*j, "keep_original", false));
     return r.ok() ? ok({{"job", r->str()}}) : err(r.error());
+  });
+}
+
+std::string
+Core::trainer_info(const std::string& request_json)
+{
+  (void)request_json;
+  return guarded([&] {
+    return ok({{"trainer", _impl->ctl->trainer_info()}});
+  });
+}
+
+std::string
+Core::train_lora(const std::string& request_json)
+{
+  return guarded([&] {
+    auto j = parse(request_json);
+    if (!j.ok()) {
+      return err(j.error());
+    }
+    auto r = _impl->ctl->train_lora(*j);
+    return r.ok() ? ok({{"job", r->str()}}) : err(r.error());
+  });
+}
+
+std::string
+Core::trained_loras(const std::string& request_json)
+{
+  (void)request_json;
+  return guarded([&] {
+    return ok({{"runs", _impl->ctl->trained_loras()}});
+  });
+}
+
+std::string
+Core::remove_trained(const std::string& request_json)
+{
+  return guarded([&] {
+    auto j = parse(request_json);
+    if (!j.ok()) {
+      return err(j.error());
+    }
+    auto st = _impl->ctl->remove_trained(jget<std::string>(*j, "name", ""));
+    return st.ok() ? ok() : err(st.error());
+  });
+}
+
+std::string
+Core::finish_trained(const std::string& request_json)
+{
+  return guarded([&] {
+    auto j = parse(request_json);
+    if (!j.ok()) {
+      return err(j.error());
+    }
+    auto st = _impl->ctl->finish_trained(jget<std::string>(*j, "name", ""));
+    return st.ok() ? ok() : err(st.error());
+  });
+}
+
+std::string
+Core::train_command(const std::string& request_json)
+{
+  return guarded([&] {
+    auto j = parse(request_json);
+    if (!j.ok()) {
+      return err(j.error());
+    }
+    auto id = JobId::parse(jget<std::string>(*j, "job", ""));
+    if (!id) {
+      return err(Code::InvalidArgument, "bad job id");
+    }
+    auto r = _impl->ctl->train_command(*id, jget<std::string>(*j, "name",
+                                                              ""),
+                                       jget(*j, "args", Json::object()));
+    return r.ok() ? ok({{"reply", *r}}) : err(r.error());
+  });
+}
+
+std::string
+Core::caption_training_sample(const std::string& request_json)
+{
+  return guarded([&] {
+    auto j = parse(request_json);
+    if (!j.ok()) {
+      return err(j.error());
+    }
+    auto r = _impl->ctl->caption_training_sample(
+        jget<std::string>(*j, "path", ""),
+        jget<std::string>(*j, "trigger", ""),
+        jget<std::string>(*j, "meaning", ""));
+    return r.ok() ? ok(*r) : err(r.error());
   });
 }
 

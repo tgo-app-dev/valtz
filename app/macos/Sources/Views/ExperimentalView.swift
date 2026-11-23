@@ -52,6 +52,21 @@ struct ExperimentalView: View {
                 Text("The Procedural tab over the prompt (⌘4): say what to draw, and a model writes a program — JavaScript with a canvas, SVG, WebGL, three.js or Babylon.js — that Valtz draws as a picture or a clip, then looks at and puts right. Programs run in a sandboxed page with no network and no files; each drawing lands in Assets beside its program. It thinks where the Agent does: the Agentic Helper, or the cloud.")
                     .foregroundStyle(.secondary)
             }
+            Section {
+                Toggle(isOn: Binding(
+                    get: { model.trainerEnabled },
+                    set: { model.setTrainerEnabled($0) })) {
+                    Label {
+                        Text("LoRA Trainer")
+                    } icon: {
+                        Image(systemName: AppScreen.trainer.symbol)
+                    }
+                }
+                .settingsMark(String(localized: "LoRA Trainer"))
+            } footer: {
+                Text("A LoRA Trainer in the ☰ column, above the Log: drop pictures or folders of them, set a trigger word, and train a LoRA for Qwen-Image 2.1 on this Mac. Its checkpoints and previews are kept in the models folder; a stopped training resumes where it stopped. Switched off, the trainer goes; a training at work goes on.")
+                    .foregroundStyle(.secondary)
+            }
         }
         .formStyle(.grouped)
     }

@@ -87,6 +87,17 @@ inline constexpr std::string_view kOpGenerateSpeech = "generate-speech";
 // each ([{"target", "options"}]), its progress counted across them
 // (kPhaseQuantize's "pass" of "passes").
 inline constexpr std::string_view kOpQuantizeModel = "quantize-model";
+// A LoRA TRAINED on a picture model (vpipe's train-lora, DESIGN §8c): the
+// model -- model.dir -- and params "dataset" (training-dataset's keys,
+// "dir" the folder of pictures and their captions), "optimizer"
+// (optimizer-select's) and "train" (train-lora's, "output_dir" and
+// "name" where the adapter goes). Its dataset encoded first
+// (kPhaseTrainEncode), then trained (kPhaseTrain: optimizer steps of the
+// run's); every step's data "metrics" {step, total, loss, lr, grad_norm,
+// sec}, every checkpoint's "checkpoint" {path, step, loss, final}. Its
+// output the adapter's file. While it trains, job_command's "save" and
+// "preview" are its stage's.
+inline constexpr std::string_view kOpTrainLora = "train-lora";
 // A clip RESTORED at a larger size (FlashVSR, DESIGN §4f): input
 // "source" (a clip), params `width`, `height` (the size made), `first`,
 // `count` (its span, in its frames), and the catalog's `upscale` block
@@ -367,6 +378,10 @@ inline constexpr std::string_view kPhaseFinish = "finish";
 // and, where a pass is calibrated first (AWQ), its calibration.
 inline constexpr std::string_view kPhaseQuantize = "quantize";
 inline constexpr std::string_view kPhaseCalibrate = "calibrate";
+// A LoRA's training: its dataset's captions and pictures encoded, then
+// its optimizer steps.
+inline constexpr std::string_view kPhaseTrainEncode = "train-encode";
+inline constexpr std::string_view kPhaseTrain = "train";
 // Anything else; data "label" is the engine's own words.
 inline constexpr std::string_view kPhaseWork = "work";
 
@@ -477,6 +492,16 @@ public:
   // Ask a queued or running job to stop. Its sink still receives a
   // terminal event.
   virtual Status cancel(JobId) = 0;
+  // A command to a RUNNING job's stage, its reply: kOpTrainLora's "save"
+  // (a checkpoint now) and "preview" (the previews sampled now). Refused
+  // for a job not running or an op that takes none.
+  virtual Result<Json>
+  job_command(JobId, std::string_view name, const Json& args)
+  {
+    (void)name;
+    (void)args;
+    return make_error(Code::Unsupported, "this engine takes no commands");
+  }
   // An agent's conversation is over: what its turns kept under `key`
   // (kOpAgentTurn's "context") let go of now, rather than when the
   // helper's warm hold ends. A context saved to disk is the caller's.

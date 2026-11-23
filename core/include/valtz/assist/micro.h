@@ -48,6 +48,23 @@ std::vector<std::string> micro_pictures(std::string_view reply,
 std::string micro_refine_words(std::string_view prompt,
                                const std::vector<std::string>& pictures);
 
+// A TRAINING SAMPLE CAPTIONED (the LoRA trainer, DESIGN §8c): the model
+// shown the sample -- a picture, or `frames` frames of a clip in order --
+// and told what the trigger word stands for (`meaning`, the person's
+// words), asked for one caption that names the subject by the trigger
+// and says everything BUT its own look: what it does, where, the
+// setting, the light, the framing -- the look is what the trigger is to
+// learn, and a caption that tells it teaches the words, not the word.
+std::string training_caption_request(std::string_view trigger,
+                                     std::string_view meaning, int frames);
+// The reply's caption: its first paragraph, quotes and a "Caption:"
+// before it taken off, the trigger written as given where the model
+// changed its case, at most 600 bytes on a character; "" when none (no
+// words, or the trigger not in it and the subject not there -- the
+// model said it is absent: kept as it said, the trigger left out).
+std::string training_caption(std::string_view reply,
+                             std::string_view trigger);
+
 }
 
 #endif

@@ -603,6 +603,11 @@ struct StackSpan: Equatable, Sendable {
     /// Its source's BOOKMARKS where they fall (DESIGN §4w): those of the
     /// transcripts and video summaries attached to what it shows.
     var bookmarks: [StackBookmark] = []
+    /// What its source holds, in its seconds, and its speed while it is
+    /// one (nil keyed, or untimed): how far its edges are dragged.
+    var contentIn: Double?
+    var contentOut: Double?
+    var speed: Double?
 
     var end: Double? { length.map { start + $0 } }
 }
@@ -1495,6 +1500,9 @@ struct TuningOption: Identifiable, Equatable, Sendable {
     /// A real that takes a value a denoising step too (MiniMax H3's Sol
     /// threshold): its value a number, or a schedule "1,1.5,1.75".
     let schedule: Bool
+    /// The Dials list's: a clip's dials take a schedule over its time (a
+    /// picture's a constant strength alone).
+    let curves: Bool
     // The LoRA list's: how many run at once (vpipe's slots), the catalog
     // Turbo LoRA's file ("" when not installed) and the names its entries
     // go by, and the preset's steps with the Turbo LoRA on, and off.
@@ -1536,6 +1544,7 @@ struct TuningOption: Identifiable, Equatable, Sendable {
         withheld = j["withheld"] as? [String: [String]] ?? [:]
         follows = j["follows"] as? String
         schedule = j["schedule"] as? Bool ?? false
+        curves = j["curves"] as? Bool ?? false
         slots = j["slots"] as? Int ?? 8
         turbo = j["turbo"] as? String ?? ""
         names = j["names"] as? [String: String] ?? [:]
@@ -1615,6 +1624,75 @@ struct TuningCheckpoint: Equatable, Codable, Sendable, Identifiable {
     var json: [String: Any] { ["path": path, "on": on] }
 }
 
+/// A DIAL (MiniMax H3's steering: a direction made from prompt pairs,
+/// added to every prompt row; MATLOWAI/H3-Dials): its file, on, and a
+/// CONSTANT strength -- or, a clip, a SCHEDULE of strengths over the
+/// clip's time (points x 0...1, strength -3...3; two or more). Its file's
+/// own words for the panel (core models::dial_about).
+struct TuningDial: Equatable, Codable, Sendable, Identifiable {
+    var path: String
+    var on = true
+    var missing = false
+    var strength = 1.0
+    /// [x, strength], sorted by x; empty or one point: the constant.
+    var points: [[Double]] = []
+    var name = ""
+    var about = ""
+    var negative = ""
+    var positive = ""
+    var notes = ""
+    var id: String { path }
+    var scheduled: Bool { points.count >= 2 }
+
+    var json: [String: Any] {
+        var j: [String: Any] = ["path": path, "on": on, "strength": strength]
+        if scheduled { j["points"] = points }
+        return j
+    }
+
+    init(path: String) {
+        self.path = path
+        name = URL(fileURLWithPath: path).deletingPathExtension()
+            .lastPathComponent
+    }
+
+    init(_ j: [String: Any]) {
+        path = j["path"] as? String ?? ""
+        // A file not found is off in the core's values, "wanted" where it
+        // was on: kept on here, so it holds until the file is back.
+        on = j["on"] as? Bool ?? false || j["wanted"] as? Bool ?? false
+        missing = j["missing"] as? Bool ?? false
+        strength = j["strength"] as? Double ?? 1
+        points = (j["points"] as? [[Any]] ?? []).compactMap { p in
+            guard p.count == 2, let x = (p[0] as? NSNumber)?.doubleValue,
+                  let y = (p[1] as? NSNumber)?.doubleValue else { return nil }
+            return [x, y]
+        }
+        let a = j["about"] as? [String: Any] ?? [:]
+        name = a["name"] as? String
+            ?? URL(fileURLWithPath: path).deletingPathExtension()
+                .lastPathComponent
+        about = a["description"] as? String ?? ""
+        negative = a["negative"] as? String ?? ""
+        positive = a["positive"] as? String ?? ""
+        notes = a["notes"] as? String ?? ""
+    }
+
+    /// The strength at clip time x: the constant, or the schedule's,
+    /// linear between its points, held before the first and after the
+    /// last (as vpipe's curve).
+    func value(at x: Double) -> Double {
+        guard scheduled else { return strength }
+        if x <= points[0][0] { return points[0][1] }
+        for i in 1..<points.count where x <= points[i][0] {
+            let (x0, y0) = (points[i - 1][0], points[i - 1][1])
+            let (x1, y1) = (points[i][0], points[i][1])
+            return x1 > x0 ? y0 + (y1 - y0) * (x - x0) / (x1 - x0) : y1
+        }
+        return points[points.count - 1][1]
+    }
+}
+
 /// Favor's option values: switches, numbers, the LoRA list and the
 /// community DiT / VAE checkpoints, by key.
 struct Tuning: Equatable, Codable, Sendable {
@@ -1631,6 +1709,8 @@ struct Tuning: Equatable, Codable, Sendable {
     var loras: [TuningLoRA] = []
     /// "dits", "vaes": each part's community checkpoints.
     var checkpoints: [String: [TuningCheckpoint]] = [:]
+    /// MiniMax H3's DIALS, in order.
+    var dials: [TuningDial] = []
     /// The keys whose numbers are whole (sent as integers).
     var integers: Set<String> = []
 
@@ -1648,6 +1728,7 @@ struct Tuning: Equatable, Codable, Sendable {
         loras = try c.decodeIfPresent([TuningLoRA].self, forKey: .loras) ?? []
         checkpoints = try c.decodeIfPresent([String: [TuningCheckpoint]].self,
                                             forKey: .checkpoints) ?? [:]
+        dials = try c.decodeIfPresent([TuningDial].self, forKey: .dials) ?? []
         integers = try c.decodeIfPresent(Set<String>.self,
                                          forKey: .integers) ?? []
     }
@@ -1670,6 +1751,9 @@ struct Tuning: Equatable, Codable, Sendable {
                                    || $0["wanted"] as? Bool ?? false,
                                missing: $0["missing"] as? Bool ?? false)
                 }
+            case "list" where o.key == "dials":
+                dials = (values[o.key] as? [[String: Any]] ?? [])
+                    .map(TuningDial.init)
             case "list":
                 checkpoints[o.key] = (values[o.key] as? [[String: Any]] ?? [])
                     .map {
@@ -1701,6 +1785,7 @@ struct Tuning: Equatable, Codable, Sendable {
         for (k, v) in schedules { out[k] = v }
         out["loras"] = loras.map(\.json)
         for (k, v) in checkpoints { out[k] = v.map(\.json) }
+        out["dials"] = dials.map(\.json)
         return out
     }
 }

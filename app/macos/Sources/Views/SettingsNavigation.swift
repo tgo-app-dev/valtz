@@ -162,7 +162,8 @@ enum SettingsPlace: Hashable, Sendable {
                     $0.options.map(TuningPanel.title)
                 }
         case .page(.experimental):
-            [String(localized: "Agent"), String(localized: "Procedural")]
+            [String(localized: "Agent"), String(localized: "Procedural"),
+             String(localized: "LoRA Trainer"), String(localized: "Training")]
         case .page(.fleet):
             [String(localized: "This Mac"), String(localized: "Name"),
              String(localized: "Discoverable"), String(localized: "Fleet"),

@@ -4,6 +4,7 @@
 #import <ImageIO/ImageIO.h>
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 
+#include <algorithm>
 #include <format>
 
 namespace valtz::media {
@@ -30,7 +31,7 @@ image_thumbnail(NSURL* url, int max_px)
 }
 
 CGImageRef
-video_thumbnail(NSURL* url, int max_px)
+video_thumbnail(NSURL* url, int max_px, double at_fraction)
 {
   AVURLAsset* asset = [AVURLAsset URLAssetWithURL:url options:nil];
   AVAssetImageGenerator* gen =
@@ -49,7 +50,10 @@ video_thumbnail(NSURL* url, int max_px)
   dispatch_semaphore_wait(sem, DISPATCH_TIME_FOREVER);
   dur = asset.duration;
   CMTime at = CMTIME_IS_NUMERIC(dur) && CMTimeGetSeconds(dur) > 0
-                  ? CMTimeMultiplyByRatio(dur, 1, 10)
+                  ? CMTimeMakeWithSeconds(
+                        CMTimeGetSeconds(dur) *
+                            std::clamp(at_fraction, 0.0, 0.98),
+                        600)
                   : kCMTimeZero;
 
   __block CGImageRef out = nullptr;
@@ -69,7 +73,8 @@ video_thumbnail(NSURL* url, int max_px)
 
 Status
 write_thumbnail(const std::filesystem::path& src, MediaType type,
-                int max_px, const std::filesystem::path& dst)
+                int max_px, const std::filesystem::path& dst,
+                double at_fraction)
 {
   @autoreleasepool {
     NSURL* url = [NSURL fileURLWithPath:
@@ -80,7 +85,7 @@ write_thumbnail(const std::filesystem::path& src, MediaType type,
       img = image_thumbnail(url, max_px);
       break;
     case MediaType::Video:
-      img = video_thumbnail(url, max_px);
+      img = video_thumbnail(url, max_px, at_fraction);
       break;
     default:
       return make_error(Code::Unsupported, "no thumbnail for this media");

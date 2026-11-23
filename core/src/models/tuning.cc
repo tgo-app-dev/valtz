@@ -1,5 +1,6 @@
 #include "valtz/models/tuning.h"
 
+#include "valtz/base/text.h"
 #include "valtz/media/refmod.h"
 #include "valtz/models/drawthings.h"
 
@@ -272,6 +273,72 @@ loras_of(const Json& in)
 // "vaes"): each file or folder, marked missing when it is not there (and
 // "wanted" where it was on, as a LoRA); the one on -- at most one, and
 // not a missing one -- replaces the model's.
+// The DIALS a Custom names, as they can be used: each by its file, on
+// (a file not there off, "wanted" while it was asked for), its strength
+// held to -2..2, and -- `schedule`, a clip -- its SCHEDULE: points
+// [x, strength] over the clip's time (x 0 its first frame, 1 its end),
+// sorted, held to the square; one of none or one point is a constant
+// (a picture's always).
+Json
+dials_of(const Json& overrides, bool schedule)
+{
+  Json out = Json::array();
+  const Json in = jget(overrides, "dials", Json::array());
+  if (!in.is_array()) {
+    return out;
+  }
+  for (const auto& d : in) {
+    const auto path = file_key(jget<std::string>(d, "path", ""));
+    if (path.empty()) {
+      continue;
+    }
+    std::error_code ec;
+    const bool missing = !std::filesystem::exists(path, ec);
+    const bool asked = jget(d, "on", true);
+    const double s = std::clamp(jget(d, "strength", 1.0), -3.0, 3.0);
+    Json e = {{"path", path}, {"on", asked && !missing},
+              {"missing", missing}, {"strength", s}};
+    if (missing && asked) {
+      e["wanted"] = true;
+    }
+    Json pts = Json::array();
+    if (schedule) {
+      std::vector<std::pair<double, double>> p;
+      for (const auto& q : jget(d, "points", Json::array())) {
+        if (q.is_array() && q.size() == 2 && q[0].is_number() &&
+            q[1].is_number()) {
+          p.emplace_back(std::clamp(q[0].get<double>(), 0.0, 1.0),
+                         std::clamp(q[1].get<double>(), -3.0, 3.0));
+        }
+      }
+      std::stable_sort(p.begin(), p.end(), [](auto& a, auto& b) {
+        return a.first < b.first;
+      });
+      // Strictly increasing times (vpipe's keys): one a time, the last.
+      std::vector<std::pair<double, double>> u;
+      for (const auto& q : p) {
+        if (!u.empty() && q.first - u.back().first < 1e-6) {
+          u.back() = q;
+        } else {
+          u.push_back(q);
+        }
+      }
+      if (u.size() >= 2) {
+        for (const auto& q : u) {
+          pts.push_back(Json::array({q.first, q.second}));
+        }
+      }
+    }
+    if (!pts.empty()) {
+      e["points"] = std::move(pts);
+    }
+    // Its file's own words: the name, what it does, its two sides.
+    e["about"] = dial_about(path);
+    out.push_back(std::move(e));
+  }
+  return out;
+}
+
 Json
 checkpoints_of(const Json& overrides, const char* key)
 {
@@ -326,7 +393,8 @@ declared_offers(const Json& vp, const TuningContext& ctx,
                 std::string_view preference, std::vector<Offer>& out)
 {
   static const std::set<std::string> kOwn = {
-    "steps", "loras", "dits", "vaes", "hyperflow", "pika_flex",
+    "steps", "loras", "dits", "vaes", "hyperflow", "pika_flex", "pi_h3",
+    "pi_h3_steps", "pi_h3_vae",
     "taomate", "vdn", "vdn_range",
     "sol_attn", "sol_threshold",
     "sol_tau", "sage_attn", "sage_pv8", "sage_pv8_all_rows", "i8_gemm",
@@ -515,6 +583,60 @@ offers(const ModelEntry& m, const TuningContext& ctx,
     }
     o.excludes = Json::array({"hyperflow", "taomate", "motion_cache"});
     out.push_back(std::move(o));
+  }
+  // pi-H3: Lakonik's pi-Flow v2 distillations of FL2VA, two or four
+  // steps, each an adapter of a LoRA and whole-tensor overwrites trained
+  // on the PRUNED DiT -- which it runs over (the controller names it as
+  // generate-video's dit_dir) -- its grid read by vpipe off its header
+  // and folder. DWD (on by default, the release's recommendation) also
+  // decodes the last step's features to frames by its own pixel head, no
+  // VAE decoder. Custom's alone. Not beside another sampler of its own
+  // (HyperFlow, Pika H3 Flex, TaoMate) nor MotionCache or VDN, which its
+  // two or four steps have nothing to gain from.
+  if (const Json pi = jget(vp, "pi_h3", Json()); pi.is_object()) {
+    const auto asked = [&](const char* k, const Json& d) {
+      return overrides.is_object() && overrides.contains(k)
+                 ? overrides[k] : d;
+    };
+    // Its step count as asked, else the 4-step if it is here.
+    const bool four_here = ctx.pi_adapters.contains("4-dwd") ||
+                           ctx.pi_adapters.contains("4");
+    const Json st = asked("pi_h3_steps", four_here || ctx.pi_adapters.empty()
+                                             ? Json("4") : Json("2"));
+    const std::string steps =
+        st.is_string() ? st.get<std::string>()
+        : st.is_number() ? std::to_string(st.get<int>()) : "4";
+    Offer o{"pi_h3", Kind::Bool};
+    o.available = ctx.pi_dit_installed && !ctx.pi_adapters.empty() && !edit;
+    o.why = edit ? "not-for-model"
+            : o.available ? "" : "not-installed";
+    o.preset = false;
+    o.fixes = {{"steps", steps == "2" ? 2 : 4}};
+    const Json fx = jget(pi, "fixes", Json::object());
+    for (auto it = fx.begin(); it != fx.end(); ++it) {
+      o.fixes[it.key()] = it.value();
+    }
+    o.excludes = Json::array({"hyperflow", "pika_flex", "taomate",
+                              "motion_cache", "vdn"});
+    const bool pi_available = o.available;
+    const std::string pi_why = o.why;
+    out.push_back(std::move(o));
+    Offer s{"pi_h3_steps", Kind::Choice};
+    s.available = pi_available;
+    s.why = pi_why;
+    s.choices = Json::array({"4", "2"});
+    s.preset = four_here || ctx.pi_adapters.empty() ? "4" : "2";
+    s.needs = "pi_h3";
+    out.push_back(std::move(s));
+    // DWD by default (the release's recommendation): the VAE-decoded
+    // adapter is the one asked for, off unless set -- an option whose
+    // switch is off settles off.
+    Offer d{"pi_h3_vae", Kind::Bool};
+    d.available = pi_available;
+    d.why = pi_why;
+    d.preset = false;
+    d.needs = "pi_h3";
+    out.push_back(std::move(d));
   }
   // TaoMate-H3: a streaming METHOD with its own adapter, not a few-step
   // LoRA -- an alternative Custom offers, which no preset picks:
@@ -842,6 +964,12 @@ offers(const ModelEntry& m, const TuningContext& ctx,
         taken.insert(
             jget<std::string>(jget(vp, own, Json::object()), "lora", ""));
       }
+      const Json pi_adapters = jget(jget(vp, "pi_h3", Json::object()),
+                                    "adapters", Json::object());
+      for (const auto& [k, id] : pi_adapters.items()) {
+        (void)k;
+        if (id.is_string()) taken.insert(id.get<std::string>());
+      }
       auto offer = [&](const std::string& id, int steps, Json config) {
         if (id.empty() || !taken.insert(id).second) {
           return;
@@ -918,6 +1046,17 @@ offers(const ModelEntry& m, const TuningContext& ctx,
     }
     Offer o{part, Kind::List};
     o.preset = Json::array();
+    out.push_back(std::move(o));
+  }
+  // DIALS (MiniMax H3: vpipe's `dials` on its config stage): steering
+  // files, each at a constant strength or -- a clip -- on a schedule over
+  // the clip's time; a picture model (one frame) takes constants alone.
+  if (jget<std::string>(vp, "config_stage", "") ==
+      "minimax-h3-model-config") {
+    Offer o{"dials", Kind::List, -3.0, 3.0, 0.05};
+    o.preset = Json::array();
+    o.extra = {{"curves",
+                jget<std::string>(vp, "shape", "") != "h3-image"}};
     out.push_back(std::move(o));
   }
   if (cfg.contains("video_shift") || cfg.contains("audio_shift")) {
@@ -1205,6 +1344,7 @@ settle_loras(const Offer& o, Json& values, const Json& overrides)
   // slot -- and the Turbo LoRA's place.
   const bool adapter = jget(values, "hyperflow", false) ||
                        jget(values, "pika_flex", false) ||
+                       jget(values, "pi_h3", false) ||
                        jget(values, "taomate", false);
   if (adapter) {
     --slots;
@@ -1286,6 +1426,9 @@ settle(const std::vector<Offer>& offered, const Json& overrides)
         values[o.key] = overrides.is_object() && overrides.contains("loras")
                             ? loras_of(overrides["loras"])
                             : o.preset;
+      } else if (o.key == "dials") {
+        values[o.key] = dials_of(overrides,
+                                 jget(o.extra, "curves", false));
       } else {
         values[o.key] = checkpoints_of(overrides, o.key.c_str());
       }
@@ -1422,7 +1565,7 @@ std::vector<std::string>
 left_out(const Json& values)
 {
   std::vector<std::string> out;
-  for (const char* list : {"loras", "dits", "vaes"}) {
+  for (const char* list : {"loras", "dits", "vaes", "dials"}) {
     for (const auto& e : jget(values, list, Json::array())) {
       if (jget(e, "wanted", false)) {
         out.push_back(jget<std::string>(e, "path", ""));
@@ -1430,6 +1573,17 @@ left_out(const Json& values)
     }
   }
   return out;
+}
+
+std::string
+pi_h3_key(const Json& values)
+{
+  const Json st = jget(values, "pi_h3_steps", Json("4"));
+  const std::string steps =
+      st.is_string() ? st.get<std::string>()
+      : st.is_number() ? std::to_string(st.get<int>()) : "4";
+  return (steps == "2" ? "2" : "4") +
+         std::string(jget(values, "pi_h3_vae", false) ? "" : "-dwd");
 }
 
 Json
@@ -1449,6 +1603,19 @@ missing_loras(const ModelEntry& m, const TuningContext& ctx,
                     jget(overrides, "pika_flex", false) &&
                     jget(vp, "pika_flex", Json()).is_object() &&
                     ctx.pika_installed;
+  // pi-H3: the chosen adapter itself, where it is not here (its pruned
+  // DiT is what makes it offered).
+  if (overrides.is_object() && jget(overrides, "pi_h3", false) &&
+      ctx.pi_dit_installed) {
+    const Json pi = jget(vp, "pi_h3", Json::object());
+    const std::string key = pi_h3_key(overrides);
+    if (!ctx.pi_adapters.contains(key)) {
+      const auto id = jget<std::string>(jget(pi, "adapters", Json::object()),
+                                        key.c_str(), "");
+      return id.empty() ? Json::array() : Json::array({id});
+    }
+    return Json::array();
+  }
   if (taomate || pika) {
     return Json::array();
   }
@@ -1563,6 +1730,21 @@ kind_of_file(const std::filesystem::path& file)
     return "";
   }
   const Json meta = jget(h, "__metadata__", Json::object());
+  // A DIAL (MiniMax H3's steering, ComfyUI-Dials): exactly one tensor,
+  // `token_refiner.dials_shift` or `condition_proj.diff_b`.
+  {
+    std::vector<std::string> keys;
+    for (auto it = h.begin(); it != h.end(); ++it) {
+      if (it.key() != "__metadata__") {
+        keys.push_back(it.key());
+      }
+    }
+    if (keys.size() == 1 &&
+        (keys[0].ends_with("token_refiner.dials_shift") ||
+         keys[0].ends_with("condition_proj.diff_b"))) {
+      return "dial";
+    }
+  }
   std::size_t lora = 0, vae = 0, tensors = 0;
   for (auto it = h.begin(); it != h.end(); ++it) {
     if (it.key() == "__metadata__") {
@@ -1794,6 +1976,40 @@ classify_checkpoint(const std::filesystem::path& path, const Json& rules)
   }
   return {{"kind", checkpoint_kind(path)}, {"family", ""},
           {"origin", ""}};
+}
+
+
+Json
+dial_about(const std::filesystem::path& file)
+{
+  Json h;
+  Json out = {{"name", file.stem().string()}};
+  if (!read_header(file, h)) {
+    return out;
+  }
+  const Json meta = jget(h, "__metadata__", Json::object());
+  if (const auto n = jget<std::string>(meta, "name", ""); !n.empty()) {
+    out["name"] = n;
+  }
+  out["family"] = jget<std::string>(meta, "model_family", "MiniMax H3");
+  // ComfyUI-Dials' dial_info: what it does, its two sides, the strengths
+  // its makers found useful.
+  const Json info = Json::parse(jget<std::string>(meta, "dial_info", ""),
+                                nullptr, false);
+  if (info.is_object()) {
+    for (const char* k : {"description", "negative", "positive", "notes"}) {
+      if (info.contains(k) && info[k].is_string()) {
+        out[k] = utf8_prefix(info[k].get<std::string>(), 2000);
+      }
+    }
+    for (const char* side : {"neg", "pos"}) {
+      const Json v = jget(jget(info, side, Json::object()), "useful", Json());
+      if (v.is_number()) {
+        out[std::string(side) + "_useful"] = v.get<double>();
+      }
+    }
+  }
+  return out;
 }
 
 }

@@ -97,6 +97,12 @@
         {"model": "taeh3", "label": "TAE"},
         {"model": "minimax-h3-pika-flex", "label": "Pika H3 Flex adapter, FL2VA (6-step)"},
         {"model": "minimax-h3-ref2va-pika-flex", "label": "Pika H3 Flex adapter, Ref2VA (6-step)"},
+        {"model": "minimax-h3-fl2va-pruned-int8", "label": "pi-H3's pruned FL2VA DiT, int8 (Comfy-Org, 21 GB)"},
+        {"model": "minimax-h3-fl2va-pruned-bf16", "label": "pi-H3's pruned FL2VA DiT, bf16 (Comfy-Org, 40 GB)"},
+        {"model": "minimax-h3-pi-4step-dwd", "label": "pi-H3 adapter, 4-step DWD (no VAE decoder; recommended)"},
+        {"model": "minimax-h3-pi-2step-dwd", "label": "pi-H3 adapter, 2-step DWD (no VAE decoder)"},
+        {"model": "minimax-h3-pi-4step", "label": "pi-H3 adapter, 4-step (VAE-decoded)"},
+        {"model": "minimax-h3-pi-2step", "label": "pi-H3 adapter, 2-step (VAE-decoded)"},
         {"model": "minimax-h3-turbo-3step", "label": "TaoMate adapter (3-step streaming method)"},
         {"model": "minimax-h3-turbo-4step", "label": "4-step Turbo LoRA, FL2VA (lightx2v)"},
         {"model": "minimax-h3-ref2va-turbo-4step", "label": "4-step Turbo LoRA, Ref2VA (lightx2v)"},
@@ -914,6 +920,7 @@
       "license": "minimax-h3-image",
       "engine": {
         "vpipe": {
+          "train": {"shape": "h3-image", "media": ["pictures"], "references": "edit", "resolution": [1024], "resolutions": [512, 768, 1024, 1536], "rank": 32, "targets": "attn_ff", "optimizer": "adamw", "learning_rate": 0.0002, "trigger": "ohwx", "preview_prompts": ["{trigger}", "a photo of {trigger} in a snowy park"]},
           "shape": "h3-image",
           "tensor_parallel": {"heads": 56, "ffn": 14336},
           "config_stage": "minimax-h3-model-config",
@@ -1025,6 +1032,16 @@
         "vpipe": {
           "tensor_parallel": {"heads": 32, "ffn": 12288,
                               "needs": "qwen-image-21", "adapters": false},
+          "train": {
+            "resolution": [512, 768, 1024],
+            "resolutions": [512, 768, 1024, 1328],
+            "rank": 16,
+            "targets": "attn_ff",
+            "optimizer": "adamw",
+            "learning_rate": 0.0004,
+            "trigger": "ohwx",
+            "preview_prompts": ["{trigger}", "a photo of {trigger} in a snowy park"]
+          },
           "config_stage": "qwen-image-21-model-config",
           "accel": ["sage_attn", "sage_pv8", "i8_gemm", "i8_gemm_tier", "vae_i8_gemm", "vae_i8_gemm_tier", "ane_ffn", "ane_qkv", "ane_int8"],
           "config": {},
@@ -1139,6 +1156,7 @@
       "license": "minimax",
       "engine": {
         "vpipe": {
+          "train": {"shape": "h3", "media": ["pictures", "clips"], "resolution": [512], "resolutions": [384, 512, 768, 1024], "frames": [39], "windows": 2, "rank": 32, "targets": "attn_ff", "optimizer": "adamw", "learning_rate": 0.0002, "trigger": "ohwx", "preview_steps": 20, "keyframes": true, "preview_prompts": ["{trigger}", "a photo of {trigger} in a snowy park"]},
           "tensor_parallel": {"heads": 56, "ffn": 14336},
           "config_stage": "minimax-h3-model-config",
           "config": {
@@ -1181,6 +1199,13 @@
           "hyperflow": {"lora": "minimax-h3-hyperflow", "steps": 8},
           "pika_flex": {"lora": "minimax-h3-pika-flex", "steps": 6,
                         "fixes": {"video_shift": 12, "audio_shift": 3}},
+          "pi_h3": {"dits": ["minimax-h3-fl2va-pruned-int8",
+                             "minimax-h3-fl2va-pruned-bf16"],
+                    "adapters": {"4-dwd": "minimax-h3-pi-4step-dwd",
+                                 "2-dwd": "minimax-h3-pi-2step-dwd",
+                                 "4": "minimax-h3-pi-4step",
+                                 "2": "minimax-h3-pi-2step"},
+                    "fixes": {"video_shift": 12, "audio_shift": 3}},
           "taomate": {"lora": "minimax-h3-turbo-3step", "steps": 3,
                       "fixes": {"video_shift": 12, "audio_shift": 3},
                       "lora_only": {"steps": 3,
@@ -1271,6 +1296,7 @@
       "license": "minimax",
       "engine": {
         "vpipe": {
+          "train": {"shape": "h3-ref2va", "media": ["pictures", "clips"], "references": "optional", "reference_short_edge": 1024, "resolution": [384], "resolutions": [384, 512, 768], "frames": [39], "windows": 2, "rank": 32, "targets": "attn_ff", "optimizer": "adamw", "learning_rate": 0.0001, "trigger": "ohwx", "preview_steps": 20, "preview_prompts": ["{trigger}", "{trigger} on a sandy beach at sunset"]},
           "tensor_parallel": {"heads": 56, "ffn": 14336},
           "config_stage": "minimax-h3-model-config",
           "config": {
@@ -2243,6 +2269,12 @@
       "license": "minimax",
       "notes": "Pika Labs' six-step post-training of the Ref2VA partition (rank 128, FP32): up to twelve pictures, clips and sounds referenced. Sampled as its manifest.json states (its grid at shifts 12 / 3, each step re-noised; vpipe 24246ed1), six steps. Takes the adapter slot the Turbo LoRA would; refused beside HyperFlow. Favor's Custom: Pika H3 Flex."
     },
+    {"id": "minimax-h3-fl2va-pruned-int8", "name": "MiniMax H3 FL2VA pruned DiT, int8 (pi-H3's base)", "family": "minimax-h3", "role": "dit", "hf_path": "Comfy-Org/MiniMax-H3", "file": "diffusion_models/minimax_h3_fl2va_pruned_int8_convrot.safetensors", "fetch_variant": "Comfy-Org/MiniMax-H3-FL2VA-pruned-int8-convrot", "check": {"tensors": ["adaln_t_table"]}, "capabilities": [], "disk_gb": 21.0, "disk_measured": true, "min_ram_gb": 16, "rank": 0, "license": "minimax", "notes": "Comfy-Org's PRUNED FL2VA DiT -- each block's AdaLN folded onto the time embedding's curve -- in ComfyUI's int8 ConvRot, the one ComfyUI-piFlow runs: what pi-H3's adapters are trained on and run over (vpipe 7b863a88). Its text encoder and VAEs are FL2VA's, which must be here too. MiniMax H3 Community License."},
+    {"id": "minimax-h3-fl2va-pruned-bf16", "name": "MiniMax H3 FL2VA pruned DiT, bf16 (pi-H3's base)", "family": "minimax-h3", "role": "dit", "hf_path": "Comfy-Org/MiniMax-H3", "file": "diffusion_models/minimax_h3_fl2va_pruned_bf16.safetensors", "fetch_variant": "Comfy-Org/MiniMax-H3-FL2VA-pruned-bf16", "check": {"tensors": ["adaln_t_table"]}, "capabilities": [], "disk_gb": 40.2, "disk_measured": true, "min_ram_gb": 16, "rank": 0, "license": "minimax", "notes": "The pruned FL2VA DiT at bf16: pi-H3's base where the int8 copy is not here (the int8 one is taken first). MiniMax H3 Community License."},
+    {"id": "minimax-h3-pi-4step-dwd", "name": "MiniMax H3 pi-H3 4-step DWD adapter", "family": "minimax-h3", "role": "lora", "hf_path": "Lakonik/pi-H3", "file": "pi_h3_4step_dwd_adapter/diffusion_pytorch_model.safetensors", "beside": ["config.json"], "fetch_variant": "Lakonik/pi-H3-4step-dwd", "check": {"tensors": ["lora", "dwd_"]}, "capabilities": [], "disk_gb": 3.8, "disk_measured": true, "min_ram_gb": 16, "rank": 0, "license": "minimax", "notes": "Lakonik's pi-Flow v2 4-step distillation of FL2VA (Hansheng Chen et al.): a rank-64 LoRA plus whole-tensor overwrites of the pruned DiT's AdaLN, output norm and heads, and blocks 46-49 -- with DWD's pixel head, the last step's features decoded straight to frames, no VAE decoder (the release's recommendation). Runs only on the pruned DiT; its grid (4 Euler steps at shifts 12 / 3) read by vpipe off its header and folder (vpipe 7b863a88). Favor's Custom: pi-H3. MiniMax H3 Community License."},
+    {"id": "minimax-h3-pi-4step", "name": "MiniMax H3 pi-H3 4-step adapter", "family": "minimax-h3", "role": "lora", "hf_path": "Lakonik/pi-H3", "file": "pi_h3_4step_adapter/diffusion_pytorch_model.safetensors", "beside": ["config.json"], "fetch_variant": "Lakonik/pi-H3-4step", "check": {"tensors": ["lora"]}, "capabilities": [], "disk_gb": 0.5, "disk_measured": true, "min_ram_gb": 16, "rank": 0, "license": "minimax", "notes": "Lakonik's pi-Flow v2 4-step distillation of FL2VA (Hansheng Chen et al.): a rank-64 LoRA plus whole-tensor overwrites of the pruned DiT's AdaLN, output norm and heads; decoded by the video VAE. Runs only on the pruned DiT; its grid (4 Euler steps at shifts 12 / 3) read by vpipe off its header and folder (vpipe 7b863a88). Favor's Custom: pi-H3. MiniMax H3 Community License."},
+    {"id": "minimax-h3-pi-2step-dwd", "name": "MiniMax H3 pi-H3 2-step DWD adapter", "family": "minimax-h3", "role": "lora", "hf_path": "Lakonik/pi-H3", "file": "pi_h3_2step_dwd_adapter/diffusion_pytorch_model.safetensors", "beside": ["config.json"], "fetch_variant": "Lakonik/pi-H3-2step-dwd", "check": {"tensors": ["lora", "dwd_"]}, "capabilities": [], "disk_gb": 3.8, "disk_measured": true, "min_ram_gb": 16, "rank": 0, "license": "minimax", "notes": "Lakonik's pi-Flow v2 2-step distillation of FL2VA (Hansheng Chen et al.): a rank-64 LoRA plus whole-tensor overwrites of the pruned DiT's AdaLN, output norm and heads, and blocks 46-49 -- with DWD's pixel head, the last step's features decoded straight to frames, no VAE decoder (the release's recommendation). Runs only on the pruned DiT; its grid (2 Euler steps at shifts 12 / 3) read by vpipe off its header and folder (vpipe 7b863a88). Favor's Custom: pi-H3. MiniMax H3 Community License."},
+    {"id": "minimax-h3-pi-2step", "name": "MiniMax H3 pi-H3 2-step adapter", "family": "minimax-h3", "role": "lora", "hf_path": "Lakonik/pi-H3", "file": "pi_h3_2step_adapter/diffusion_pytorch_model.safetensors", "beside": ["config.json"], "fetch_variant": "Lakonik/pi-H3-2step", "check": {"tensors": ["lora"]}, "capabilities": [], "disk_gb": 0.5, "disk_measured": true, "min_ram_gb": 16, "rank": 0, "license": "minimax", "notes": "Lakonik's pi-Flow v2 2-step distillation of FL2VA (Hansheng Chen et al.): a rank-64 LoRA plus whole-tensor overwrites of the pruned DiT's AdaLN, output norm and heads; decoded by the video VAE. Runs only on the pruned DiT; its grid (2 Euler steps at shifts 12 / 3) read by vpipe off its header and folder (vpipe 7b863a88). Favor's Custom: pi-H3. MiniMax H3 Community License."},
     {
       "id": "minimax-h3-turbo-3step", "name": "MiniMax H3 TaoMate adapter",
       "family": "minimax-h3", "role": "lora",

@@ -1495,6 +1495,16 @@ public:
   // or a sound's length is its marks': refused (kStretchNeedsStill).
   Status stretch_layer(ProjectId, AssetId, const std::string& layer,
                        std::int64_t length);
+  // A timed layer's EDGE dragged -- a clip's, a sound's, a composition's
+  // block on the timeline: its LEFT edge to timeline frame `to` moves its
+  // mark-in and its start together (what shows at each frame stays); its
+  // RIGHT edge to `to` -- the frame after its last -- moves its mark-out.
+  // Held to its content: the mark-in no earlier than the source's start,
+  // the mark-out no later than its end, a frame left at least; a left
+  // edge no earlier than the timeline's frame 0. Refused for a layer
+  // whose speed is keyed (kTrimEdgeKeyedSpeed), and one showing a still.
+  Status trim_layer_edge(ProjectId, AssetId, const std::string& layer,
+                         bool left, std::int64_t to);
   // A layer showing a composition, DECOMPOSED: replaced by that
   // composition's layers -- copies, with their looks, marks and keys --
   // its placement and time carried over to each. Refused, by name, where
@@ -1836,6 +1846,56 @@ public:
   // use_compressed / keep_compressed decide (nothing freed until then).
   Result<JobId> compress_model(const std::string& model_id, int bits,
                                bool keep_original = false);
+
+  // ---- LoRA TRAINING (DESIGN §8c; vpipe's train-lora) -------------------
+  // Work in no project: a LoRA trained on a picture model (catalog
+  // `engine.vpipe.train`) from pictures dropped on the trainer, kept in
+  // <models>/trained/<name>/ -- the adapter, its checkpoints, its
+  // previews, its dataset (links to the pictures, each one's caption) and
+  // run.json, what it was asked for.
+  //
+  // What the trainer offers: {"models": [{id, name, installed, defaults:
+  // the catalog's train block}], "mac": {matrix_cores, ane}, "runs":
+  // trained_loras()}.
+  Json trainer_info() const;
+  // A training, queued on the work lane: request {model, name, items:
+  // [{path, caption}] (a picture each; a folder's pictures when a path
+  // is one; a caption "" reads its .txt beside it), folder (where its
+  // run's folder goes: "" <models>/trained, or a run of its name where
+  // it is; kept, so its runs are listed), repeats (each
+  // picture's a pass, 1), dataset {training-dataset's keys}, optimizer
+  // {optimizer-select's}, train {train-lora's}}. Keys not vpipe's are
+  // dropped; 0, "" and null mean the stage's own (automatic). Events:
+  // job.progress with "phase" train-encode / train, "metrics" each step,
+  // "checkpoint" each save; job.finished with "path", the adapter.
+  Result<JobId> train_lora(const Json& request);
+  // The runs kept: [{name, model, trigger, folder, adapter (or ""),
+  // checkpoints [{path, step}], previews [paths, newest last], dataset
+  // (pictures), resumable, created_ms, finished_ms, job (running, or
+  // "")}], newest first.
+  Json trained_loras() const;
+  // A run's folder deleted (refused while it trains).
+  Status remove_trained(const std::string& name);
+  // A run ENDED (the trainer's Stop): its resume state deleted, its
+  // adapter and checkpoints kept -- one stopped early its latest
+  // checkpoint copied as its adapter -- and a Start of its name trains
+  // afresh.
+  Status finish_trained(const std::string& name);
+  // A running training's stage commanded: "save" (a checkpoint now) or
+  // "preview" ({prompt, steps, cfg, seed}): the stage's reply.
+  Result<Json> train_command(JobId, const std::string& name,
+                             const Json& args);
+  // A training sample CAPTIONED (the trainer's auto captions, DESIGN
+  // §8c): `file` (a picture, or a clip shown as three frames) shown to the
+  // Valtz agent's model where it sees -- else the micro agent, else the
+  // Agentic Helper where it sees -- told the trigger and what it means,
+  // its caption naming the subject by the trigger, the subject's own
+  // look left out. Blocking: call off the main thread. {caption, model}.
+  Result<Json> caption_training_sample(const std::filesystem::path& file,
+                                       const std::string& trigger,
+                                       const std::string& meaning);
+  // Who captions here ({id, name}; null none that sees).
+  Json training_captioner() const;
   // A compressed copy and its original both kept: which one the model's
   // jobs load from now on -- the copy (`compressed`) or the original.
   // InvalidArgument when the two are not both on disk.
@@ -1879,6 +1939,22 @@ public:
   // should one still come, never committed. Each posts project.changed.
   Status save_project(ProjectId);
   Status save_project_as(ProjectId, const std::filesystem::path& package);
+  // Its FILE, as a document's title bar has it (the app's title panel):
+  // RENAMED or MOVED -- the package on the same volume, the working copy
+  // following, nothing unsaved written (Workspace::relocate); its
+  // Finder TAGS; LOCKED (the Finder's Locked) -- every change refused
+  // while it is (kProjectLocked), and Save; locking refused with changes
+  // not saved (kProjectLockEdited). Refused untitled. Each posts
+  // project.changed; a move project.renamed too.
+  Status move_project(ProjectId, const std::filesystem::path& package);
+  Status set_project_tags(ProjectId, const std::vector<std::string>& tags);
+  Status set_project_locked(ProjectId, bool locked);
+  // {"path", "folder", "tags": [...], "locked"} ({} untitled).
+  Json project_file(ProjectId) const;
+  // A copy of its SAVED file at `package` (Duplicate: the lock's alert),
+  // a project of its own -- a new id, named after its file, unlocked --
+  // to open beside it. What is not saved is not in it.
+  Status duplicate_project(ProjectId, const std::filesystem::path& package);
   Status revert_project(ProjectId);
   Status undo(ProjectId);
   Status redo(ProjectId);
@@ -2967,10 +3043,24 @@ private:
   // a summary for a generated asset's name where the micro agent does
   // not name (asset_naming).
   using MicroReply = std::function<void(std::optional<std::string>)>;
+  // `helper`: that model on the helper's route (the agent's: a training
+  // sample captioned), not the Agentic Helper.
   Result<JobId> submit_micro_(JobId, std::string title, std::string text,
                               std::vector<engine::JobInput> images,
                               int max_new_tokens, MicroReply reply,
-                              bool on_helper = false);
+                              bool on_helper = false,
+                              const models::ModelEntry* helper = nullptr);
+  // Who captions a training sample: the agent's model where it is here
+  // and sees, else the micro agent, else the Agentic Helper where it
+  // sees. `helper`: on the helper's route (chat_spec_), the model named.
+  struct Captioner {
+    const models::ModelEntry* model = nullptr;
+    bool helper = false;
+  };
+  Captioner captioner_() const;
+  // A model shown pictures sees them: one that captions or watches clips
+  // (catalog capabilities), or a GGUF whose eyes are here.
+  bool sees_(const models::ModelEntry& m) const;
   // Settings › General's names of generated assets (asset_naming): by
   // kind ("type") or not; and who sums a prompt up -- "micro", "helper"
   // or "" (none runs here).
@@ -3274,6 +3364,9 @@ private:
   // take at each width (capability_tree reads them often; a rescan
   // forgets them): "<dir>|<bits>".
   std::map<std::string, JobId>       _compressing;
+  // The LoRAs training (train_lora), by name.
+  std::map<std::string, JobId>       _training;
+  mutable std::mutex                 _training_mu;
   mutable std::map<std::string, models::CompressEstimate> _compress_est;
   // A job's command (UndoLog seq), by job: what its commit joins.
   std::map<JobId, std::uint64_t>     _job_commands;

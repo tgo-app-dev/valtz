@@ -90,6 +90,12 @@ public:
   // from then on its package.
   Status save_as(const std::filesystem::path& package,
                  const Json& extensions = Json::array());
+  // Its package RENAMED or moved to `package` (a document's title-bar
+  // name, its Where): the folder moved -- on the same volume; another
+  // refused, Save As goes there -- the saved file's own name made the new
+  // one, nothing unsaved written (what is not saved stays not saved);
+  // from then on its package. Refused untitled, or where one is already.
+  Status relocate(const std::filesystem::path& package);
   // Back to the save; the history cleared. Refused when untitled.
   Status revert();
   // The working copy: kept when dirty, unless `discard`; else gone.

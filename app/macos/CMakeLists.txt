@@ -96,6 +96,8 @@ set(VALTZ_APP_SOURCES
   Sources/Views/AtlasView.swift
   Sources/Views/AtlasGenerate.swift
   Sources/Views/AtlasPlacement.swift
+  Sources/Views/ProjectFile.swift
+  Sources/Views/TitleBarZoom.swift
   Sources/Views/AtlasPlayback.swift
   Sources/Views/DroppedMedia.swift
   Sources/Views/MemoryPopover.swift
@@ -104,6 +106,9 @@ set(VALTZ_APP_SOURCES
   Sources/Views/MarkupBar.swift
   Sources/Views/PromptBar.swift
   Sources/Views/LogView.swift
+  Sources/Views/TrainerModel.swift
+  Sources/Views/TrainerView.swift
+  Sources/Views/TrainerTitleBar.swift
   Sources/Simple/SimpleView.swift
   Sources/Simple/ComposerStack.swift
   Sources/Simple/CropTrim.swift
@@ -124,6 +129,7 @@ set(VALTZ_APP_SOURCES
   Sources/Simple/AgentTabs.swift
   Sources/Simple/CodeBlock.swift
   Sources/Simple/CodeEditor.swift
+  Sources/Simple/DialCurve.swift
   Sources/Simple/AgentModel.swift
   Sources/Simple/AgentViews.swift
   Sources/Simple/Procedural.swift

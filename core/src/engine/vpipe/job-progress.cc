@@ -32,6 +32,8 @@ phase_of(std::string_view desc)
     {"relayvsr upscale", kPhaseDenoise},
     {"quantize", kPhaseQuantize},
     {"calibrate", kPhaseCalibrate},
+    {"lora encode", kPhaseTrainEncode},
+    {"lora train", kPhaseTrain},
   };
   for (const auto& n : kNames) {
     if (n.desc == desc) {

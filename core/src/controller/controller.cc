@@ -6,9 +6,11 @@
 #include "valtz/assist/micro.h"
 #include "valtz/assist/moss-image.h"
 #include "valtz/assist/video-summary.h"
+#include "valtz/base/finder.h"
 #include "valtz/base/log.h"
 #include "valtz/base/text.h"
 #include "valtz/base/tree-copy.h"
+#include "valtz/project/project-file.h"
 #include "valtz/base/version.h"
 #include "valtz/media/layers.h"
 #include "valtz/media/model-input.h"
@@ -2699,6 +2701,22 @@ Controller::tuning_context(const models::ModelEntry& m) const
   }
   c.hyperflow_installed = installed("hyperflow", "lora");
   c.pika_installed = installed("pika_flex", "lora");
+  // pi-H3: a pruned DiT here (the first of `dits`), and which adapters.
+  if (const Json pi = jget(vp, "pi_h3", Json()); pi.is_object()) {
+    for (const auto& d : jget(pi, "dits", std::vector<std::string>{})) {
+      const auto* e = _catalog.find(d);
+      c.pi_dit_installed = c.pi_dit_installed || (e && coming_(*e));
+    }
+    // A local: items() of jget's temporary dangles.
+    const Json adapters = jget(pi, "adapters", Json::object());
+    for (const auto& [k, id] : adapters.items()) {
+      const auto* e = id.is_string() ? _catalog.find(id.get<std::string>())
+                                     : nullptr;
+      if (e && coming_(*e)) {
+        c.pi_adapters.insert(k);
+      }
+    }
+  }
   c.taomate_installed = installed("taomate", "lora");
   c.vdn_installed = installed("vdn", "branch");
   // the models a declared option may name (`requires_model`)
@@ -2818,6 +2836,22 @@ Controller::apply_tuning_(project::Recipe& r, const models::ModelEntry& m,
     // while it is live (vpipe reads it beside the file).
     slots.push_back({jget<std::string>(jget(vp, "pika_flex", Json::object()),
                                        "lora", ""), "", 1.0});
+  } else if (jget(t, "pi_h3", false)) {
+    // pi-H3's adapter, at 1.0 (its overwrites apply whole while it is
+    // live), over the PRUNED DiT it was trained on -- recorded by its id
+    // (resolved where the job runs, ModelRef::dit), the first here.
+    const Json pi = jget(vp, "pi_h3", Json::object());
+    const std::string key = models::pi_h3_key(t);
+    slots.push_back({jget<std::string>(jget(pi, "adapters", Json::object()),
+                                       key.c_str(), ""), "", 1.0});
+    if (!r.params.contains("dit_file")) {
+      for (const auto& d : jget(pi, "dits", std::vector<std::string>{})) {
+        if (const auto* e = _catalog.find(d); e && coming_(*e)) {
+          r.params["dit_model"] = d;
+          break;
+        }
+      }
+    }
   } else if (jget(t, "taomate", false)) {
     // TaoMate's adapter, which vpipe's model-config `taomate` then runs
     // as its streaming method (the graph builder says so).
@@ -5174,6 +5208,18 @@ Controller::open_project(const fs::path& package)
   project::WorkspaceReport report;
   VALTZ_ASSIGN(auto ws, project::Workspace::open(
                             package, working_copies(_paths), &report));
+  {
+    // The same project as one open (a package copied in the Finder): not
+    // opened beside it -- one id, one project here.
+    std::lock_guard lk(_projects_mu);
+    if (auto it = _projects.find(ws->project().id()); it != _projects.end()) {
+      const std::string open = it->second.ws->project().name();
+      const std::string name = ws->project().name();
+      (void)ws->close(false);
+      return make_error(Code::AlreadyExists, msg::kProjectSameOpen,
+                        {{"name", name}, {"open", open}});
+    }
+  }
   VALTZ_ASSIGN(const ProjectId id, adopt_(std::move(ws), report));
   // Originals on other drives may have moved, changed or gone offline
   // since the project was last open.
@@ -5260,6 +5306,11 @@ Controller::write_guard_(ProjectId pid, project::Workspace& w) const
   if (const std::size_t n = missing_count_(pid); n > 0) {
     return make_error(Code::NotFound, msg::kProjectMissingMedia,
                       {{"count", std::to_string(n)}});
+  }
+  // Its file locked: looked at, not changed (the app asks to unlock it).
+  if (w.package() && finder_locked(*w.package())) {
+    return make_error(Code::Busy, msg::kProjectLocked,
+                      {{"name", w.project().name()}});
   }
   return ok_status();
 }
@@ -5399,6 +5450,8 @@ Controller::project_state(ProjectId pid) const
           {"untitled", w->untitled()},
           {"package", w->package() ? w->package()->string() : ""},
           {"name", w->project().name()},
+          // Its file locked (the Finder's): read-only to the person.
+          {"locked", w->package() && finder_locked(*w->package())},
           {"busy", project_busy_(pid)},
           // An agent at work on it: read-only to the person.
           {"agent", agent_holds_(pid)},
@@ -5468,6 +5521,10 @@ Controller::save_project(ProjectId pid)
   if (w->untitled()) {
     return make_error(Code::InvalidArgument, msg::kProjectUntitled);
   }
+  if (finder_locked(*w->package())) {
+    return make_error(Code::Busy, msg::kProjectLocked,
+                      {{"name", w->project().name()}});
+  }
   VALTZ_TRY(w->save(extensions_used_(w->project())));
   (void)w->collect_garbage(history_budget(w->dir()));
   post_state_(pid);
@@ -5496,6 +5553,132 @@ Controller::save_project_as(ProjectId pid, const fs::path& package)
          {"path", w->package()->string()}});
   post_state_(pid);
   return ok_status();
+}
+
+Status
+Controller::move_project(ProjectId pid, const fs::path& package)
+{
+  project::Workspace* w = workspace_(pid);
+  if (!w) {
+    return make_error(Code::NotFound, msg::kProjectNotOpen);
+  }
+  if (w->untitled()) {
+    return make_error(Code::InvalidArgument, msg::kProjectUntitled);
+  }
+  if (agent_holds_(pid)) {
+    return make_error(Code::Busy, msg::kAgentAtWork);
+  }
+  if (finder_locked(*w->package())) {
+    return make_error(Code::Busy, msg::kProjectLocked,
+                      {{"name", w->project().name()}});
+  }
+  fs::path to = package;
+  if (to.extension() != ".valtz") {
+    to += ".valtz";
+  }
+  VALTZ_TRY(w->relocate(to));
+  post_("project.renamed", JobId{},
+        {{"project", pid}, {"name", w->project().name()},
+         {"path", w->package()->string()}});
+  post_state_(pid);
+  return ok_status();
+}
+
+Status
+Controller::set_project_tags(ProjectId pid,
+                             const std::vector<std::string>& tags)
+{
+  project::Workspace* w = workspace_(pid);
+  if (!w) {
+    return make_error(Code::NotFound, msg::kProjectNotOpen);
+  }
+  if (w->untitled()) {
+    return make_error(Code::InvalidArgument, msg::kProjectUntitled);
+  }
+  // (the Finder lets a locked file's tags change: so does Valtz)
+  VALTZ_TRY(set_finder_tags(*w->package(), tags));
+  post_state_(pid);
+  return ok_status();
+}
+
+Status
+Controller::set_project_locked(ProjectId pid, bool locked)
+{
+  project::Workspace* w = workspace_(pid);
+  if (!w) {
+    return make_error(Code::NotFound, msg::kProjectNotOpen);
+  }
+  if (w->untitled()) {
+    return make_error(Code::InvalidArgument, msg::kProjectUntitled);
+  }
+  if (locked && w->dirty()) {
+    return make_error(Code::InvalidArgument, msg::kProjectLockEdited,
+                      {{"name", w->project().name()}});
+  }
+  VALTZ_TRY(set_finder_locked(*w->package(), locked));
+  post_state_(pid);
+  return ok_status();
+}
+
+Status
+Controller::duplicate_project(ProjectId pid, const fs::path& package)
+{
+  project::Workspace* w = workspace_(pid);
+  if (!w) {
+    return make_error(Code::NotFound, msg::kProjectNotOpen);
+  }
+  if (w->untitled()) {
+    return make_error(Code::InvalidArgument, msg::kProjectUntitled);
+  }
+  fs::path to = package;
+  if (to.extension() != ".valtz") {
+    to += ".valtz";
+  }
+  std::error_code ec;
+  if (fs::exists(to, ec)) {
+    return make_error(Code::AlreadyExists,
+                      std::format("{} is there already", to.string()));
+  }
+  std::vector<fs::path> made;
+  if (Status st = copy_tree(*w->package(), to, {}, &made); !st.ok()) {
+    fs::remove_all(to, ec);
+    return st;
+  }
+  (void)set_finder_locked(to, false);
+  // A project of its own: a new id, its file's name.
+  const fs::path file = to / "project.cbor";
+  if (fs::exists(file, ec)) {
+    auto doc = project::read_project_file(file);
+    if (!doc.ok()) {
+      fs::remove_all(to, ec);
+      return doc.error();
+    }
+    (*doc)["project"]["id"] = ProjectId::make();
+    (*doc)["project"]["name"] = to.stem().string();
+    if (Status st = project::write_project_file(file, *doc); !st.ok()) {
+      fs::remove_all(to, ec);
+      return st;
+    }
+  }
+  return ok_status();
+}
+
+Json
+Controller::project_file(ProjectId pid) const
+{
+  project::Workspace* w = workspace_(pid);
+  if (!w || w->untitled()) {
+    return Json::object();
+  }
+  const fs::path& p = *w->package();
+  Json tags = Json::array();
+  if (auto t = finder_tags(p); t.ok()) {
+    for (const auto& x : *t) {
+      tags.push_back(x);
+    }
+  }
+  return {{"path", p.string()}, {"folder", p.parent_path().string()},
+          {"tags", std::move(tags)}, {"locked", finder_locked(p)}};
 }
 
 Status
@@ -6627,7 +6810,8 @@ Result<JobId>
 Controller::submit_micro_(JobId id, std::string title, std::string text,
                           std::vector<engine::JobInput> images,
                           int max_new_tokens, MicroReply reply,
-                          bool on_helper)
+                          bool on_helper,
+                          const models::ModelEntry* helper)
 {
   engine::JobSpec spec;
   if (on_helper) {
@@ -6637,7 +6821,7 @@ Controller::submit_micro_(JobId id, std::string title, std::string text,
                         {{"operation", std::string(engine::kOpChat)}});
     }
     VALTZ_ASSIGN(spec, chat_spec_(id, std::move(text), std::move(images),
-                                  max_new_tokens, nullptr));
+                                  max_new_tokens, helper));
   } else {
     const auto* m = micro_model();
     if (!m || !engine_runs_(models::Capability::MicroAgent)) {
@@ -8561,8 +8745,18 @@ Controller::generate_video(GenerateVideoRequest req)
   const bool past = rg.is_object() && std::min(width, height) > above;
   // A continuation too: drafted from the clip's own latents -- a
   // regenerated clip keeps its draft's -- and regenerated as it was.
+  // pi-H3's DWD adapter decodes its last step's FEATURES to frames, no
+  // latent: there is none for a refine to enlarge, nor to keep -- such a
+  // clip is made at its size in one pass.
+  const bool pi_dwd = jget(req.tuning, "pi_h3", false) &&
+                      !jget(req.tuning, "pi_h3_vae", false);
   const models::ModelEntry* refiner =
-      past && req.regenerate.value_or(true) ? refiner_of_(*m) : nullptr;
+      past && !pi_dwd && req.regenerate.value_or(true) ? refiner_of_(*m)
+                                                       : nullptr;
+  if (past && pi_dwd) {
+    VALTZ_LOG_INFO("generate", "pi-H3 DWD past {}P: made at its size in "
+                   "one pass (no latent to refine)", above);
+  }
   if (req.regenerate.value_or(false) && !refiner) {
     if (!past) {
       return make_error(Code::InvalidArgument, msg::kRegenerateNotPast,
@@ -8641,7 +8835,7 @@ Controller::generate_video(GenerateVideoRequest req)
   }
   // Its latents kept with it, asked for where the family keeps them
   // (DESIGN §4e): what a continuation of it may pick up from.
-  if (req.keep_latents && jget(vp, "keeps_latents", false)) {
+  if (req.keep_latents && jget(vp, "keeps_latents", false) && !pi_dwd) {
     r.params["keep_latents"] = true;
   }
   if (req.tensor_parallel.is_object()) {
@@ -13089,7 +13283,7 @@ holds_engine(std::string_view op)
          op == engine::kOpUpscaleImage || op == engine::kOpChat ||
          op == engine::kOpTranscribeAudio || op == engine::kOpExportMedia ||
          op == engine::kOpQuantizeModel || op == engine::kOpSummarizeVideo ||
-         op == engine::kOpSeparateAudio;
+         op == engine::kOpSeparateAudio || op == engine::kOpTrainLora;
 }
 
 // A member's refusal, worded for the person.

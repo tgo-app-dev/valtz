@@ -277,6 +277,9 @@ inline constexpr Message kSplitNeuralEngine{
 inline constexpr Message kSplitNeuralEngineModel{
     "core.split_neural_engine_model",
     "Not with the Neural Engine's share for {model}."};
+inline constexpr Message kSplitPiH3{
+    "core.split_pi_h3",
+    "Made whole: pi-H3's adapter does not run on a split."};
 inline constexpr Message kSplitVdnTaomate{
     "core.split_vdn_taomate",
     "Not with VDN or TaoMate's streaming (TaoMate as a LoRA only splits)."};
@@ -485,6 +488,22 @@ inline constexpr Message kProjectMissingMedia{
     "core.project_missing_media",
     "{count} of the files this project uses are missing, so it can be "
     "looked at but not changed. Reconnect them and open it again."};
+// A project whose file is LOCKED (the Finder's Locked: Get Info, or its
+// title bar's panel): looked at, not changed, until unlocked
+// (Controller::write_guard_; the app asks: Unlock, Duplicate, Cancel).
+inline constexpr Message kProjectLocked{
+    "core.project_locked",
+    "“{name}” is locked: unlock it to change it, or duplicate it."};
+// Locked with changes not saved: they could never be.
+// A package holding the same project as one open -- copied in the Finder
+// -- is not opened beside it: they would be one project (its id).
+inline constexpr Message kProjectSameOpen{
+    "core.project_same_open",
+    "“{name}” is a copy of “{open}”, which is open: close it first, or use "
+    "Duplicate in its title's panel to make a copy that opens beside it."};
+inline constexpr Message kProjectLockEdited{
+    "core.project_lock_edited",
+    "“{name}” has changes not saved: save them first, then lock it."};
 inline constexpr Message kAgentAtWork{
     "core.agent_at_work",
     "The agent is working on this project: it can be looked at but not "
@@ -872,6 +891,43 @@ inline constexpr Message kLocationNoRoom{
 inline constexpr Message kModelsMoveFailed{
     "core.models_move_failed",
     "The models could not be moved to {path}: {why}"};
+inline constexpr Message kTrimEdgeKeyedSpeed{
+    "core.trim_edge_keyed_speed",
+    "Its speed changes along it: set its marks in the Trim panel."};
+inline constexpr Message kTrimEdgeNeedsTimed{
+    "core.trim_edge_needs_timed",
+    "Only a clip, a sound or a composition has marks to drag."};
+inline constexpr Message kTrainNoModel{
+    "core.train_no_model",
+    "{model} does not train LoRAs: choose a model the trainer offers."};
+inline constexpr Message kTrainModelMissing{
+    "core.train_model_missing",
+    "{model} is not downloaded: download it in Settings › Capabilities to "
+    "train on it."};
+inline constexpr Message kTrainNoPictures{
+    "core.train_no_pictures",
+    "Add pictures to train on: drop files or folders on the trainer."};
+inline constexpr Message kTrainNoName{
+    "core.train_no_name",
+    "Name the LoRA: its name is its file's."};
+inline constexpr Message kTrainRunning{
+    "core.train_running",
+    "{name} is training already."};
+inline constexpr Message kTrainNoEncoder{
+    "core.train_no_encoder",
+    "{model} trains with MiniMax H3's text encoder, which is not here: "
+    "download MiniMax H3 FL2VA, Ref2VA or its text encoder in Settings › "
+    "Capabilities."};
+inline constexpr Message kTrainNoCaptioner{
+    "core.train_no_captioner",
+    "No model here sees pictures to caption them: choose an Agent model "
+    "that sees, or download the micro agent (LFM3-VL 2B), in Settings."};
+inline constexpr Message kTrainCaptionFailed{
+    "core.train_caption_failed",
+    "{model} gave no caption for it: try again, or write it."};
+inline constexpr Message kTrainReferenceMissing{
+    "core.train_reference_missing",
+    "{file}'s reference {reference} is not a file."};
 inline constexpr Message kCacheMoveFailed{
     "core.cache_move_failed",
     "The cache could not be moved to {path}: {why}"};

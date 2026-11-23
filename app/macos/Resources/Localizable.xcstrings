@@ -271,6 +271,52 @@
         }
       }
     },
+    "%@ captioned" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "%@ 张有描述"
+          }
+        }
+      }
+    },
+    "%@ clips" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "%@ 个片段"
+          }
+        }
+      }
+    },
+    "%@ copy" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "%@ 副本"
+          }
+        }
+      }
+    },
+    "%@ copy %@" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "%1$@ copy %2$@"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "%@ 副本 %@"
+          }
+        }
+      }
+    },
     "%@ could not be drawn to play." : {
       "localizations" : {
         "zh-Hans" : {
@@ -317,6 +363,16 @@
         }
       }
     },
+    "%@ elapsed" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "已用 %@"
+          }
+        }
+      }
+    },
     "%@ fps" : {
       "localizations" : {
         "zh-Hans" : {
@@ -339,6 +395,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "%1$@ fps 片段，%2$@ fps 时间线"
+          }
+        }
+      }
+    },
+    "%@ frames" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "%@ 帧"
           }
         }
       }
@@ -503,6 +569,16 @@
         }
       }
     },
+    "%@ is not downloaded: download it in Settings › Capabilities." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "%@ 尚未下载：请在“设置 › 能力”中下载。"
+          }
+        }
+      }
+    },
     "%@ is not downloaded: one word at a time" : {
       "localizations" : {
         "zh-Hans" : {
@@ -611,6 +687,16 @@
         }
       }
     },
+    "%@ means" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "%@ 的含义"
+          }
+        }
+      }
+    },
     "%@ needs a Turbo LoRA" : {
       "localizations" : {
         "zh-Hans" : {
@@ -664,6 +750,39 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "%1$@ / %2$@ TFLOP/s"
+          }
+        }
+      }
+    },
+    "%@ of %@ captioned" : {
+      "extractionState" : "stale",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "%1$@ of %2$@ captioned"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "%1$@ / %2$@ 张有描述"
+          }
+        }
+      }
+    },
+    "%@ of %@ samples" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "%1$@ of %2$@ samples"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "%1$@ / %2$@ 个样本"
           }
         }
       }
@@ -790,6 +909,17 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "%1$@ 页 · %2$@"
+          }
+        }
+      }
+    },
+    "%@ pictures" : {
+      "extractionState" : "stale",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "%@ 张图片"
           }
         }
       }
@@ -937,6 +1067,32 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "%1$@ 秒 · %2$@ 帧 · %3$@"
+          }
+        }
+      }
+    },
+    "%@ samples" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "%@ 个样本"
+          }
+        }
+      }
+    },
+    "%@ samples have no caption. Say what %@ stands for, as you would tell someone -- the agent's model then captions each one, calling it %@ and describing everything else." : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "%1$@ samples have no caption. Say what %2$@ stands for, as you would tell someone -- the agent's model then captions each one, calling it %3$@ and describing everything else."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "有 %1$@ 个样本没有描述。请像向别人介绍一样说明 %2$@ 代表什么——智能体的模型随后为每个样本写描述，以 %3$@ 称呼它，并描述其余的一切。"
           }
         }
       }
@@ -1289,6 +1445,22 @@
         }
       }
     },
+    "%@%% of the clip: strength %@" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "%1$@%% of the clip: strength %2$@"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "片段的 %1$@%%：强度 %2$@"
+          }
+        }
+      }
+    },
     "%@'s sound" : {
       "localizations" : {
         "zh-Hans" : {
@@ -1459,6 +1631,23 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "%@：未报告"
+          }
+        }
+      }
+    },
+    "%@:%@ elapsed" : {
+      "extractionState" : "stale",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "%1$@:%2$@ elapsed"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "已用 %1$@:%2$@"
           }
         }
       }
@@ -1694,6 +1883,16 @@
         }
       }
     },
+    "(left out: no caption)" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "（不采用：没有描述）"
+          }
+        }
+      }
+    },
     "(not internal SSD!)" : {
       "extractionState" : "stale",
       "localizations" : {
@@ -1701,6 +1900,57 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "（不在内置固态硬盘上！）"
+          }
+        }
+      }
+    },
+    "(refused: no caption)" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "（拒绝：没有描述）"
+          }
+        }
+      }
+    },
+    "-1: 2% of the run" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "-1：训练的 2%"
+          }
+        }
+      }
+    },
+    "0: the optimizer's own (AdamW 1e-4, Prodigy 1, Lion 3e-5, SGD 1e-2)" : {
+      "extractionState" : "stale",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "0：优化器自己的（AdamW 1e-4、Prodigy 1、Lion 3e-5、SGD 1e-2）"
+          }
+        }
+      }
+    },
+    "0: the optimizer's own (AdamW 1e-4, Prodigy 1, Lion 3e-5, SGD 1e-2); the model's own default where it has one" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "0：优化器自己的（AdamW 1e-4、Prodigy 1、Lion 3e-5、SGD 1e-2）；模型有自己的默认值时用它"
+          }
+        }
+      }
+    },
+    "0: the rank's" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "0：与秩相同"
           }
         }
       }
@@ -1825,12 +2075,32 @@
         }
       }
     },
+    "2 Steps" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "2 步"
+          }
+        }
+      }
+    },
     "2 a second" : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "每秒 2 帧"
+          }
+        }
+      }
+    },
+    "2560 pixels on the long side: drafted at 768P and regenerated" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "长边 2560 像素：先以 768P 生成草稿，再重新生成"
           }
         }
       }
@@ -1871,6 +2141,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "至少 400 万像素"
+          }
+        }
+      }
+    },
+    "4 Steps" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "4 步"
           }
         }
       }
@@ -1947,6 +2227,16 @@
         }
       }
     },
+    "768P: 768 pixels on the short side, 1376 × 768 at 16:9" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "768P：短边 768 像素，16:9 时为 1376 × 768"
+          }
+        }
+      }
+    },
     "8 a second" : {
       "localizations" : {
         "zh-Hans" : {
@@ -1997,6 +2287,26 @@
         }
       }
     },
+    "A Dial steers MiniMax H3: choose an H3 model first" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Dial 用于引导 MiniMax H3：请先选择一个 H3 模型"
+          }
+        }
+      }
+    },
+    "A LoRA Trainer in the ☰ column, above the Log: drop pictures or folders of them, set a trigger word, and train a LoRA for Qwen-Image 2.1 on this Mac. Its checkpoints and previews are kept in the models folder; a stopped training resumes where it stopped. Switched off, the trainer goes; a training at work goes on." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "☰ 栏中、日志上方的 LoRA 训练器：拖入图片或图片文件夹，设置触发词，在这台 Mac 上为 Qwen-Image 2.1 训练 LoRA。检查点和预览保存在模型文件夹中；停止的训练会从停下处继续。关闭后训练器消失；正在进行的训练会继续。"
+          }
+        }
+      }
+    },
     "A Quarter of the Size" : {
       "localizations" : {
         "zh-Hans" : {
@@ -2023,6 +2333,17 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "与助手的对话会交给成员自己的助手。"
+          }
+        }
+      }
+    },
+    "A checkpoint now, with its state, between two steps" : {
+      "extractionState" : "stale",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "现在保存一个检查点及其状态（在两步之间）"
           }
         }
       }
@@ -2179,6 +2500,26 @@
         }
       }
     },
+    "A folder's pictures are taken, in its subfolders too. A .txt beside a picture, named as it is, is its caption." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "文件夹中的图片都会被采用，包括子文件夹。图片旁同名的 .txt 是它的描述。"
+          }
+        }
+      }
+    },
+    "A folder's samples are taken, in its subfolders too, but a folder named references. A .txt beside a sample is its caption, a .refs its references: a file a line." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "会读取文件夹（含子文件夹）中的样本，名为 references 的文件夹除外。样本旁的 .txt 是其描述，.refs 是其参考：每行一个文件。"
+          }
+        }
+      }
+    },
     "A gated model: its license is accepted and a token given in Settings › Capabilities." : {
       "localizations" : {
         "zh-Hans" : {
@@ -2330,6 +2671,16 @@
         }
       }
     },
+    "A new run's folder goes there, named as the LoRA is." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "新训练的文件夹放在那里，以 LoRA 的名称命名。"
+          }
+        }
+      }
+    },
     "A new, blank asset: a composition (a timeline), a still composition, or audio to record into" : {
       "localizations" : {
         "zh-Hans" : {
@@ -2360,6 +2711,16 @@
         }
       }
     },
+    "A picture is one frame: a Dial runs at one strength" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "图片只有一帧：Dial 以单一强度运行"
+          }
+        }
+      }
+    },
     "A picture or a clip on the stage has layers." : {
       "localizations" : {
         "zh-Hans" : {
@@ -2386,6 +2747,37 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "承诺的文件没有送达。"
+          }
+        }
+      }
+    },
+    "A prompt a line, sampled at every checkpoint with the same seed; {trigger} is the trigger word" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "每行一个提示词，每个检查点用相同种子采样；{trigger} 为触发词"
+          }
+        }
+      }
+    },
+    "A run of this name is kept there: Start trains on it." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "那里保留着同名的训练：“开始”会在其基础上继续训练。"
+          }
+        }
+      }
+    },
+    "A sample or a preview is shown here" : {
+      "extractionState" : "stale",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "样本或预览显示在这里"
           }
         }
       }
@@ -2460,12 +2852,43 @@
         }
       }
     },
+    "A strength for the whole clip, or a strength that changes over the clip's time" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "整个片段一个强度，或随片段时间变化的强度"
+          }
+        }
+      }
+    },
     "A task withheld is not offered: the members run it themselves or send it to another member." : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "不共享的任务不会提供给其他成员：它们会自己运行，或交给另一个成员。"
+          }
+        }
+      }
+    },
+    "A training kept: its settings and pictures back here -- ✓ trained, ⏸ paused, to train on" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "已保存的训练：把它的设置和图片放回这里——✓ 已训练，⏸ 已暂停，可继续训练"
+          }
+        }
+      }
+    },
+    "A training kept: its settings and pictures back here -- ✓ trained, ⏸ stopped, to train on" : {
+      "extractionState" : "stale",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "已保存的训练：把它的设置和图片放回这里——✓ 已训练，⏸ 已停止，可继续训练"
           }
         }
       }
@@ -2581,11 +3004,22 @@
       }
     },
     "About 1536 × 1536 pixels" : {
+      "extractionState" : "stale",
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "约 1536 × 1536 像素"
+          }
+        }
+      }
+    },
+    "About 2048 × 2048 pixels: about 4 megapixels" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "约 2048 × 2048 像素：约 400 万像素"
           }
         }
       }
@@ -2596,6 +3030,26 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "约 512 × 512 像素：最快"
+          }
+        }
+      }
+    },
+    "About 832 × 480 at 16:9: the quickest" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "16:9 时约 832 × 480：最快"
+          }
+        }
+      }
+    },
+    "About 960 × 544 at 16:9" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "16:9 时约 960 × 544"
           }
         }
       }
@@ -2650,6 +3104,16 @@
         }
       }
     },
+    "Activations" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "激活值"
+          }
+        }
+      }
+    },
     "Active" : {
       "localizations" : {
         "zh-Hans" : {
@@ -2690,12 +3154,32 @@
         }
       }
     },
+    "AdamW, 8-bit" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "AdamW（8 位）"
+          }
+        }
+      }
+    },
     "Adapter" : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "适配器"
+          }
+        }
+      }
+    },
+    "Add" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "添加"
           }
         }
       }
@@ -2830,6 +3314,17 @@
         }
       }
     },
+    "Add Pictures…" : {
+      "extractionState" : "stale",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "添加图片…"
+          }
+        }
+      }
+    },
     "Add Shape" : {
       "localizations" : {
         "zh-Hans" : {
@@ -2846,6 +3341,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "添加声音"
+          }
+        }
+      }
+    },
+    "Add Tags" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "添加标签"
           }
         }
       }
@@ -2979,6 +3484,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "从文本文件添加歌词"
+          }
+        }
+      }
+    },
+    "Add pictures, or folders of them; a .txt beside a picture is its caption" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "添加图片或图片文件夹；图片旁的 .txt 是它的描述"
           }
         }
       }
@@ -3334,6 +3849,16 @@
         }
       }
     },
+    "All" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "全部"
+          }
+        }
+      }
+    },
     "All of it is in memory already, so nothing came off the drive to time. Test again once other work has used the memory." : {
       "localizations" : {
         "zh-Hans" : {
@@ -3592,6 +4117,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "青色"
+          }
+        }
+      }
+    },
+    "Arithmetic" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "运算"
           }
         }
       }
@@ -4088,6 +4623,26 @@
         }
       }
     },
+    "Attention and feed-forward" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "注意力与前馈"
+          }
+        }
+      }
+    },
+    "Attention only" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "仅注意力"
+          }
+        }
+      }
+    },
     "Audio" : {
       "localizations" : {
         "zh-Hans" : {
@@ -4272,6 +4827,16 @@
         }
       }
     },
+    "Auto captions" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "自动描述"
+          }
+        }
+      }
+    },
     "Auto gives the cache what the conversation leaves. A size holds the cache to it: smaller leaves room for a longer conversation (Agentic Helper › Context: up to %lld tokens with this cache) and for pictures and clips beside it, so it stays loaded through them; larger reads fewer experts from the SSD, so it reads prompts and writes replies faster. For the model's next load." : {
       "localizations" : {
         "zh-Hans" : {
@@ -4425,6 +4990,26 @@
         }
       }
     },
+    "Automatic: about 100 steps a picture for a small set (600 to 3,000), two epochs for a large one" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "自动：小数据集每张图约 100 步（600 至 3,000），大数据集两个轮次"
+          }
+        }
+      }
+    },
+    "Automatic: constant for a small set, cosine from 64 pictures" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "自动：小数据集恒定，从 64 张图起用余弦"
+          }
+        }
+      }
+    },
     "Autotuning" : {
       "localizations" : {
         "zh-Hans" : {
@@ -4557,6 +5142,28 @@
         }
       }
     },
+    "Back to the Picture" : {
+      "extractionState" : "stale",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "回到图片"
+          }
+        }
+      }
+    },
+    "Back to the Sample" : {
+      "extractionState" : "stale",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "回到样本"
+          }
+        }
+      }
+    },
     "Back to the prompt and its generation settings (⇧⌘P)" : {
       "localizations" : {
         "zh-Hans" : {
@@ -4683,6 +5290,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "低频单声道：此频率以下的低频合为一路，居于正中，以上的部分保持原来的声道——关闭，或 20 至 300 Hz。整个图层只有一个，不记录在关键帧中。"
+          }
+        }
+      }
+    },
+    "Batch" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "批大小"
           }
         }
       }
@@ -4887,6 +5504,16 @@
         }
       }
     },
+    "Bucket step" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "分桶步长"
+          }
+        }
+      }
+    },
     "Build" : {
       "localizations" : {
         "zh-Hans" : {
@@ -4903,6 +5530,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "正在忙碌"
+          }
+        }
+      }
+    },
+    "By %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "由 %@ 撰写"
           }
         }
       }
@@ -5053,6 +5690,116 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "能力"
+          }
+        }
+      }
+    },
+    "Caption" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "描述"
+          }
+        }
+      }
+    },
+    "Caption Missing" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "补写描述"
+          }
+        }
+      }
+    },
+    "Caption Them" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "为它们写描述"
+          }
+        }
+      }
+    },
+    "Caption dropout" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "描述丢弃率"
+          }
+        }
+      }
+    },
+    "Caption samples without one" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "为没有描述的样本写描述"
+          }
+        }
+      }
+    },
+    "Caption template" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "描述模板"
+          }
+        }
+      }
+    },
+    "Caption what should stay promptable, and leave the subject to the trigger: it learns only what the captions do not already say." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "描述应当保持可提示的部分，把主体留给触发词：它只学习描述中没有说出的内容。"
+          }
+        }
+      }
+    },
+    "Captioned by %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "描述由 %@ 撰写"
+          }
+        }
+      }
+    },
+    "Captioning %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "正在写描述 %@"
+          }
+        }
+      }
+    },
+    "Captioning the samples: Start waits for them." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "正在为样本写描述：开始会等待它们完成。"
+          }
+        }
+      }
+    },
+    "Captioning…" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "正在写描述…"
           }
         }
       }
@@ -5287,6 +6034,16 @@
         }
       }
     },
+    "Choose" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "选取"
+          }
+        }
+      }
+    },
     "Choose a File or Folder…" : {
       "localizations" : {
         "zh-Hans" : {
@@ -5307,12 +6064,32 @@
         }
       }
     },
+    "Choose a model to train on." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "请选择要训练的模型。"
+          }
+        }
+      }
+    },
     "Choose a quantized %@ already made: the folder holding it (vpipe's prepare-moss-tts-v1.5 writes local/MOSS-TTS-v1.5-8bit)." : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "选择已制作好的量化 %@：存放它的文件夹（vpipe 的 prepare-moss-tts-v1.5 会写入 local/MOSS-TTS-v1.5-8bit）。"
+          }
+        }
+      }
+    },
+    "Choose a resolution at least." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "请至少选择一个分辨率。"
           }
         }
       }
@@ -5363,6 +6140,26 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "选择新项目的存储位置。"
+          }
+        }
+      }
+    },
+    "Choose where the LoRA's folder goes." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "选择 LoRA 文件夹存放的位置。"
+          }
+        }
+      }
+    },
+    "Choose where to move “%@”." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "选择要将“%@”移到的位置。"
           }
         }
       }
@@ -5615,6 +6412,7 @@
       }
     },
     "Click to rename" : {
+      "extractionState" : "stale",
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
@@ -5983,6 +6781,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "即将推出"
+          }
+        }
+      }
+    },
+    "Comma-separated tags shuffled after the first ones kept; each shuffle encoded up front" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "逗号分隔的标签在保留的前几个之后打乱；每次打乱预先编码"
           }
         }
       }
@@ -6393,6 +7201,16 @@
         }
       }
     },
+    "Constant" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "恒定"
+          }
+        }
+      }
+    },
     "Context" : {
       "localizations" : {
         "zh-Hans" : {
@@ -6700,6 +7518,26 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "把每个修复后的帧的色彩校正到其源帧，使放大后的图层保持它所替换的视频片段的色彩。FlashVSR 1.1 把每个通道的均值和离散度调到源帧的数值（AdaIN）；FlashVSR+ 取源帧的低频部分，保留自身的细节（小波校正）。"
+          }
+        }
+      }
+    },
+    "Cosine" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "余弦"
+          }
+        }
+      }
+    },
+    "Cosine with restarts" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "带重启的余弦"
           }
         }
       }
@@ -7118,6 +7956,17 @@
         }
       }
     },
+    "DWD, Decoding Without a Decoder: at the last step the DiT's features become the frames through the adapter's own pixel head, and the video VAE is never loaded -- a lighter decode (3.1 GB against 5.8 at 832 × 480 × 73). Off, the clip is decoded by the VAE as usual. With it, a clip past 768P is made at its size in one pass (there is no latent to regenerate) and keeps no latents." : {
+      "extractionState" : "stale",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "DWD（不用解码器解码）：在最后一步，DiT 的特征经适配器自带的像素头直接变成画面，完全不加载视频 VAE——解码更轻（832 × 480 × 73 时为 3.1 GB，对比 5.8 GB）。关闭时，片段照常由 VAE 解码。开启时，超过 768P 的片段会一次按目标尺寸生成（没有可再生的潜变量），也不保留潜变量。"
+          }
+        }
+      }
+    },
     "Damping" : {
       "localizations" : {
         "zh-Hans" : {
@@ -7244,6 +8093,27 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "解码"
+          }
+        }
+      }
+    },
+    "Decode with the VAE" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "用 VAE 解码"
+          }
+        }
+      }
+    },
+    "Decode without the VAE (DWD)" : {
+      "extractionState" : "stale",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "不经 VAE 解码（DWD）"
           }
         }
       }
@@ -7961,6 +8831,16 @@
         }
       }
     },
+    "Doubled or halved" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "加倍或减半"
+          }
+        }
+      }
+    },
     "Download" : {
       "localizations" : {
         "zh-Hans" : {
@@ -8352,6 +9232,16 @@
         }
       }
     },
+    "Drag the stage into the prompt box to make what it shows a reference" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "将舞台拖入提示框，以其所显示的内容作为参考"
+          }
+        }
+      }
+    },
     "Drag to reorder: the prompt's tags follow." : {
       "localizations" : {
         "zh-Hans" : {
@@ -8489,6 +9379,16 @@
         }
       }
     },
+    "Drop LoRA, DiT or VAE weights, or a Dial, on this panel: .safetensors files or folders, or a Draw Things .ckpt of a DiT." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "将 LoRA、DiT 或 VAE 权重，或 Dial，拖放到此面板：.safetensors 文件或文件夹，或 Draw Things 的 DiT .ckpt。"
+          }
+        }
+      }
+    },
     "Drop a picture or a clip on a layer to show it there; clips start with the timeline. Each layer's adjustments, crop and turn are keyed on the clip's timeline: select a layer, then set its keys." : {
       "extractionState" : "stale",
       "localizations" : {
@@ -8531,12 +9431,52 @@
         }
       }
     },
+    "Drop pictures or folders here" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "将图片或文件夹拖到这里"
+          }
+        }
+      }
+    },
+    "Drop pictures or folders of them here." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "请将图片或图片文件夹拖到这里。"
+          }
+        }
+      }
+    },
     "Drop pictures, clips and sounds here" : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "将图片、片段和声音拖放到这里"
+          }
+        }
+      }
+    },
+    "Drop pictures, clips or folders here" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "将图片、片段或文件夹拖到这里"
+          }
+        }
+      }
+    },
+    "Drop pictures, clips or folders of them here." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "请将图片、片段或包含它们的文件夹拖到这里。"
           }
         }
       }
@@ -8641,6 +9581,16 @@
         }
       }
     },
+    "EMA" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "EMA"
+          }
+        }
+      }
+    },
     "EQ" : {
       "localizations" : {
         "zh-Hans" : {
@@ -8667,6 +9617,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "每个通道的均值与离散度对齐到原图"
+          }
+        }
+      }
+    },
+    "Each clip, put on 24 fps, is cut into windows of this many frames (17n + 5, what H3's video VAE makes); a clip takes the longest it fills" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "每个片段转为 24 fps 后切成这么多帧的窗口（17n + 5，即 H3 视频 VAE 的帧数）；片段取其能填满的最长窗口"
           }
         }
       }
@@ -8752,6 +9712,46 @@
         }
       }
     },
+    "Each picture also encoded flipped left to right" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "每张图片也编码一份左右翻转的副本"
+          }
+        }
+      }
+    },
+    "Each picture encoded at every size chosen, in buckets of its shape: several sizes help a LoRA learned from few pictures; they cost encode time only" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "每张图片按所选的每个尺寸、依其形状分桶编码：多个尺寸有助于少量图片训练的 LoRA 泛化；只增加编码时间"
+          }
+        }
+      }
+    },
+    "Each picture's passes an epoch" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "每张图片每个轮次的遍数"
+          }
+        }
+      }
+    },
+    "Each sample added without a caption is captioned by the agent's model as it comes; one you type is never replaced" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "每个没有描述的新样本都会由智能体的模型自动写描述；你输入的描述不会被替换"
+          }
+        }
+      }
+    },
     "Each sound (or clip) in the prompt is a speaker's voice, in order -- the first is the first name to speak. It is cloned from its first seconds and the words said in them, which Valtz hears first when it has no transcript" : {
       "localizations" : {
         "zh-Hans" : {
@@ -8778,6 +9778,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "每个目标各自保留"
+          }
+        }
+      }
+    },
+    "Each window's stretch of the clip's sound trained beside its picture; a clip without one trains on its picture alone" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "每个窗口对应的那段声音与画面一起训练；没有声音的片段只训练画面"
           }
         }
       }
@@ -8913,6 +9923,16 @@
         }
       }
     },
+    "Edited from" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "编辑自"
+          }
+        }
+      }
+    },
     "Editor" : {
       "localizations" : {
         "zh-Hans" : {
@@ -8973,6 +9993,16 @@
         }
       }
     },
+    "Encode the pictures, then train" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "先编码图片，然后训练"
+          }
+        }
+      }
+    },
     "Encoder" : {
       "localizations" : {
         "zh-Hans" : {
@@ -8983,12 +10013,42 @@
         }
       }
     },
+    "Encoding the dataset" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "正在编码数据集"
+          }
+        }
+      }
+    },
     "End the session; what it made stays" : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "结束会话；已做出的内容保留"
+          }
+        }
+      }
+    },
+    "Ended at step %@: its adapter is kept, and Start trains afresh." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "已在第 %@ 步结束：适配器已保留，“开始”会重新训练。"
+          }
+        }
+      }
+    },
+    "Ended: its adapter is kept, and Start trains afresh." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "已结束：适配器已保留，“开始”会重新训练。"
           }
         }
       }
@@ -9131,6 +10191,16 @@
         }
       }
     },
+    "Epochs" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "轮次"
+          }
+        }
+      }
+    },
     "Equalizer" : {
       "localizations" : {
         "zh-Hans" : {
@@ -9217,6 +10287,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "每秒"
+          }
+        }
+      }
+    },
+    "Every step" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "所有步"
           }
         }
       }
@@ -9398,6 +10478,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "吸管"
+          }
+        }
+      }
+    },
+    "FL2VA's tasks by weight: each clip window draws one -- its own first and last frames the keyframes, shown to the text encoder too" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "FL2VA 的任务及其权重：每个片段窗口抽取一种——以其首帧和尾帧为关键帧，并同时提供给文本编码器"
           }
         }
       }
@@ -9724,6 +10814,16 @@
         }
       }
     },
+    "First and last" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "首帧和尾帧"
+          }
+        }
+      }
+    },
     "First and last frames · %@" : {
       "localizations" : {
         "zh-Hans" : {
@@ -10040,12 +11140,32 @@
         }
       }
     },
+    "Four steps, or two -- each its own adapter, a download of its own. The release finds four the better clip; two is a quick draft." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "四步或两步——各是单独的适配器，需单独下载。发布方认为四步的片段更好；两步适合快速草稿。"
+          }
+        }
+      }
+    },
     "Four times made, fitted down: finer detail, more time" : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "先做四倍再缩小：细节更细，耗时更长"
+          }
+        }
+      }
+    },
+    "Four, or two for a draft" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "四步，或用两步做草稿"
           }
         }
       }
@@ -10252,6 +11372,16 @@
         }
       }
     },
+    "From a first frame" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "从首帧"
+          }
+        }
+      }
+    },
     "From frame %@" : {
       "localizations" : {
         "zh-Hans" : {
@@ -10308,6 +11438,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "从系统音频"
+          }
+        }
+      }
+    },
+    "From words" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "从文字"
           }
         }
       }
@@ -10854,6 +11994,16 @@
         }
       }
     },
+    "Gradient clip" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "梯度裁剪"
+          }
+        }
+      }
+    },
     "Gradient: linear or radial, in place of the fill" : {
       "localizations" : {
         "zh-Hans" : {
@@ -11076,6 +12226,16 @@
         }
       }
     },
+    "Hide Markup" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "隐藏标记"
+          }
+        }
+      }
+    },
     "Hide Markup Toolbar" : {
       "localizations" : {
         "zh-Hans" : {
@@ -11142,6 +12302,26 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "隐藏选项"
+          }
+        }
+      }
+    },
+    "Hide the Compare" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "隐藏对比"
+          }
+        }
+      }
+    },
+    "Hide the Inspector" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "隐藏检查器"
           }
         }
       }
@@ -11659,12 +12839,32 @@
         }
       }
     },
+    "How many windows a clip yields, spread evenly over it; each step trains one" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "每个片段均匀取出的窗口数；每步训练其中一个"
+          }
+        }
+      }
+    },
     "How much of the draft the refine keeps. It puts the enlarged draft back to a level of noise and denoises it again in three steps. Keep the Draft starts at 0.7: in a test at 1920×1088, a woman's face and the words on a sign stayed the draft's, their detail sharper. NVIDIA's Recipe, Open-H3-Regenerate-2K as released, starts at 0.909, keeping about 9% of the draft: it redraws more, and in the same test it gave the woman another face and garbled the sign. The refine follows the prompt's words only weakly either way, so they do not bring back what it redraws." : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "精修保留多少草稿。它把放大后的草稿重新加噪到某一噪声水平，再用三步去噪。“保留草稿”从 0.7 开始：在 1920×1088 的测试中，一位女性的面孔和招牌上的文字都保持草稿原样，细节更清晰。“NVIDIA 原版方案”即 Open-H3-Regenerate-2K 发布时的设置，从 0.909 开始，只保留约 9% 的草稿：它重绘得更多，在同一测试中把那位女性画成了另一张脸，招牌文字也变得错乱。无论哪种方式，精修对提示词的遵循都很弱，因此提示词无法找回被重绘的内容。"
+          }
+        }
+      }
+    },
+    "How often a sample trains against the empty prompt, which keeps guidance working" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "样本以空提示词训练的频率，可保持引导有效"
           }
         }
       }
@@ -11696,6 +12896,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "文字各行在文本框中的对齐方式（或形状中文字的对齐方式）"
+          }
+        }
+      }
+    },
+    "How the trigger joins a caption: {trigger} and {caption}" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "触发词如何与描述连接：{trigger} 与 {caption}"
           }
         }
       }
@@ -12247,6 +13457,16 @@
         }
       }
     },
+    "It has changes not saved: save them first, then lock it." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "它有未存储的更改：请先存储，再锁定。"
+          }
+        }
+      }
+    },
     "It holds about %@: %@ always in memory, a %@ cache of its %@ of experts -- the rest read from the SSD as they are picked -- and its conversation, up to %lld tokens, about %@." : {
       "localizations" : {
         "en" : {
@@ -12479,6 +13699,16 @@
         }
       }
     },
+    "Its name, and where it is saved" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "它的名称及保存位置"
+          }
+        }
+      }
+    },
     "Its own head drafts ahead" : {
       "localizations" : {
         "zh-Hans" : {
@@ -12529,12 +13759,33 @@
         }
       }
     },
+    "Its pixel head makes the frames: recommended" : {
+      "extractionState" : "stale",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "由其像素头生成画面：推荐"
+          }
+        }
+      }
+    },
     "Its publisher asks you to accept its license on Hugging Face before you download it." : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "其发布者要求你先在 Hugging Face 上接受其许可，然后才能下载。"
+          }
+        }
+      }
+    },
+    "Its references" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "其参考"
           }
         }
       }
@@ -12779,6 +14030,16 @@
         }
       }
     },
+    "Keep every block" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "保留每个块"
+          }
+        }
+      }
+    },
     "Keep for continuing" : {
       "localizations" : {
         "zh-Hans" : {
@@ -12933,6 +14194,16 @@
         }
       }
     },
+    "Kept, a step is about a quarter faster and takes far more memory (21.6 GB at 1024² for Qwen-Image 2.1); Automatic keeps them where they fit" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "保留时每步约快四分之一，但占用多得多的内存（Qwen-Image 2.1 在 1024² 时 21.6 GB）；自动会在放得下时保留"
+          }
+        }
+      }
+    },
     "Key Layer over Time" : {
       "localizations" : {
         "zh-Hans" : {
@@ -13025,6 +14296,16 @@
         }
       }
     },
+    "Keyframe tasks" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "关键帧任务"
+          }
+        }
+      }
+    },
     "Keyframe window" : {
       "localizations" : {
         "zh-Hans" : {
@@ -13061,6 +14342,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "关键帧："
+          }
+        }
+      }
+    },
+    "Lakonik's pi-H3: pi-Flow v2 distillations of MiniMax H3 FL2VA into four or two steps, for a clip from words, a first frame, a last frame or both, with its soundtrack. Each is an adapter trained on Comfy-Org's PRUNED FL2VA DiT, which runs in place of FL2VA's own (21 GB at int8; its text encoder and VAEs are FL2VA's). Its steps, its grid and its shifts are its own; it takes a LoRA slot in place of the Turbo LoRA, and HyperFlow, Pika H3 Flex, TaoMate, VDN and MotionCache are off with it. Not on a clip split with a paired Mac. No Favor preset turns it on." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Lakonik 的 pi-H3：将 MiniMax H3 FL2VA 蒸馏为四步或两步的 pi-Flow v2，可从文字、首帧、尾帧或首尾帧生成带声音的片段。每个都是在 Comfy-Org 的剪枝版 FL2VA DiT 上训练的适配器，该 DiT 代替 FL2VA 自带的运行（int8 为 21 GB；文本编码器和 VAE 来自 FL2VA）。步数、网格和偏移都是它自己的；它占用 Turbo LoRA 的 LoRA 槽位，HyperFlow、Pika H3 Flex、TaoMate、VDN 和 MotionCache 随之关闭。不能用于与配对 Mac 拆分的片段。没有任何 Favor 预设会开启它。"
           }
         }
       }
@@ -13338,6 +14629,16 @@
         }
       }
     },
+    "Learning rate" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "学习率"
+          }
+        }
+      }
+    },
     "Least" : {
       "localizations" : {
         "zh-Hans" : {
@@ -13374,6 +14675,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "留在原处"
+          }
+        }
+      }
+    },
+    "Leave it out" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "不采用"
           }
         }
       }
@@ -13760,12 +15071,42 @@
         }
       }
     },
+    "LoRA Trainer" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "LoRA 训练器"
+          }
+        }
+      }
+    },
     "LoRA only" : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "仅 LoRA"
+          }
+        }
+      }
+    },
+    "LoRA+ ratio" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "LoRA+ 比例"
+          }
+        }
+      }
+    },
+    "LoRA+: the B factors learn this many times faster than the A factors (16 is the paper's); 1 off" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "LoRA+：B 因子的学习速度是 A 因子的这么多倍（论文用 16）；1 为关闭"
           }
         }
       }
@@ -13870,12 +15211,32 @@
         }
       }
     },
+    "Locked, the file is not changed: Valtz asks first, as the Finder's Locked does." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "锁定后文件不会被更改：Valtz 会先询问，与访达的“已锁定”一样。"
+          }
+        }
+      }
+    },
     "Log" : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "日志"
+          }
+        }
+      }
+    },
+    "Logit-normal" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Logit 正态"
           }
         }
       }
@@ -14056,6 +15417,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "歌词"
+          }
+        }
+      }
+    },
+    "M4 series: the large GEMMs split with the Neural Engine -- it pays at 1024²" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "M4 系列：大型 GEMM 与神经网络引擎分担——在 1024² 时有收益"
           }
         }
       }
@@ -14756,6 +16127,16 @@
         }
       }
     },
+    "Mirrored copies" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "镜像副本"
+          }
+        }
+      }
+    },
     "Missing" : {
       "localizations" : {
         "zh-Hans" : {
@@ -14937,6 +16318,16 @@
         }
       }
     },
+    "More controls" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "更多控制"
+          }
+        }
+      }
+    },
     "MotionCache" : {
       "localizations" : {
         "zh-Hans" : {
@@ -14953,6 +16344,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "鼠标"
+          }
+        }
+      }
+    },
+    "Move" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "移动"
           }
         }
       }
@@ -15233,6 +16634,26 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "为提示词及其生成内容命名"
+          }
+        }
+      }
+    },
+    "Name the LoRA." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "请为 LoRA 命名。"
+          }
+        }
+      }
+    },
+    "Name, tags, where it is, locked" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "名称、标签、位置、锁定"
           }
         }
       }
@@ -15709,6 +17130,26 @@
         }
       }
     },
+    "No caption" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "无描述"
+          }
+        }
+      }
+    },
+    "No caption: the trigger alone" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "无描述：仅触发词"
+          }
+        }
+      }
+    },
     "No clip is split now. While one is, its partial sums cross here, each way at most what the cables carry." : {
       "localizations" : {
         "zh-Hans" : {
@@ -15841,6 +17282,26 @@
         }
       }
     },
+    "No model here sees pictures" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "此处没有能看图的模型"
+          }
+        }
+      }
+    },
+    "No model here sees pictures to caption them: choose an Agent model that sees, or download the micro agent (LFM3-VL 2B), in Settings." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "此处没有能看图并写描述的模型：请在“设置”中选择能看图的智能体模型，或下载微型智能体（LFM3-VL 2B）。"
+          }
+        }
+      }
+    },
     "No model is kept loaded now: each job loads what it needs and lets it go when it ends." : {
       "localizations" : {
         "zh-Hans" : {
@@ -15921,6 +17382,28 @@
         }
       }
     },
+    "No pictures" : {
+      "extractionState" : "stale",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "没有图片"
+          }
+        }
+      }
+    },
+    "No preview yet" : {
+      "extractionState" : "stale",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "尚无预览"
+          }
+        }
+      }
+    },
     "No prompt yet" : {
       "localizations" : {
         "zh-Hans" : {
@@ -15957,6 +17440,27 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "不加混响：所有关键帧中的混合、衰减和阻尼恢复原样，房间也恢复原样"
+          }
+        }
+      }
+    },
+    "No sample selected" : {
+      "extractionState" : "stale",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "未选择样本"
+          }
+        }
+      }
+    },
+    "No samples" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "没有样本"
           }
         }
       }
@@ -16001,6 +17505,16 @@
         }
       }
     },
+    "Noise levels" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "噪声水平"
+          }
+        }
+      }
+    },
     "None" : {
       "localizations" : {
         "zh-Hans" : {
@@ -16041,6 +17555,16 @@
         }
       }
     },
+    "None: it trains from the words alone" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "无：仅从文字训练"
+          }
+        }
+      }
+    },
     "None: made from the words. Link pictures with their (+): the first is the one edited." : {
       "localizations" : {
         "zh-Hans" : {
@@ -16077,6 +17601,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "正常"
+          }
+        }
+      }
+    },
+    "Not Now" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "以后再说"
           }
         }
       }
@@ -16277,6 +17811,17 @@
         }
       }
     },
+    "Not readable" : {
+      "extractionState" : "stale",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "无法读取"
+          }
+        }
+      }
+    },
     "Not rotated: a little faster, less exact" : {
       "localizations" : {
         "zh-Hans" : {
@@ -16303,6 +17848,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "本机不运行此任务"
+          }
+        }
+      }
+    },
+    "Not saved" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "未存储"
           }
         }
       }
@@ -16523,6 +18078,26 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "关闭"
+          }
+        }
+      }
+    },
+    "Off -- the release's recommendation -- pi-H3's DWD adapter runs (Decoding Without a Decoder): at the last step the DiT's features become the frames through the adapter's own pixel head, and the video VAE is never loaded, a lighter decode (3.1 GB against 5.8 at 832 × 480 × 73); a clip past 768P is then made at its size in one pass (there is no latent to regenerate) and keeps no latents. On, its VAE-decoded adapter runs and the clip is decoded as usual." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "关闭（发布方的推荐）时运行 pi-H3 的 DWD 适配器（不用解码器解码）：在最后一步，DiT 的特征经适配器自带的像素头直接变成画面，完全不加载视频 VAE，解码更轻（832 × 480 × 73 时为 3.1 GB，对比 5.8 GB）；超过 768P 的片段会一次按目标尺寸生成（没有可再生的潜变量），也不保留潜变量。开启时运行由 VAE 解码的适配器，片段照常解码。"
+          }
+        }
+      }
+    },
+    "Off: DWD, its pixel head makes the frames (recommended)" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "关闭：DWD，由其像素头生成画面（推荐）"
           }
         }
       }
@@ -17140,6 +18715,16 @@
         }
       }
     },
+    "Optimizer" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "优化器"
+          }
+        }
+      }
+    },
     "Optional: its 2x model" : {
       "localizations" : {
         "zh-Hans" : {
@@ -17246,6 +18831,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "测试期间有其他工作在运行并共用磁盘：结果可能偏低。"
+          }
+        }
+      }
+    },
+    "Other…" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "其他…"
           }
         }
       }
@@ -17578,12 +19173,32 @@
         }
       }
     },
+    "Pause: its state is kept, and Resume trains on from there" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "暂停：状态会保留，“继续”会从那里接着训练"
+          }
+        }
+      }
+    },
     "Paused" : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "已暂停"
+          }
+        }
+      }
+    },
+    "Paused at step %@: Resume trains on from there." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "已在第 %@ 步暂停：“继续”会从那里接着训练。"
           }
         }
       }
@@ -17738,6 +19353,26 @@
         }
       }
     },
+    "Pictures or clips it is made from, named <Picture 1>, <Video 1> ... in its caption as the model reads them" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "它所依据的图片或片段，在描述中按模型的读法称为 <Picture 1>、<Video 1>……"
+          }
+        }
+      }
+    },
+    "Pictures wider (or taller) than this are cropped" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "比此更宽（或更高）的图片会被裁剪"
+          }
+        }
+      }
+    },
     "Pictures, clips and models in Desktop, Documents, Downloads or on an external or network disk: imported, linked or saved there. macOS asks the first time for each place." : {
       "localizations" : {
         "zh-Hans" : {
@@ -17754,6 +19389,17 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "放入 Valtz 的图片、视频和声音，以及在这里生成的一切，都列在这里。"
+          }
+        }
+      }
+    },
+    "Pictures, or folders of them; a .txt beside a picture is its caption" : {
+      "extractionState" : "stale",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "图片或图片文件夹；图片旁的 .txt 是它的描述"
           }
         }
       }
@@ -18228,12 +19874,42 @@
         }
       }
     },
+    "Preview Now" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "立即预览"
+          }
+        }
+      }
+    },
     "Previewing a RefMod isn't supported yet. To use “%@”, drag it into the prompt's row." : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "暂不支持预览 RefMod。要使用“%@”，请把它拖到提示词的素材行中。"
+          }
+        }
+      }
+    },
+    "Previews" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "预览"
+          }
+        }
+      }
+    },
+    "Previews come at each checkpoint" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "每个检查点会生成预览"
           }
         }
       }
@@ -18408,6 +20084,16 @@
         }
       }
     },
+    "Progress" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "进度"
+          }
+        }
+      }
+    },
     "Project" : {
       "localizations" : {
         "zh-Hans" : {
@@ -18575,6 +20261,26 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "提示词 · 尚未用于生成"
+          }
+        }
+      }
+    },
+    "Proof on Dark" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "在深色背景上校样"
+          }
+        }
+      }
+    },
+    "Proof on Light" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "在浅色背景上校样"
           }
         }
       }
@@ -18882,6 +20588,16 @@
         }
       }
     },
+    "Rank" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "秩"
+          }
+        }
+      }
+    },
     "Rate" : {
       "localizations" : {
         "zh-Hans" : {
@@ -19064,6 +20780,27 @@
         }
       }
     },
+    "Ready: Start Training encodes the pictures, then trains." : {
+      "extractionState" : "stale",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "就绪：“开始训练”会先编码图片，然后训练。"
+          }
+        }
+      }
+    },
+    "Ready: Start encodes the pictures, then trains." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "就绪：“开始”会先编码图片，然后训练。"
+          }
+        }
+      }
+    },
     "Rec. 2020" : {
       "localizations" : {
         "zh-Hans" : {
@@ -19110,6 +20847,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "从 %@ 接收"
+          }
+        }
+      }
+    },
+    "Recompute each block" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "逐块重算"
           }
         }
       }
@@ -19320,6 +21067,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "精修起点"
+          }
+        }
+      }
+    },
+    "Refuse" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "拒绝"
           }
         }
       }
@@ -19696,6 +21453,16 @@
         }
       }
     },
+    "Remove the selected pictures" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "移除所选图片"
+          }
+        }
+      }
+    },
     "Remove this colour" : {
       "localizations" : {
         "zh-Hans" : {
@@ -19722,6 +21489,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "移除此页，以及仅在此页上的图层"
+          }
+        }
+      }
+    },
+    "Remove “%@”?" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "移除“%@”？"
           }
         }
       }
@@ -19926,6 +21703,16 @@
         }
       }
     },
+    "Repeats" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "重复"
+          }
+        }
+      }
+    },
     "Replace this layer by the composition's own layers, placed where it shows them" : {
       "localizations" : {
         "zh-Hans" : {
@@ -20022,6 +21809,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "将画布改为其尺寸"
+          }
+        }
+      }
+    },
+    "Resolutions" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "分辨率"
           }
         }
       }
@@ -20183,6 +21980,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "从 %@ 继续下载"
+          }
+        }
+      }
+    },
+    "Resume the training from where it was paused" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "从暂停处继续训练"
           }
         }
       }
@@ -20569,12 +22376,42 @@
         }
       }
     },
+    "Sample" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "样本"
+          }
+        }
+      }
+    },
     "Sample rate" : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "采样率"
+          }
+        }
+      }
+    },
+    "Samples" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "样本"
+          }
+        }
+      }
+    },
+    "Samples an optimizer step: run one after another, they cost time, not memory" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "每个优化步的样本数：依次运行，只花时间，不占内存"
           }
         }
       }
@@ -20639,6 +22476,17 @@
         }
       }
     },
+    "Save Now" : {
+      "extractionState" : "stale",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "立即保存"
+          }
+        }
+      }
+    },
     "Save Project" : {
       "localizations" : {
         "zh-Hans" : {
@@ -20679,12 +22527,42 @@
         }
       }
     },
+    "Save a checkpoint now, with its state, between two steps" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "现在保存一个检查点及其状态（在两步之间）"
+          }
+        }
+      }
+    },
+    "Save every" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "保存间隔"
+          }
+        }
+      }
+    },
     "Save or share the image" : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "存储或共享图像"
+          }
+        }
+      }
+    },
+    "Save the project first." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "请先存储项目。"
           }
         }
       }
@@ -20895,6 +22773,26 @@
         }
       }
     },
+    "Search Samples" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "搜索样本"
+          }
+        }
+      }
+    },
+    "Search the samples by file name and caption" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "按文件名和描述搜索样本"
+          }
+        }
+      }
+    },
     "Seconds" : {
       "localizations" : {
         "zh-Hans" : {
@@ -20961,6 +22859,27 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "在时间线或“图层”中选择一个图层以更改它"
+          }
+        }
+      }
+    },
+    "Select a picture to see it and its caption" : {
+      "extractionState" : "stale",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "选择一张图片以查看它及其描述"
+          }
+        }
+      }
+    },
+    "Select a sample in Samples" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "请在“样本”中选择一个样本"
           }
         }
       }
@@ -21396,6 +23315,16 @@
         }
       }
     },
+    "Shifted" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "偏移"
+          }
+        }
+      }
+    },
     "Show A" : {
       "localizations" : {
         "zh-Hans" : {
@@ -21532,6 +23461,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "收起"
+          }
+        }
+      }
+    },
+    "Show Markup" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "显示标记"
           }
         }
       }
@@ -21693,6 +23632,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "显示助手的速度"
+          }
+        }
+      }
+    },
+    "Show the Inspector" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "显示检查器"
           }
         }
       }
@@ -21883,6 +23832,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "显示内容"
+          }
+        }
+      }
+    },
+    "Shuffle tags" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "打乱标签"
           }
         }
       }
@@ -22239,6 +24198,16 @@
         }
       }
     },
+    "Sound's loss" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "声音损失"
+          }
+        }
+      }
+    },
     "Sound: %@" : {
       "localizations" : {
         "zh-Hans" : {
@@ -22552,6 +24521,26 @@
         }
       }
     },
+    "Start Over…" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "重新开始…"
+          }
+        }
+      }
+    },
+    "Start Training" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "开始训练"
+          }
+        }
+      }
+    },
     "Start a new anonymous project?" : {
       "extractionState" : "stale",
       "localizations" : {
@@ -22675,6 +24664,16 @@
         }
       }
     },
+    "Steer the clip with this Dial" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "用此 Dial 引导片段"
+          }
+        }
+      }
+    },
     "Step %lld of %lld" : {
       "localizations" : {
         "en" : {
@@ -22717,6 +24716,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "步数"
+          }
+        }
+      }
+    },
+    "Steps between checkpoints, each with its previews; 0 automatic (250 on a small set)" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "检查点之间的步数，每个都带预览；0 为自动（小数据集为 250）"
           }
         }
       }
@@ -22788,6 +24797,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "停止（⌘.）"
+          }
+        }
+      }
+    },
+    "Stop Training" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "停止训练"
           }
         }
       }
@@ -22882,6 +24901,27 @@
         }
       }
     },
+    "Stop: the adapter and its state are kept, and Start with the same name trains on from there" : {
+      "extractionState" : "stale",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "停止：适配器及其状态会保留，用同一名称开始会从那里继续训练"
+          }
+        }
+      }
+    },
+    "Stop: the run ends, its adapter kept -- Start then trains afresh" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "停止：训练结束，适配器保留——之后“开始”会重新训练"
+          }
+        }
+      }
+    },
     "Stop: the take goes on the timeline where it was heard" : {
       "localizations" : {
         "zh-Hans" : {
@@ -22898,6 +24938,17 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "已停止"
+          }
+        }
+      }
+    },
+    "Stopped at step %@: its state is kept — Start with the same name trains on from there." : {
+      "extractionState" : "stale",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "已在第 %@ 步停止：状态已保留——用同一名称开始会从那里继续训练。"
           }
         }
       }
@@ -23152,6 +25203,26 @@
         }
       }
     },
+    "Tags" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "标签"
+          }
+        }
+      }
+    },
+    "Tags kept first" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "优先保留的标签"
+          }
+        }
+      }
+    },
     "Take %@ added at %@" : {
       "localizations" : {
         "en" : {
@@ -23208,12 +25279,32 @@
         }
       }
     },
+    "Take it out" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "移除"
+          }
+        }
+      }
+    },
     "Take it out of the row" : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "从参考行中移除"
+          }
+        }
+      }
+    },
+    "Take this Dial off the list" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "将此 Dial 从列表中移除"
           }
         }
       }
@@ -23604,6 +25695,27 @@
         }
       }
     },
+    "The LoRA's file is <name>.safetensors, in the models folder's trained/<name>. A stopped training of that name trains on from where it stopped." : {
+      "extractionState" : "stale",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "LoRA 的文件为 <name>.safetensors，位于模型文件夹的 trained/<name>。同名的已停止训练会从停下处继续。"
+          }
+        }
+      }
+    },
+    "The Models Folder" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "模型文件夹"
+          }
+        }
+      }
+    },
     "The Neural Engine's int8 runs it too" : {
       "localizations" : {
         "zh-Hans" : {
@@ -23690,6 +25802,26 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "代理正在处理此项目：在它完成之前，不会在其上绘制任何内容。"
+          }
+        }
+      }
+    },
+    "The agent's model captions the samples without one" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "智能体的模型为没有描述的样本写描述"
+          }
+        }
+      }
+    },
+    "The agent's model is shown each sample -- a clip as three frames -- and writes a sentence that starts with the trigger: what it does, where, the light and the framing, never the subject's own look." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "智能体的模型会看到每个样本（片段为三帧），并写一句以触发词开头的描述：它在做什么、在哪里、光线和构图，绝不描述主体本身的外观。"
           }
         }
       }
@@ -24011,6 +26143,16 @@
         }
       }
     },
+    "The gradients' global norm held to it; 0 none" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "梯度的全局范数被限制在此值；0 为不限制"
+          }
+        }
+      }
+    },
     "The helper reads a conversation up to its context. Auto gives it as much of the model’s own as this Mac’s memory holds, its words kept beside the model; less leaves more memory for the pictures. Past it, the agent compacts the conversation: the model writes notes on the work so far, and goes on from them and its latest turns. Switched off, a session stops there. For sessions started after a change; the Agent is in Settings › Experimental." : {
       "localizations" : {
         "zh-Hans" : {
@@ -24071,6 +26213,16 @@
         }
       }
     },
+    "The layer is taken off the timeline. Undo brings it back." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "该图层将从时间线上移除。撤销可以恢复它。"
+          }
+        }
+      }
+    },
     "The layer's alpha: 100% as it is, lower to let what is under it show through, 0% clear. ⌥ for finer steps; double-click for 100%." : {
       "localizations" : {
         "zh-Hans" : {
@@ -24111,12 +26263,42 @@
         }
       }
     },
+    "The loss at each step, and its moving mean" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "每步的损失及其移动平均"
+          }
+        }
+      }
+    },
+    "The loss is drawn here, step by step, as it trains" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "训练时，损失会在这里逐步绘出"
+          }
+        }
+      }
+    },
     "The lower limit applies once the work under way ends." : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "较低的上限会在当前工作结束后生效。"
+          }
+        }
+      }
+    },
+    "The matrix cores' int8 GEMMs, forward and backward: about 6% faster at 1024² on an M5, a short run learning 98% of what bf16 does" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "矩阵核心的 int8 GEMM，前向与反向：在 M5 上 1024² 约快 6%，短训练学到 bf16 的 98%"
           }
         }
       }
@@ -24342,6 +26524,16 @@
         }
       }
     },
+    "The picture it was edited from (the first), and any others it is made from" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "它所编辑的原图（第一张），以及它依据的其他图片"
+          }
+        }
+      }
+    },
     "The picture to edit — click to edit none" : {
       "localizations" : {
         "zh-Hans" : {
@@ -24421,6 +26613,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "退出 Valtz 时，本次会话中生成的图片会被删除。请先存储想保留的内容。"
+          }
+        }
+      }
+    },
+    "The preview prompts sampled now with the adapter as it is" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "用当前的适配器立即采样预览提示词"
           }
         }
       }
@@ -24615,6 +26817,16 @@
         }
       }
     },
+    "The soundtrack's loss beside the picture's (1 even)" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "声音损失相对画面损失的权重（1 为相等）"
+          }
+        }
+      }
+    },
     "The stage follows the agent: what it works on, and a clip it makes playing its preview as it is made. Click to stay where you are; click again to follow it" : {
       "localizations" : {
         "zh-Hans" : {
@@ -24631,6 +26843,46 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "舞台正在显示一个任务：等它显示图片或片段后再粘贴。"
+          }
+        }
+      }
+    },
+    "The stage shows a preview -- previews come at each checkpoint" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "舞台显示预览——每个检查点会生成预览"
+          }
+        }
+      }
+    },
+    "The stage shows a preview: %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "舞台显示预览：%@"
+          }
+        }
+      }
+    },
+    "The stage shows the sample selected in Samples" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "舞台显示在“样本”中选中的样本"
+          }
+        }
+      }
+    },
+    "The stage shows the sample selected: %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "舞台显示选中的样本：%@"
           }
         }
       }
@@ -24685,6 +26937,26 @@
         }
       }
     },
+    "The training failed." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "训练失败。"
+          }
+        }
+      }
+    },
+    "The trigger alone" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "仅触发词"
+          }
+        }
+      }
+    },
     "The upscaler itself" : {
       "localizations" : {
         "zh-Hans" : {
@@ -24705,6 +26977,16 @@
         }
       }
     },
+    "The weights' moving average's decay (0.999); 0 none. Checkpoints keep the averaged adapter too" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "权重移动平均的衰减（0.999）；0 为不使用。检查点也会保存平均后的适配器"
+          }
+        }
+      }
+    },
     "The whole timeline" : {
       "localizations" : {
         "zh-Hans" : {
@@ -24721,6 +27003,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "停止后窗口将关闭。"
+          }
+        }
+      }
+    },
+    "The word that calls up what the LoRA learns: choose one that is not an ordinary word. A caption that already holds it, as a whole word, is kept as it is; [trigger] in a caption is replaced by it." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "唤起 LoRA 所学内容的词：请选一个不是普通单词的词。已作为完整单词包含它的描述保持原样；描述中的 [trigger] 会被替换为它。"
           }
         }
       }
@@ -24977,6 +27269,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "此引擎不统计该数据。"
+          }
+        }
+      }
+    },
+    "This engine has no LoRA trainer." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "此引擎没有 LoRA 训练器。"
           }
         }
       }
@@ -25281,6 +27583,16 @@
         }
       }
     },
+    "To a last frame" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "到尾帧"
+          }
+        }
+      }
+    },
     "To each other" : {
       "localizations" : {
         "zh-Hans" : {
@@ -25447,12 +27759,82 @@
         }
       }
     },
+    "Train for" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "训练时长"
+          }
+        }
+      }
+    },
+    "Train on" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "训练模型"
+          }
+        }
+      }
+    },
+    "Trained" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "已训练"
+          }
+        }
+      }
+    },
+    "Trained as: %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "训练时读作：%@"
+          }
+        }
+      }
+    },
+    "Trained: %@.safetensors" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "已训练：%@.safetensors"
+          }
+        }
+      }
+    },
+    "Training" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "训练中"
+          }
+        }
+      }
+    },
     "Training-free sparse attention: key blocks a cheap proxy scores low are folded in as their centroid. Saves about a quarter to a third of the denoise on a long clip." : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "无需训练的稀疏注意力：廉价代理评分低的键块以其质心并入。长视频可节省约四分之一到三分之一的去噪时间。"
+          }
+        }
+      }
+    },
+    "Trains" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "训练范围"
           }
         }
       }
@@ -25583,6 +27965,26 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "高音"
+          }
+        }
+      }
+    },
+    "Trigger and captions" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "触发词与描述"
+          }
+        }
+      }
+    },
+    "Trigger word" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "触发词"
           }
         }
       }
@@ -25940,6 +28342,16 @@
         }
       }
     },
+    "Uniform" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "均匀"
+          }
+        }
+      }
+    },
     "Unknown" : {
       "localizations" : {
         "zh-Hans" : {
@@ -25990,6 +28402,16 @@
         }
       }
     },
+    "Unlock" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "解锁"
+          }
+        }
+      }
+    },
     "Unlock Layer" : {
       "localizations" : {
         "zh-Hans" : {
@@ -26006,6 +28428,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "解锁图层"
+          }
+        }
+      }
+    },
+    "Unlock it to make changes, or duplicate it to change a copy." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "解锁后才能更改，或者复制一份来更改副本。"
           }
         }
       }
@@ -26030,6 +28462,16 @@
         }
       }
     },
+    "Unlocked: make the change again." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "已解锁：请重新进行更改。"
+          }
+        }
+      }
+    },
     "Unmute" : {
       "localizations" : {
         "zh-Hans" : {
@@ -26046,6 +28488,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "取消配对"
+          }
+        }
+      }
+    },
+    "Untitled" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "未命名"
           }
         }
       }
@@ -27034,6 +29486,16 @@
         }
       }
     },
+    "Warm-up steps" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "预热步数"
+          }
+        }
+      }
+    },
     "Warming up. Fans (where present) have ramped; a fanless Mac may already be slowing down." : {
       "localizations" : {
         "zh-Hans" : {
@@ -27140,6 +29602,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "如何处理现有缓存？"
+          }
+        }
+      }
+    },
+    "What does “%@” mean?" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "“%@”是什么意思？"
           }
         }
       }
@@ -27287,6 +29759,27 @@
         }
       }
     },
+    "What the stage shows: the sample selected in Samples, or a preview chosen in Progress" : {
+      "extractionState" : "stale",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "舞台显示的内容：在“样本”中选中的样本，或在“进度”中选中的预览"
+          }
+        }
+      }
+    },
+    "What the trigger word stands for, as you would tell someone: the model captioning the samples calls it by the trigger and describes everything else" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "触发词代表什么，就像向别人介绍那样：写描述的模型以触发词称呼它，并描述其余的一切"
+          }
+        }
+      }
+    },
     "What you import, make and put together shows here, each thing beside what it was made from." : {
       "localizations" : {
         "zh-Hans" : {
@@ -27313,6 +29806,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "生成内容的尺寸与画布不同时"
+          }
+        }
+      }
+    },
+    "Where" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "位置"
           }
         }
       }
@@ -27615,6 +30118,16 @@
         }
       }
     },
+    "Widest shape" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "最宽比例"
+          }
+        }
+      }
+    },
     "Width" : {
       "localizations" : {
         "zh-Hans" : {
@@ -27661,6 +30174,26 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "宽度：立体声有多宽，混响也随之——0% 为单声道，100% 为原样，200% 为两倍宽。记录在关键帧中。"
+          }
+        }
+      }
+    },
+    "Window" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "窗口"
+          }
+        }
+      }
+    },
+    "Windows a clip" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "每片段窗口数"
           }
         }
       }
@@ -31566,6 +34099,40 @@
         }
       }
     },
+    "core.project_lock_edited" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "“{name}” has changes not saved: save them first, then lock it."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "“{name}”有未存储的更改：请先存储，再锁定。"
+          }
+        }
+      }
+    },
+    "core.project_locked" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "“{name}” is locked: unlock it to change it, or duplicate it."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "“{name}”已锁定：请解锁后再更改，或复制它。"
+          }
+        }
+      }
+    },
     "core.project_missing_media" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -31596,6 +34163,23 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "项目未打开。"
+          }
+        }
+      }
+    },
+    "core.project_same_open" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "“{name}” is a copy of “{open}”, which is open: close it first, or use Duplicate in its title's panel to make a copy that opens beside it."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "“{name}”是已打开的“{open}”的副本：请先关闭它，或在其标题面板中使用“复制”，制作一个可同时打开的副本。"
           }
         }
       }
@@ -32212,6 +34796,23 @@
         }
       }
     },
+    "core.split_pi_h3" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Made whole: pi-H3's adapter does not run on a split."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "整体生成：pi-H3 的适配器不能在拆分中运行。"
+          }
+        }
+      }
+    },
     "core.split_taomate_lora" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -32331,6 +34932,159 @@
         }
       }
     },
+    "core.train_caption_failed" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "{model} gave no caption for it: try again, or write it."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "{model} 没有给出描述：请重试，或自己写。"
+          }
+        }
+      }
+    },
+    "core.train_model_missing" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "{model} is not downloaded: download it in Settings › Capabilities to train on it."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "{model} 尚未下载：请在“设置 › 能力”中下载后再训练。"
+          }
+        }
+      }
+    },
+    "core.train_no_captioner" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "No model here sees pictures to caption them: choose an Agent model that sees, or download the micro agent (LFM3-VL 2B), in Settings."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "此处没有能看图并写描述的模型：请在“设置”中选择能看图的智能体模型，或下载微型智能体（LFM3-VL 2B）。"
+          }
+        }
+      }
+    },
+    "core.train_no_encoder" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "{model} trains with MiniMax H3's text encoder, which is not here: download MiniMax H3 FL2VA, Ref2VA or its text encoder in Settings › Capabilities."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "{model} 使用 MiniMax H3 的文本编码器训练，但此处没有：请在“设置 › 功能”中下载 MiniMax H3 FL2VA、Ref2VA 或其文本编码器。"
+          }
+        }
+      }
+    },
+    "core.train_no_model" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "{model} does not train LoRAs: choose a model the trainer offers."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "{model} 不能训练 LoRA：请选择训练器提供的模型。"
+          }
+        }
+      }
+    },
+    "core.train_no_name" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Name the LoRA: its name is its file's."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "请为 LoRA 命名：名称即其文件名。"
+          }
+        }
+      }
+    },
+    "core.train_no_pictures" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Add pictures to train on: drop files or folders on the trainer."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "请添加用于训练的图片：将文件或文件夹拖到训练器上。"
+          }
+        }
+      }
+    },
+    "core.train_reference_missing" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "{file}'s reference {reference} is not a file."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "{file} 的参考 {reference} 不是文件。"
+          }
+        }
+      }
+    },
+    "core.train_running" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "{name} is training already."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "{name} 已在训练中。"
+          }
+        }
+      }
+    },
     "core.transcribe_needs_sound" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -32361,6 +35115,40 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "转场（硬切或溶解）只能用于同一合成中的两个图层之间。"
+          }
+        }
+      }
+    },
+    "core.trim_edge_keyed_speed" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Its speed changes along it: set its marks in the Trim panel."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "它的速度沿途变化：请在“修剪”面板中设置入点和出点。"
+          }
+        }
+      }
+    },
+    "core.trim_edge_needs_timed" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Only a clip, a sound or a composition has marks to drag."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "只有片段、声音或合成才有可拖动的入点和出点。"
           }
         }
       }
@@ -32798,6 +35586,16 @@
         }
       }
     },
+    "e.g. a small felt teapot robot with an orange button face" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "例如：一个长着橙色纽扣脸的小毛毡茶壶机器人"
+          }
+        }
+      }
+    },
     "ends on its picture" : {
       "localizations" : {
         "zh-Hans" : {
@@ -32958,6 +35756,16 @@
         }
       }
     },
+    "its file's name" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "它的文件名"
+          }
+        }
+      }
+    },
     "keeps its latents" : {
       "localizations" : {
         "zh-Hans" : {
@@ -33004,6 +35812,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "已链接"
+          }
+        }
+      }
+    },
+    "loss %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "损失 %@"
           }
         }
       }
@@ -33159,6 +35977,46 @@
         }
       }
     },
+    "pi-Flow's 2- or 4-step adapter, over the pruned DiT" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "pi-Flow 的 2 或 4 步适配器，运行于剪枝 DiT 之上"
+          }
+        }
+      }
+    },
+    "pi-H3" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "pi-H3"
+          }
+        }
+      }
+    },
+    "pi-H3 runs in its place" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "由 pi-H3 代替运行"
+          }
+        }
+      }
+    },
+    "pi-H3 steps" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "pi-H3 步数"
+          }
+        }
+      }
+    },
     "pixels" : {
       "localizations" : {
         "zh-Hans" : {
@@ -33295,6 +36153,16 @@
         }
       }
     },
+    "saved at %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "保存于第 %@ 步"
+          }
+        }
+      }
+    },
     "seconds" : {
       "localizations" : {
         "zh-Hans" : {
@@ -33311,6 +36179,22 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "已搁置：macOS 可能收回"
+          }
+        }
+      }
+    },
+    "step %@ of %@" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "step %1$@ of %2$@"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "第 %1$@ / %2$@ 步"
           }
         }
       }
@@ -33481,6 +36365,33 @@
         }
       }
     },
+    "~%@ left" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "剩余约 %@"
+          }
+        }
+      }
+    },
+    "~%@:%@ left" : {
+      "extractionState" : "stale",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "~%1$@:%2$@ left"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "剩余约 %1$@:%2$@"
+          }
+        }
+      }
+    },
     "×" : {
       "localizations" : {
         "zh-Hans" : {
@@ -33523,6 +36434,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "“%@”已在素材中：智能体正在处理此项目，因此没有放到舞台上。"
+          }
+        }
+      }
+    },
+    "“%@” is locked" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "“%@”已锁定"
           }
         }
       }

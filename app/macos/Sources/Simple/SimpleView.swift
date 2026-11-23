@@ -686,7 +686,9 @@ private struct ResultStage: View {
                     .onDrop(of: DroppedMedia.dropTypes,
                             delegate: StageDrop(model: model,
                                                 targeted: $dropTargeted))
-                    .overlay { dragRing }
+                    // (none while the timeline is in the prompt's
+                    // place: nowhere to drag the stage into)
+                    .overlay { if !model.timelineOpen { dragRing } }
                     // Over the ring: a click on a mark is the mark's.
                     .overlay(alignment: .topLeading) {
                         if marksShown, let c = model.guideCanvas,
@@ -942,8 +944,8 @@ private struct ResultStage: View {
             // An asset VIEWED from the list: ⓧ takes it off, the active
             // composition back (as Escape and a click elsewhere do).
             .overlay(alignment: .topTrailing) {
-                if !small, model.viewingOnStage {
-                    CloseViewingButton { model.endViewing() }
+                if !small, model.temporaryPreviewOnStage {
+                    CloseViewingButton { model.endTemporaryPreview() }
                         .transition(.opacity)
                 }
             }
@@ -1046,9 +1048,12 @@ private struct ResultStage: View {
                                 bandHovered.remove(i)
                             }
                             model.stageDragReady = !model.navOpen
+                                && !model.timelineOpen
                                 && !bandHovered.isEmpty
                         }
                         .pointerStyle(.grabIdle)
+                        // What the band is for, said where it is.
+                        .help("Drag the stage into the prompt box to make what it shows a reference")
                         .onDrag {
                             // Into the prompt, what it shows is CAPTURED
                             // -- every edit with it
@@ -1070,9 +1075,17 @@ private struct ResultStage: View {
             .frame(width: g.size.width, height: g.size.height,
                    alignment: .topLeading)
             .onChange(of: pieces) { bandHovered.removeAll() }
+            // The timeline in the prompt's place: nowhere to drag the
+            // stage into, so no band -- back with the prompt box.
+            .onChange(of: model.timelineOpen) { _, open in
+                if open {
+                    bandHovered.removeAll()
+                    model.stageDragReady = false
+                }
+            }
         }
         .padding(-ringWidth)
-        .allowsHitTesting(model.canDragStage)
+        .allowsHitTesting(model.canDragStage && !model.timelineOpen)
     }
 
     @ViewBuilder

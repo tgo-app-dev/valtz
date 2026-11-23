@@ -2470,7 +2470,9 @@ private struct DrawerSettings: View {
                          ($0, $0.label(model.activeModality))
                      },
                      tips: model.activeModality == .image
-                        ? model.sizeClasses.map(\.tip) : [],
+                        ? model.sizeClasses.map(\.tip)
+                        : model.activeModality == .video
+                        ? model.sizeClasses.map(\.videoTip) : [],
                      selection: sizeChoice)
             SizeField(model: model)
         }

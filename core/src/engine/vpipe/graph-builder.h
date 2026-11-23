@@ -320,6 +320,11 @@ struct BuiltGraph {
   std::string           residual_sink;
   // A sound's beats (DESIGN §4v): objects of them, {"beats", "tempo"}.
   std::string           beats_sink;
+  // A LoRA trained (DESIGN §8c): a beat a step, a beat a checkpoint; and
+  // the stage that takes its commands while it runs.
+  std::string           metrics_sink;
+  std::string           checkpoint_sink;
+  std::string           command_stage;
   std::optional<SampleFeed> samples;
   std::filesystem::path output;        // file the graph writes
   // A still's pages exported (DESIGN §6a): every file, `output` the
@@ -548,6 +553,12 @@ Result<BuiltGraph> build_separate(const JobSpec&,
 // g.beats_sink.
 Result<BuiltGraph> build_track_beats(const JobSpec&,
                                      const std::filesystem::path& wav);
+// train-lora (DESIGN §8c): vpipe's training graph -- the model's
+// training-dataset, its conditioner and VAE encoding it, optimizer-select,
+// train-lora -- its previews decoded and written beside the adapter
+// (<output_dir>/previews/<param run>-NNNN.png), its metrics and
+// checkpoints to sinks.
+Result<BuiltGraph> build_train_lora(const JobSpec&);
 // summarize-video (DESIGN §4i): the clip -- input "source" -- read sparse
 // at `size` (a frame every param `every` s: g.samples) into Valtz's
 // valtz-video-summary, which cuts it into scenes and has the model

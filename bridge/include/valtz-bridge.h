@@ -219,6 +219,12 @@ public:
   std::string save_project_as(const std::string& project_id,
                               const std::string& path);
   std::string revert_project(const std::string& project_id);
+  // Its FILE (the title bar's panel): {"op": "move", "path"} renamed or
+  // moved, {"op": "tags", "tags": [...]}, {"op": "lock", "locked"};
+  // {"op": "duplicate", "path"} a copy of its own beside it;
+  // {"op": "info"} -> {"file": {"path", "folder", "tags", "locked"}}.
+  std::string project_file(const std::string& project_id,
+                           const std::string& request_json);
   std::string undo(const std::string& project_id);
   std::string redo(const std::string& project_id);
   // {"dirty", "untitled", "package", "name", "busy", "undo": {"kind",
@@ -564,6 +570,22 @@ public:
   // "in_use", "original_kept"}); its events a job's, purpose "compress",
   // "freed" and "kept_original" when it finishes.
   std::string compress_model(const std::string& request_json);
+  // LoRA TRAINING (Controller::train_lora, DESIGN §8c). {} -> {"ok",
+  // "trainer": trainer_info}; a request -> {"ok", "job"} (its events a
+  // job's, purpose "train"); {} -> {"ok", "runs"}; {"name"} -> {"ok"},
+  // its folder deleted; {"job", "name": "save" | "preview", "args"} ->
+  // {"ok", "reply"}.
+  std::string trainer_info(const std::string& request_json);
+  std::string train_lora(const std::string& request_json);
+  std::string trained_loras(const std::string& request_json);
+  std::string remove_trained(const std::string& request_json);
+  // {"name"} -> {"ok"}: a run ended, its resume state deleted.
+  std::string finish_trained(const std::string& request_json);
+  std::string train_command(const std::string& request_json);
+  // {"path", "trigger", "meaning"} -> {"ok", "caption", "model"}: a
+  // training sample captioned (Controller::caption_training_sample).
+  // Blocking: call it off the main thread.
+  std::string caption_training_sample(const std::string& request_json);
   // A copy and its original both kept: {"model", "compressed"} -> {"ok"},
   // which one its jobs load (Controller::use_compressed); and the same ->
   // {"ok", "freed"}, that one kept and the other deleted

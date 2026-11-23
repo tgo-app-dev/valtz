@@ -153,6 +153,9 @@ struct RootView: View {
             case .atlas:
                 AtlasView(model: model)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
+            case .trainer:
+                TrainerView(model: model, trainer: model.trainer)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
             case .log:
                 LogView(model: model)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -201,17 +204,18 @@ extension Color {
     })
 }
 
-/// The ☰ column: a narrow glass strip of icons -- the screens (the
-/// editor; the editor VIEW ONLY, its eye -- Tab too; the atlas; the log)
-/// at the top, Settings (⌘,) at the foot -- set well below the title
-/// bar's hairline.
+/// The ☰ column: a narrow glass strip of icons -- the project's screens
+/// (the editor; the editor VIEW ONLY, its eye -- Tab too; the atlas) at
+/// the top; at the foot what is not the project's -- the LoRA trainer
+/// (Settings › Experimental), the log -- and Settings (⌘,) -- set well
+/// below the title bar's hairline.
 struct NavPanel: View {
     @Bindable var model: AppModel
     @Environment(\.openSettings) private var openSettings
 
     var body: some View {
         VStack(spacing: 6) {
-            ForEach(AppScreen.allCases) { s in
+            ForEach(AppScreen.allCases.filter(\.ofTheProject)) { s in
                 NavRow(title: s.label, symbol: s.symbol,
                        selected: model.screen == s
                            && !(s == .editor && model.viewOnly)) {
@@ -229,6 +233,14 @@ struct NavPanel: View {
                 }
             }
             Spacer(minLength: 20)
+            ForEach(AppScreen.allCases.filter {
+                !$0.ofTheProject && ($0 != .trainer || model.trainerEnabled)
+            }) { s in
+                NavRow(title: s.label, symbol: s.symbol,
+                       selected: model.screen == s) {
+                    model.show(s)
+                }
+            }
             NavRow(title: String(localized: "Settings"), symbol: "gearshape",
                    selected: false) {
                 model.toggleNav()

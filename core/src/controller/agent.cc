@@ -326,19 +326,7 @@ public:
   sees() const override
   {
     const auto* m = _c.agent_model();
-    if (m == nullptr) {
-      return false;
-    }
-    if (m->has(models::Capability::VideoSummary) ||
-        m->has(models::Capability::Caption)) {
-      return true;
-    }
-    // A GGUF's eyes beside it (catalog `eyes`: the release's vision
-    // tower), where they are here.
-    const auto* eyes = m->eyes.empty() ? nullptr
-                                       : _c._catalog.find(m->eyes);
-    return eyes != nullptr && _c._store->info(*eyes).state ==
-                                  models::InstallState::Installed;
+    return m != nullptr && _c.sees_(*m);
   }
 
   // This Mac's helper's, as its memory gives it -- or the member's that

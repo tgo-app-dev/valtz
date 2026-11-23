@@ -312,6 +312,55 @@ lay_loras(Json& cfg, const JobSpec& job)
   }
 }
 
+// DIALS (Favor's Custom, MiniMax H3): vpipe's `dials` rows on the config
+// stage, each file at its strength. A SCHEDULE -- strengths over the
+// clip's time, x 0..1 -- goes as vpipe's time curve: the row at S, the
+// largest strength asked, its keys strength / S in normalized time,
+// linear between them. (A curve's value blends the undialled forward
+// with the dialled one; within -1..1 that tracks the strength asked,
+// where past it would extrapolate.) `clip`: a picture takes constants
+// alone (one frame: vpipe refuses a curve there).
+void
+lay_dials(Json& cfg, const JobSpec& job, bool clip)
+{
+  const Json t = jget(job.params, "tuning", Json::object());
+  Json rows = Json::array();
+  for (const auto& d : jget(t, "dials", Json::array())) {
+    const auto path = jget<std::string>(d, "path", "");
+    if (path.empty() || !jget(d, "on", false)) {
+      continue;
+    }
+    const Json pts = jget(d, "points", Json::array());
+    if (clip && pts.is_array() && pts.size() >= 2) {
+      double most = 0;
+      for (const auto& p : pts) {
+        most = std::max(most, std::abs(p[1].get<double>()));
+      }
+      if (most <= 0) {
+        continue;
+      }
+      Json keys = Json::array();
+      for (const auto& p : pts) {
+        keys.push_back(Json::array({p[0].get<double>(),
+                                    p[1].get<double>() / most}));
+      }
+      rows.push_back({{"dial", path}, {"strength", most},
+                      {"time", {{"type", "keys"},
+                                {"points", std::move(keys)},
+                                {"unit", "normalized"},
+                                {"interp", "linear"}}}});
+      continue;
+    }
+    const double s = jget(d, "strength", 0.0);
+    if (s != 0) {
+      rows.push_back({{"dial", path}, {"strength", s}});
+    }
+  }
+  if (!rows.empty()) {
+    cfg["dials"] = std::move(rows);
+  }
+}
+
 // Merge `over` into `base` (shallow).
 Json
 merged(Json base, const Json& over)
@@ -720,6 +769,7 @@ build_h3_image(const JobSpec& job, const std::vector<RefImage>& refs,
   // it -- no shifts (vpipe runs the checkpoint's grid as given).
   Json cfg = jget(vp, "config", Json::object());
   lay_loras(cfg, job);
+  lay_dials(cfg, job, false);
   if (jget<std::string>(jget(job.params, "tuning", Json::object()),
                         "generate_at", "") == "asked") {
     cfg["min_generation_area"] = 1024;  // the release's "off"
@@ -1767,7 +1817,9 @@ build_video(const JobSpec& job, const std::optional<RefImage>& first,
       refs.empty() && !prompt_only && (first || last) &&
       (!first ||
        jget(jget(job.params, "tuning", Json::object()), "pika_flex",
-            false));
+            false) ||
+       // pi-H3's graphs show them too (vpipe's pi-h3-first-*-to-video).
+       jget(jget(job.params, "tuning", Json::object()), "pi_h3", false));
   if (refs.empty() && !prompt_only) {
     // The prompt encoder (Qwen3-VL-32B for H3) streams, and is dropped
     // before the denoise: the two never share the machine. KEPT
@@ -2101,6 +2153,7 @@ build_video(const JobSpec& job, const std::optional<RefImage>& first,
   // preview TAE -- ride one config beat into generate-video's port 9.
   Json cfg = jget(vp, "config", Json::object());
   lay_loras(cfg, job);
+  lay_dials(cfg, job, true);
   // Favor's Custom: the two schedules' shifts (whole numbers, sent as the
   // reals the stage declares), and the VDN branch beside the DiT (its
   // folder).
@@ -4475,6 +4528,173 @@ build_track_beats(const JobSpec& job, const fs::path& wav)
                           {"sample_rate", 22050},
                           {"group", 256}}));
   stages.push_back(sink(g.beats_sink, port("beats"), false));
+  g.spec = {{"id", "valtz-" + job.id.str()},
+            {"stages", stages},
+            {"subpipelines", Json::array()}};
+  return g;
+}
+
+// The training graph as vpipe's own ready ones lay it out
+// (pipelines/qwen-image-2.1-train-lora.vpipeline, minimax-h3-train-lora*,
+// minimax-h3-image-train-lora-edit), each stage's config the job's
+// settled keys with the folders laid on; nothing registered in vpipe's
+// registry -- the adapter is Valtz's, in its models folder. By the
+// model's `shape` (catalog `train`):
+//
+//   ""        dataset -1-> diffusion-conditioner, -0-> vae-encode
+//   h3        the same on FL2VA; clips' soundtracks -3-> audio-vae-encode
+//             -> train's 5; keyframe tasks' stills -4-> the conditioner's
+//             ref_image, shown to Qwen3-VL as generate-video's are
+//   h3-ref2va video-ref-encoder in the conditioner's place, each caption
+//             its sample's Ref2VA request: its rows -0-> train's 0, its
+//             references' video and audio rows -1,2-> train's 6, 7
+//   h3-image  the conditioner on MiniMax-H3's text encoder (another
+//             model's: `encoder_dir`); edit pairs through video-ref-
+//             encoder as Ref2VA's, no soundtrack (train's 5 unwired)
+//
+// Previews: a still's through vae-decode into PNGs, a clip's (a clip in
+// the dataset) through vae-decode, rgb-to-video and -- train's 3 -- its
+// soundtrack's audio-vae-decode into an MP4.
+Result<BuiltGraph>
+build_train_lora(const JobSpec& job)
+{
+  Json ds = jget(job.params, "dataset", Json::object());
+  Json opt = jget(job.params, "optimizer", Json::object());
+  Json tr = jget(job.params, "train", Json::object());
+  if (!ds.is_object() || !opt.is_object() || !tr.is_object()) {
+    return make_error(Code::InvalidArgument,
+                      "a training's dataset, optimizer and train are "
+                      "objects");
+  }
+  const std::string out = jget<std::string>(tr, "output_dir", "");
+  const std::string name = jget<std::string>(tr, "name", "");
+  if (job.model.dir.empty() || jget<std::string>(ds, "dir", "").empty() ||
+      out.empty() || name.empty()) {
+    return make_error(Code::InvalidArgument,
+                      "a training needs its model, its dataset's folder, "
+                      "where it goes and its name");
+  }
+  const std::string shape = jget<std::string>(job.params, "shape", "");
+  if (!shape.empty() && shape != "h3" && shape != "h3-ref2va" &&
+      shape != "h3-image") {
+    return make_error(Code::Unsupported,
+                      std::format("no training graph of shape '{}'", shape));
+  }
+  const bool h3 = !shape.empty();
+  const bool clips = h3 && shape != "h3-image" &&
+                     jget(job.params, "clips", false);
+  const bool refs = shape == "h3-ref2va" ||
+                    (shape == "h3-image" && jget(job.params, "edit", false));
+  if (shape == "h3-image" && job.model.encoder.empty()) {
+    return make_error(Code::InvalidArgument,
+                      "MiniMax-H3-Image trains on MiniMax-H3's text "
+                      "encoder, which the job does not name");
+  }
+  // Keyframe tasks (FL2VA's task_mix past t2va): their stills shown to
+  // the conditioner too.
+  bool keyframes = false;
+  if (shape == "h3") {
+    // A local: items() of jget's temporary dangles.
+    const Json mix = jget(ds, "task_mix", Json::object());
+    for (const auto& [k, v] : mix.items()) {
+      keyframes = keyframes || (k != "t2va" && v.is_number() &&
+                                v.get<double>() > 0);
+    }
+  }
+  tr["register"] = false;
+  BuiltGraph g;
+  g.metrics_sink = "metrics-sink";
+  g.checkpoint_sink = "checkpoint-sink";
+  g.command_stage = "train";
+  g.output = fs::path(out) / (name + ".safetensors");
+  Json stages = Json::array();
+  stages.push_back(stage("model-select", "model-select", Json::array(),
+                         {{"hf_dir", job.model.dir.string()}}));
+  stages.push_back(stage("dataset", "training-dataset",
+                         Json::array({port("model-select")}), ds));
+  stages.push_back(stage("optimizer", "optimizer-select", Json::array(),
+                         opt));
+  std::string cond = "conditioner";
+  if (refs) {
+    cond = "video-ref-encoder";
+    Json rc = {{"references_from_prompt", true}};
+    if (shape == "h3-ref2va") {
+      const Json fr = jget(ds, "frames", Json::array({39}));
+      rc["frames"] = fr.is_array() && !fr.empty() ? fr.front() : fr;
+      if (const int e = jget(job.params, "reference_short_edge", 0); e > 0) {
+        rc["reference_image_short_edge"] = e;
+      }
+    } else {
+      // The edit's posterior, as an edit graph's (vpipe's example's).
+      rc["seed"] = 42;
+      rc["encoder_dir"] = job.model.encoder.string();
+    }
+    stages.push_back(stage(cond, "video-ref-encoder",
+                           Json::array({port("dataset", 1),
+                                        port("model-select")}),
+                           rc));
+  } else {
+    Json cc = Json::object();
+    if (shape == "h3-image") {
+      cc["encoder_dir"] = job.model.encoder.string();
+    }
+    Json ins = Json::array({port("dataset", 1), unwired(),
+                            port("model-select")});
+    if (keyframes) {
+      ins.push_back(port("dataset", 4));
+    }
+    stages.push_back(stage(cond, "diffusion-conditioner", ins, cc));
+  }
+  stages.push_back(stage("vae-encode", "vae-encode",
+                         Json::array({port("dataset", 0),
+                                      port("model-select")}),
+                         Json::object()));
+  if (clips) {
+    stages.push_back(stage("audio-vae-encode", "audio-vae-encode",
+                           Json::array({port("dataset", 3),
+                                        port("model-select")}),
+                           Json::object()));
+  }
+  Json tin = Json::array({port(cond), port("vae-encode"),
+                          port("dataset", 2), port("model-select"),
+                          port("optimizer")});
+  if (clips || refs) {
+    tin.push_back(clips ? port("audio-vae-encode") : unwired());
+  }
+  if (refs) {
+    tin.push_back(port(cond, 1));
+    tin.push_back(port(cond, 2));
+  }
+  stages.push_back(stage(g.command_stage, "train-lora", tin, tr));
+  stages.push_back(stage("vae-decode", "vae-decode",
+                         Json::array({port(g.command_stage, 0),
+                                      port("model-select")}),
+                         Json::object()));
+  const fs::path previews = fs::path(out) / "previews" /
+      jget<std::string>(job.params, "run", "run");
+  if (clips) {
+    stages.push_back(stage("audio-vae-decode", "audio-vae-decode",
+                           Json::array({port(g.command_stage, 3),
+                                        port("model-select")}),
+                           Json::object()));
+    stages.push_back(stage("rgb-to-video", "rgb-to-video",
+                           Json::array({port("vae-decode")}),
+                           {{"fps", jget(ds, "fps", 24.0)}}));
+    stages.push_back(stage("save-preview", "save-video",
+                           Json::array({port("rgb-to-video"),
+                                        port("audio-vae-decode")}),
+                           {{"output_url", previews.string() + "-%04d.mp4"},
+                            {"enable_video", true},
+                            {"enable_audio", true}}));
+  } else {
+    stages.push_back(stage("save-preview", "save-image",
+                           Json::array({port("vae-decode")}),
+                           {{"path", previews.string() + "-%04d.png"},
+                            {"format", "png"}}));
+  }
+  stages.push_back(sink(g.checkpoint_sink, port(g.command_stage, 1),
+                        false));
+  stages.push_back(sink(g.metrics_sink, port(g.command_stage, 2), false));
   g.spec = {{"id", "valtz-" + job.id.str()},
             {"stages", stages},
             {"subpipelines", Json::array()}};

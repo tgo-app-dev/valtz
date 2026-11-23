@@ -61,8 +61,10 @@ extension TuningHost {
         var loras: [URL] = []
         var parts: [String: [URL]] = [:]
         var refmods = 0
+        var dials: [URL] = []
         for url in urls {
             switch core.checkpointKind(url) {
+            case "dial": dials.append(url)
             case "lora": loras.append(url)
             case "dit": parts["dits", default: []].append(url)
             case "vae": parts["vaes", default: []].append(url)
@@ -72,6 +74,23 @@ extension TuningHost {
             }
         }
         var added = false
+        if !dials.isEmpty {
+            if let info = tuningInfo,
+               info.options.contains(where: { $0.key == "dials" }) {
+                var t = info.tuning
+                for url in dials {
+                    let path = url.standardizedFileURL.path
+                    if !t.dials.contains(where: { $0.path == path }) {
+                        t.dials.append(TuningDial(path: path))
+                        added = true
+                    }
+                }
+                settleTuning(t, stepsFollow: false)
+            } else {
+                tuningWarn(String(localized: "A Dial steers MiniMax H3: choose an H3 model first"))
+                return false
+            }
+        }
         if !loras.isEmpty { added = addLoRAs(loras) || added }
         if !parts.isEmpty, let info = tuningInfo {
             var t = info.tuning
@@ -99,6 +118,24 @@ extension TuningHost {
             tuningWarn(String(localized: "Not weights Valtz can use here"))
         }
         return added
+    }
+
+    /// A Dial changed (on, its strength, its schedule) or taken off.
+    func setDial(_ path: String, _ change: (inout TuningDial) -> Void) {
+        guard let info = tuningInfo else { return }
+        var t = info.tuning
+        guard let i = t.dials.firstIndex(where: { $0.path == path }) else {
+            return
+        }
+        change(&t.dials[i])
+        settleTuning(t, stepsFollow: false)
+    }
+
+    func removeDial(_ path: String) {
+        guard let info = tuningInfo else { return }
+        var t = info.tuning
+        t.dials.removeAll { $0.path == path }
+        settleTuning(t, stepsFollow: false)
     }
 
     /// A DiT or VAE checkpoint turned on (the others off: one replaces
@@ -145,6 +182,7 @@ extension TuningHost {
     func loraSlots(_ t: Tuning, _ info: TuningInfo) -> Int {
         (info.loraOption?.slots ?? 8)
             - (t.flags["hyperflow"] == true || t.flags["pika_flex"] == true
+                || t.flags["pi_h3"] == true
                 || t.flags["taomate"] == true ? 1 : 0)
     }
 
@@ -194,7 +232,8 @@ extension TuningHost {
                 l.on = true
             }
             t.loras.insert(l, at: 0)
-            for k in ["hyperflow", "pika_flex", "taomate", "taomate_lora"]
+            for k in ["hyperflow", "pika_flex", "pi_h3", "taomate",
+                      "taomate_lora"]
                 where t.flags[k] == true {
                 t.flags[k] = false
             }

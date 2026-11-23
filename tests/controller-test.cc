@@ -9,6 +9,7 @@
 #include "valtz/assist/video-summary.h"
 #include "valtz/base/tree-copy.h"
 #include "valtz/controller/controller.h"
+#include "valtz/base/finder.h"
 #include "valtz/media/refmod.h"
 #include "valtz/media/camera.h"
 #include "valtz/media/capture.h"
@@ -4543,6 +4544,52 @@ TEST(composition, a_clip_on_a_blank_layer_follows_the_content)
 // a larger canvas, the canvas kept -- or, with none or one that cannot
 // show it, in a composition of its own (the project's when there is
 // none). One command.
+// A layer given its FIRST content -- the project's first take, a blank
+// layer a result or a drop fills -- is named after it while it was never
+// named; one renamed, or one that held something, keeps its name.
+TEST(composition, a_layers_first_content_names_it)
+{
+  Bench b("comp-first-name");
+  REQUIRE(b.ok());
+  Controller& ctl = *b.ctl;
+  const ProjectId pid = b.pid;
+  auto red = b.png("Red fox.png", 8, 8, {0xff, 0, 0, 0xff});
+  auto blue = b.png("Blue boat.png", 8, 8, {0, 0, 0xff, 0xff});
+  REQUIRE(red && blue);
+  auto layer_name = [&](AssetId comp, const std::string& id) {
+    auto c = ctl.project(pid)->asset(comp);
+    for (const auto& l : c->layers) {
+      if (l.id == id) {
+        return l.name;
+      }
+    }
+    return std::string("?");
+  };
+  const std::string rn = ctl.project(pid)->asset(*red)->name;
+  const std::string bn = ctl.project(pid)->asset(*blue)->name;
+  // The project's composition, made of its first take: layer 0 named.
+  auto view = ctl.place_in_project(pid, *red);
+  REQUIRE_OK(view);
+  REQUIRE(*view);
+  CHECK(layer_name(**view, "") == rn);
+  // A blank layer given content: named; one renamed first: kept.
+  auto l1 = ctl.add_layer(pid, **view);
+  REQUIRE_OK(l1);
+  REQUIRE_OK(ctl.set_layer_source(pid, **view, *l1, *blue));
+  CHECK(layer_name(**view, *l1) == bn);
+  auto l2 = ctl.add_layer(pid, **view);
+  REQUIRE_OK(l2);
+  REQUIRE_OK(ctl.rename_layer(pid, **view, *l2, "Sky"));
+  REQUIRE_OK(ctl.set_layer_source(pid, **view, *l2, *red));
+  CHECK(layer_name(**view, *l2) == "Sky");
+  // A layer that held something keeps its name when it shows another.
+  REQUIRE_OK(ctl.set_layer_source(pid, **view, *l1, *red));
+  CHECK(layer_name(**view, *l1) == bn);
+  // A new take into the project's layer 0, which holds one: kept.
+  REQUIRE_OK(ctl.place_in_project(pid, *blue));
+  CHECK(layer_name(**view, "") == rn);
+}
+
 TEST(composition, a_result_lands_in_a_new_layer_or_its_own)
 {
   Bench b("comp-land");
@@ -9474,6 +9521,81 @@ TEST(composition, a_timelines_frame_is_on_black_as_it_plays)
   CHECK(t[0] < 24 && t[1] < 24 && t[2] < 24);
 }
 
+// The trainer's models carry their catalog defaults (a pointer into a
+// temporary once handed every default on as none: the learning rate 0,
+// vpipe's own too weak).
+TEST(controller, the_trainer_offers_its_models_defaults)
+{
+  Bench b("trainer-defaults");
+  REQUIRE(b.ok());
+  const Json info = b.ctl->trainer_info();
+  bool found = false;
+  for (const auto& m : jget(info, "models", Json::array())) {
+    if (jget<std::string>(m, "id", "") == "qwen-image-2.1") {
+      found = true;
+      const Json d = jget(m, "defaults", Json::object());
+      CHECK(jget(d, "learning_rate", 0.0) == 0.0004);
+      CHECK(jget(d, "rank", 0) == 16);
+      CHECK(jget(d, "resolution", Json::array()).size() == 3);
+    }
+  }
+  CHECK(found);
+}
+
+// A timed block's EDGES dragged (the timeline's): the left one moves its
+// mark-in and its start together, the right one its mark-out -- held to
+// what its source holds, a frame left at least; a still's refused.
+TEST(composition, a_timed_layers_edges_move_its_marks)
+{
+  Bench b("comp-trim-edge");
+  REQUIRE(b.ok());
+  Controller& ctl = *b.ctl;
+  const ProjectId pid = b.pid;
+  auto red = b.png("red.png", 16, 16, {0xff, 0, 0, 0xff});
+  REQUIRE(red);
+  auto shot = ctl.create_composition(pid, project::AssetClass::Composition,
+                                     {16, 16}, {24, 1}, "shot");
+  REQUIRE_OK(shot);
+  REQUIRE_OK(ctl.instantiate(pid, *red, *shot));   // a second: 24 frames
+  auto tl = ctl.create_composition(pid, project::AssetClass::Composition,
+                                   {16, 16}, {24, 1}, "edit");
+  REQUIRE_OK(tl);
+  auto clip = ctl.instantiate(pid, *shot, *tl, std::nullopt, 10);
+  REQUIRE_OK(clip);
+  const auto time_of = [&](const std::string& id) {
+    for (const auto& l : b.layers(*tl)) {
+      if (l.id == id) {
+        return l.time;
+      }
+    }
+    return project::LayerTime{};
+  };
+  const std::string L = clip->second;
+  CHECK(time_of(L).offset == 10);
+  // The left edge 6 frames in: its mark-in and start with it.
+  REQUIRE_OK(ctl.trim_layer_edge(pid, *tl, L, true, 16));
+  CHECK(time_of(L).in == 6 && time_of(L).offset == 16);
+  // The right edge in to 30 (the frame after its last): out 19.
+  REQUIRE_OK(ctl.trim_layer_edge(pid, *tl, L, false, 30));
+  CHECK(time_of(L).out == 19);
+  // Past its content either way: held there.
+  REQUIRE_OK(ctl.trim_layer_edge(pid, *tl, L, false, 500));
+  CHECK(time_of(L).out == 23);
+  REQUIRE_OK(ctl.trim_layer_edge(pid, *tl, L, true, 0));
+  CHECK(time_of(L).in == 0 && time_of(L).offset == 10);
+  // A frame left at least, from either side.
+  REQUIRE_OK(ctl.trim_layer_edge(pid, *tl, L, true, 400));
+  CHECK(time_of(L).in == 23 && time_of(L).offset == 33);
+  REQUIRE_OK(ctl.undo(pid));
+  CHECK(time_of(L).in == 0 && time_of(L).offset == 10);
+  REQUIRE_OK(ctl.trim_layer_edge(pid, *tl, L, false, -5));
+  CHECK(time_of(L).out == 0);
+  // A still has no marks to drag.
+  auto still = ctl.instantiate(pid, *red, *tl);
+  REQUIRE_OK(still);
+  CHECK(!ctl.trim_layer_edge(pid, *tl, still->second, true, 3).ok());
+}
+
 TEST(composition, a_still_on_a_timeline_runs_a_second)
 {
   Bench b("comp-still-second");
@@ -10278,6 +10400,91 @@ TEST(composition, a_schema_1_project_is_migrated)
 // A project as a DOCUMENT (DESIGN §5b): every action a command to undo
 // and redo; Save writes the working copy back, Revert reads the save
 // again, a working copy left dirty is resumed at the next open.
+// A project's FILE, as its title bar's panel has it: renamed and moved
+// with changes not saved (they stay not saved, its media read from where
+// it went), tagged as the Finder tags it, locked -- every change and Save
+// refused while it is, locking refused with changes not saved.
+TEST(controller, a_projects_file_is_moved_tagged_and_locked)
+{
+  auto root = test::temp_dir("ctl-project-file");
+  ControllerConfig cfg;
+  cfg.support_root = root / "support";
+  cfg.model_roots = {root / "models"};
+  cfg.with_engine = false;
+  REQUIRE(write_png(root / "red.png", 16, 16, {0xff, 0, 0, 0xff}));
+  auto made = Controller::create(cfg);
+  REQUIRE_OK(made);
+  Controller& ctl = **made;
+  auto pid = ctl.create_project(root / "Doc.valtz", "Doc");
+  REQUIRE_OK(pid);
+  auto red = import_and_wait(ctl, *pid, root / "red.png");
+  REQUIRE(red);
+  REQUIRE_OK(ctl.save_project(*pid));
+  // An edit not saved, then the file renamed into another folder.
+  auto view = ctl.place_in_project(*pid, *red);
+  REQUIRE_OK(view);
+  CHECK(jget(ctl.project_state(*pid), "dirty", false));
+  fs::create_directories(root / "Elsewhere");
+  REQUIRE_OK(ctl.move_project(*pid, root / "Elsewhere" / "Renamed"));
+  CHECK(!fs::exists(root / "Doc.valtz"));
+  CHECK(fs::exists(root / "Elsewhere" / "Renamed.valtz" / "project.cbor"));
+  const Json st = ctl.project_state(*pid);
+  CHECK(jget<std::string>(st, "name", "") == "Renamed");
+  CHECK(jget(st, "dirty", false));   // still not saved
+  CHECK(fs::path(jget<std::string>(st, "package", "")).filename() ==
+        "Renamed.valtz");
+  // Its picture read from the package where it went.
+  auto pic = ctl.project(*pid)->version(*red);
+  REQUIRE_OK(pic);
+  const auto blob = pic->blob;
+  CHECK(ctl.project(*pid)->blobs().contains(blob));
+  CHECK(fs::exists(ctl.project(*pid)->blobs().path_of(blob)));
+  // A place taken refused.
+  fs::create_directories(root / "Taken.valtz");
+  CHECK(!ctl.move_project(*pid, root / "Taken.valtz").ok());
+  // Tags.
+  REQUIRE_OK(ctl.set_project_tags(*pid, {"Work", "Red"}));
+  const Json f = ctl.project_file(*pid);
+  CHECK(f["tags"].size() == 2u);
+  CHECK(f["folder"].get<std::string>().ends_with("Elsewhere"));
+  // Locked: refused with changes not saved; saved, locked, then every
+  // change and Save refused by name, until unlocked.
+  CHECK(ctl.set_project_locked(*pid, true).error().key ==
+        "core.project_lock_edited");
+  REQUIRE_OK(ctl.save_project(*pid));
+  REQUIRE_OK(ctl.set_project_locked(*pid, true));
+  CHECK(jget(ctl.project_state(*pid), "locked", false));
+  CHECK(jget(ctl.project_file(*pid), "locked", false));
+  auto refused = ctl.add_layer(*pid, **view);
+  REQUIRE(!refused.ok());
+  CHECK(refused.error().key == "core.project_locked");
+  CHECK(ctl.save_project(*pid).error().key == "core.project_locked");
+  CHECK(!ctl.move_project(*pid, root / "Moved").ok());
+  // Duplicated while locked: a project of its own -- a new id, its name,
+  // unlocked -- opened beside it; a plain copy of the package (the
+  // Finder's) refused while the original is open, not taken for it.
+  const fs::path dup = root / "Elsewhere" / "Renamed copy.valtz";
+  REQUIRE_OK(ctl.duplicate_project(*pid, dup));
+  CHECK(!finder_locked(dup));
+  auto twin = ctl.open_project(dup);
+  REQUIRE_OK(twin);
+  CHECK(*twin != *pid);
+  CHECK(jget<std::string>(ctl.project_state(*twin), "name", "") ==
+        "Renamed copy");
+  CHECK(fs::path(jget<std::string>(ctl.project_state(*pid), "package", ""))
+            .filename() == "Renamed.valtz");
+  REQUIRE_OK(ctl.set_project_locked(*pid, false));
+  std::error_code ec;
+  fs::copy(root / "Elsewhere" / "Renamed.valtz", root / "Finder copy.valtz",
+           fs::copy_options::recursive, ec);
+  REQUIRE(!ec);
+  auto same = ctl.open_project(root / "Finder copy.valtz");
+  REQUIRE(!same.ok());
+  CHECK(same.error().key == "core.project_same_open");
+  REQUIRE_OK(ctl.add_layer(*pid, **view));
+  REQUIRE_OK(ctl.save_project(*pid));
+}
+
 TEST(controller, undo_save_revert_and_resume)
 {
   auto root = test::temp_dir("ctl-document");
@@ -12620,7 +12827,7 @@ struct RegenBench {
   // `fleet_config`: in that fleet (its configuration's file), else none.
   explicit RegenBench(const char* name, bool refiner, bool pika = false,
                       bool ref2va = false, bool edit = false,
-                      const fs::path& fleet_config = {})
+                      const fs::path& fleet_config = {}, bool pi = false)
       : root(fleet_config.empty() ? test::temp_dir(name)
                                   : fleet_config.parent_path())
   {
@@ -12650,6 +12857,18 @@ struct RegenBench {
       install("MiniMaxAI/MiniMax-H3/Ref2VA/model.safetensors");
       install("lightx2v/Minimax-h3-Turbo/"
               "minimax_h3_ref2v_turbo_8step_v1.0_768p_bf16.safetensors");
+    }
+    if (pi) {
+      // pi-H3: the pruned int8 DiT, the 4-step DWD adapter and the
+      // 2-step one without DWD.
+      install("Comfy-Org/MiniMax-H3/diffusion_models/"
+              "minimax_h3_fl2va_pruned_int8_convrot.safetensors");
+      install("Lakonik/pi-H3/pi_h3_4step_dwd_adapter/"
+              "diffusion_pytorch_model.safetensors");
+      install("Lakonik/pi-H3/pi_h3_4step_dwd_adapter/config.json");
+      install("Lakonik/pi-H3/pi_h3_2step_adapter/"
+              "diffusion_pytorch_model.safetensors");
+      install("Lakonik/pi-H3/pi_h3_2step_adapter/config.json");
     }
     if (pika) {
       // Pika H3 Flex's FL2VA adapter, its manifest beside it.
@@ -12699,6 +12918,75 @@ struct RegenBench {
   }
 };
 
+// MiniMax H3 trains (DESIGN §8c): FL2VA on pictures and clips, Ref2VA on
+// them with their references -- each one's `.refs` in the dataset, a
+// path a line -- MiniMax-H3-Image on MiniMax-H3's text encoder, another
+// model's. A Qwen-Image 2.1 run takes no clip.
+TEST(controller, minimax_h3_trains_on_clips_and_references)
+{
+  RegenBench b("h3-train", false, false, true);
+  Controller& ctl = *b.ctl;
+  const fs::path data = b.root / "samples";
+  fs::create_directories(data / "references");
+  for (const char* f : {"fox.png", "run.mp4", "references/den.png"}) {
+    std::ofstream(data / f) << "x";
+  }
+  std::ofstream(data / "run.refs") << "# the den\nreferences/den.png\n";
+  const auto ask = [&](const char* model, const char* name) {
+    return ctl.train_lora({{"model", model}, {"name", name},
+                           {"items", Json::array({data.string()})},
+                           {"dataset", {{"trigger_word", "ohwx"},
+                                        {"frames", Json::array({39})}}},
+                           {"train", {{"steps", 10}}}});
+  };
+
+  // FL2VA: the picture and the clip (the references folder's skipped),
+  // no references kept -- it reads none.
+  auto f = ask("minimax-h3-fl2va", "fox-h3");
+  REQUIRE_OK(f);
+  const engine::JobSpec* fs1 = b.engine->spec(*f);
+  REQUIRE(fs1);
+  CHECK(jget<std::string>(fs1->params, "shape", "") == "h3");
+  CHECK(jget(fs1->params, "clips", false));
+  const Json fds = jget(fs1->params, "dataset", Json::object());
+  CHECK(jget<std::string>(fds, "media", "") == "auto");
+  const fs::path fdir = jget<std::string>(fds, "dir", "");
+  int links = 0, refs = 0;
+  for (const auto& e : fs::recursive_directory_iterator(fdir)) {
+    links += e.is_symlink();
+    refs += e.path().extension() == ".refs";
+  }
+  CHECK(links == 2 && refs == 0);
+  // The catalog's rate where none is asked.
+  CHECK(jget(jget(fs1->params, "optimizer", Json::object()),
+             "learning_rate", 0.0) == 0.0002);
+  CHECK(!jget(fs1->params, "train", Json::object()).contains("preview_cfg"));
+
+  // Ref2VA: the clip's reference, made absolute, in its .refs.
+  auto r = ask("minimax-h3-ref2va", "fox-ref");
+  REQUIRE_OK(r);
+  const engine::JobSpec* rs = b.engine->spec(*r);
+  REQUIRE(rs);
+  CHECK(jget<std::string>(rs->params, "shape", "") == "h3-ref2va");
+  CHECK(jget(rs->params, "reference_short_edge", 0) == 1024);
+  const fs::path rdir =
+      jget<std::string>(jget(rs->params, "dataset", Json::object()), "dir",
+                        "");
+  std::string written;
+  for (const auto& e : fs::recursive_directory_iterator(rdir)) {
+    if (e.path().extension() == ".refs") {
+      std::ifstream in(e.path());
+      std::getline(in, written);
+    }
+  }
+  CHECK(written == (data / "references" / "den.png").string());
+
+  // A reference that is not there: refused by name.
+  fs::remove(data / "references" / "den.png");
+  CHECK(!ask("minimax-h3-ref2va", "fox-ref2").ok());
+}
+
+
 }
 
 // Pika H3 Flex on (Favor's Custom, DESIGN §4c): its adapter the job's
@@ -12745,6 +13033,78 @@ TEST(controller, a_clip_runs_pika_h3_flex)
   CHECK(s->model.lora.filename().string().find("8step") !=
         std::string::npos);
   CHECK(jget(s->params, "steps", 0) == 8);
+}
+
+// pi-H3 (vpipe 7b863a88): Custom's switch puts the adapter chosen -- 4
+// steps with DWD by default, or 2, without -- in the first slot over the
+// PRUNED DiT (dit_model), at its own steps and shifts; one not here is
+// asked for; DWD decodes no latent, so a clip past 768P is made in one
+// pass and keeps none.
+TEST(controller, a_clip_runs_pi_h3_over_the_pruned_dit)
+{
+  RegenBench b("pi-h3", true, false, false, false, {}, true);
+  REQUIRE(b.ctl && b.engine);
+  auto opts = b.ctl->tuning("minimax-h3-fl2va", "balanced", false,
+                            Json::object());
+  REQUIRE_OK(opts);
+  bool offered = false;
+  for (const auto& o : (*opts)["options"]) {
+    if (o["key"] == "pi_h3") {
+      offered = jget(o, "available", false);
+    }
+  }
+  CHECK(offered);
+  GenerateVideoRequest req;
+  req.project = b.pid;
+  req.model = "minimax-h3-fl2va";
+  req.prompt = "A fox trotting through snow at dawn.";
+  req.width = 832;
+  req.height = 480;
+  req.frames = 39;
+  req.tuning = {{"pi_h3", true}};
+  REQUIRE_OK(b.ctl->generate_video(req));
+  const engine::JobSpec* s = b.job(engine::kOpGenerateVideo, 1);
+  REQUIRE(s != nullptr);
+  CHECK(jget<std::string>(s->params, "lora", "") ==
+        "minimax-h3-pi-4step-dwd");
+  CHECK(jget(s->params, "lora_scale", 0.0) == 1.0);
+  CHECK(jget(s->params, "steps", 0) == 4);
+  CHECK(jget(s->params["tuning"], "video_shift", 0) == 12);
+  CHECK(jget<std::string>(s->params, "dit_model", "") ==
+        "minimax-h3-fl2va-pruned-int8");
+  CHECK(s->model.dit.filename() ==
+        "minimax_h3_fl2va_pruned_int8_convrot.safetensors");
+  CHECK(s->model.lora.parent_path().filename() ==
+        "pi_h3_4step_dwd_adapter");
+  // Two steps, no DWD: that adapter.
+  req.tuning = {{"pi_h3", true}, {"pi_h3_steps", "2"},
+                {"pi_h3_vae", true}};
+  REQUIRE_OK(b.ctl->generate_video(req));
+  s = b.job(engine::kOpGenerateVideo, 2);
+  REQUIRE(s != nullptr);
+  CHECK(jget<std::string>(s->params, "lora", "") == "minimax-h3-pi-2step");
+  CHECK(jget(s->params, "steps", 0) == 2);
+  // One not here (2-step DWD): asked for, not run.
+  req.tuning = {{"pi_h3", true}, {"pi_h3_steps", "2"}};
+  CHECK(!b.ctl->generate_video(req).ok());
+  // DWD past 768P: in one pass, no latents kept.
+  req.tuning = {{"pi_h3", true}};
+  req.width = 1920;
+  req.height = 1088;
+  req.keep_latents = true;
+  REQUIRE_OK(b.ctl->generate_video(req));
+  s = b.job(engine::kOpGenerateVideo, 3);
+  REQUIRE(s != nullptr);
+  CHECK(jget<std::string>(s->params, "regenerate", "").empty());
+  CHECK(!jget(s->params, "keep_latents", false));
+  CHECK(jget(s->params, "width", 0) == 1920);
+  // Without DWD past 768P: drafted and regenerated as any clip.
+  req.tuning = {{"pi_h3", true}, {"pi_h3_steps", "2"},
+                {"pi_h3_vae", true}};
+  REQUIRE_OK(b.ctl->generate_video(req));
+  s = b.job(engine::kOpGenerateVideo, 4);
+  REQUIRE(s != nullptr);
+  CHECK(!jget<std::string>(s->params, "regenerate", "").empty());
 }
 
 // Past 768 on its short side (catalog `regenerate`), a clip from words is

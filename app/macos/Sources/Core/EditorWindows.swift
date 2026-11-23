@@ -102,6 +102,9 @@ final class EditorWindows {
     /// session.
     func launch() {
         guard primary == nil else { return }
+        // A double-click on a title bar's empty part: the window fills the
+        // screen, the Dock left clear, and back.
+        TitleBarZoom.install()
         let env = ProcessInfo.processInfo.environment
         let m = make(env["VALTZ_DEFAULT_PROJECT"].map { .open($0) }
                      ?? .anonymous, createIfMissing: true)
@@ -341,6 +344,14 @@ struct EditorWindow: View {
             if let model {
                 RootView(model: model)
                     .frame(minWidth: model.windowMinWidth, minHeight: 620)
+                    // The window's width, for the title bar's groups to
+                    // fit (read here: in the toolbar, a folded item's
+                    // view leaves the window and hears no resize).
+                    .background(WindowWidthReader {
+                        if abs($0 - model.titleBarWidth) > 0.5 {
+                            model.titleBarWidth = $0
+                        }
+                    })
             } else {
                 Color.clear
                     .frame(minWidth: AppModel.editorMinWidth, minHeight: 620)

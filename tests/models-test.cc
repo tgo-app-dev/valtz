@@ -2133,6 +2133,64 @@ TEST(models, minimax_h3_image_conditions_on_any_h3_encoder)
 // kept (the adapter subtracted); a file that is
 // gone kept, off. An older "turbo" file goes first, in the catalog's
 // place.
+// A DIAL (MiniMax H3's steering): told by its one tensor; offered on
+// H3's models alone; settled -- its strength held to -3..3, a clip's
+// schedule sorted and held to the square, a picture's a constant -- and
+// its file's own words carried.
+TEST(models, dials_are_told_offered_and_settled)
+{
+  const auto dir = test::temp_dir("dials");
+  write_safetensors(dir / "glow.safetensors",
+                    {{"diffusion_model.token_refiner.dials_shift", {64}}});
+  write_safetensors(dir / "pre.safetensors",
+                    {{"diffusion_model.condition_proj.diff_b", {64}}});
+  write_safetensors(dir / "two.safetensors",
+                    {{"diffusion_model.token_refiner.dials_shift", {64}},
+                     {"other", {64}}});
+  CHECK(checkpoint_kind(dir / "glow.safetensors") == "dial");
+  CHECK(checkpoint_kind(dir / "pre.safetensors") == "dial");
+  CHECK(checkpoint_kind(dir / "two.safetensors") != "dial");
+
+  auto c = Catalog::builtin();
+  REQUIRE_OK(c);
+  const ModelEntry* clip = c->find("minimax-h3-fl2va");
+  const ModelEntry* still = c->find("minimax-h3-image");
+  const ModelEntry* krea = c->find("krea2-turbo");
+  REQUIRE(clip && still && krea);
+  TuningContext ctx;
+  const std::string glow = (dir / "glow.safetensors").string();
+  const Json over = {{"dials", Json::array({
+      {{"path", glow}, {"strength", 5.0},
+       {"points", Json::array({Json::array({1.2, 4.0}),
+                               Json::array({0.0, -0.5}),
+                               Json::array({0.5, 1.5})})}},
+      {{"path", (dir / "gone.safetensors").string()}, {"strength", 1.0}},
+  })}};
+  const Json v = resolve_tuning(*clip, ctx, "balanced", false, over);
+  const Json ds = jget(v, "dials", Json::array());
+  REQUIRE(ds.size() == 2);
+  CHECK(ds[0]["strength"].get<double>() == 3.0);
+  const Json pts = ds[0]["points"];
+  REQUIRE(pts.size() == 3);
+  CHECK(pts[0][0].get<double>() == 0.0 && pts[0][1].get<double>() == -0.5);
+  CHECK(pts[2][0].get<double>() == 1.0 && pts[2][1].get<double>() == 3.0);
+  CHECK(jget(ds[0], "on", false));
+  CHECK(jget<std::string>(jget(ds[0], "about", Json::object()), "name",
+                          "") == "glow");
+  // A file not there: off, wanted.
+  CHECK(!jget(ds[1], "on", true) && jget(ds[1], "wanted", false));
+  // A picture: constants alone.
+  const Json sv = resolve_tuning(*still, ctx, "balanced", false, over);
+  CHECK(!jget(sv, "dials", Json::array())[0].contains("points"));
+  // Not H3: no Dials offered.
+  bool offered = false;
+  for (const auto& o : tuning_options(*krea, ctx, "balanced", false)
+           ["options"]) {
+    offered = offered || o["key"] == "dials";
+  }
+  CHECK(!offered);
+}
+
 TEST(models, tuning_loras)
 {
   auto c = Catalog::builtin();

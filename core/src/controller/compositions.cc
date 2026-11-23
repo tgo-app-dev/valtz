@@ -15,6 +15,7 @@
 #include "valtz/media/sound.h"
 
 #include <algorithm>
+#include <tuple>
 #include <cmath>
 #include <ctime>
 #include <format>
@@ -1127,6 +1128,11 @@ Controller::set_layer_source(ProjectId pid, AssetId aid,
   if (it->source) {
     auto old = p->asset(*it->source);
     was_still = old.ok() && old->kind == AssetKind::Image;
+  }
+  // A blank layer never named (its name empty: "Layer N" to the app)
+  // takes its first content's name, as a new layer showing it does.
+  if (it->empty() && it->name.empty()) {
+    it->name = utf8_prefix(one_line(src.name), 64);
   }
   // What it shows now: marks were the old one's; where it starts stays.
   it->source = source;
@@ -3361,6 +3367,24 @@ Controller::sounds_(project::Project& p, const project::Asset& a, int depth)
   });
 }
 
+namespace {
+
+// What a timed source holds, in its seconds: [lo, hi) -- a part's, its
+// span of the clip (TimedSource's span_in / span_out, inclusive).
+std::pair<double, double>
+content_span(double seconds, std::int64_t span_in, std::int64_t span_out,
+             double span_rate)
+{
+  const double lo = span_in >= 0 ? static_cast<double>(span_in) / span_rate
+                                 : 0.0;
+  const double hi = span_out >= 0
+      ? std::min(seconds, static_cast<double>(span_out + 1) / span_rate)
+      : seconds;
+  return {lo, hi};
+}
+
+}  // namespace
+
 Result<std::int64_t>
 Controller::length_of_(ProjectId pid, AssetId aid, int depth)
 {
@@ -3461,6 +3485,12 @@ Controller::movie_stack_(ProjectId pid, AssetId aid, bool for_job,
     ml.video = src.video;
     ml.audio_only = src.audio_only;
     ml.timing = timing_over_(l.time, src, rate, speed_keys_of(a, l.id));
+    if (!for_job && src.seconds > 0) {
+      const Rational sr = src.span_rate.num > 0 ? src.span_rate
+                                                : src.mark_rate;
+      std::tie(ml.content_in, ml.content_out) = content_span(
+          src.seconds, src.span_in, src.span_out, sr.to_double());
+    }
     if (!for_job && !src.timed_by.is_nil()) {
       auto at = attached.find(src.timed_by);
       if (at == attached.end()) {
@@ -3845,6 +3875,8 @@ Controller::place_in_project(ProjectId pid, AssetId asset,
         size, rate, p->name(), ""));
     project::Layer l0;
     l0.source = asset;
+    // named after it, as every layer given its first content is
+    l0.name = utf8_prefix(one_line(a.name), 64);
     mark_guided_head_(*p, a, l0);
     VALTZ_TRY(p->set_layers(c, {l0}));
     VALTZ_TRY(p->set_composition(c));
@@ -3904,6 +3936,11 @@ Controller::place_in_project(ProjectId pid, AssetId asset,
     if (n.ok()) {
       timeline = *n;
     }
+  }
+  // A blank take layer never named takes the take's name (one that held
+  // a take keeps its name: the person's, or its first content's).
+  if (it->empty() && it->name.empty()) {
+    it->name = utf8_prefix(one_line(a.name), 64);
   }
   // Layer 0: a new take, raw -- the look the last one had there goes
   // with it, and its marks; where it starts stays.
@@ -4153,6 +4190,8 @@ Controller::place_result(ProjectId pid, AssetId asset,
       size, rate, claims ? p->name() : a.name, a.folder));
   project::Layer l0;
   l0.source = asset;
+  // named after it, as every layer given its first content is
+  l0.name = utf8_prefix(one_line(a.name), 64);
   mark_guided_head_(*p, a, l0);
   VALTZ_TRY(p->set_layers(c, {l0}));
   if (claims) {
@@ -4852,6 +4891,114 @@ Controller::stretch_layer(ProjectId pid, AssetId aid, const std::string& layer,
   return ok_status();
 }
 
+Status
+Controller::trim_layer_edge(ProjectId pid, AssetId aid,
+                            const std::string& layer, bool left,
+                            std::int64_t to)
+{
+  auto undo = command_(pid, "layer.trim", aid, layer);
+  project::Project* p = project(pid);
+  if (!p) {
+    return make_error(Code::NotFound, msg::kProjectNotOpen);
+  }
+  VALTZ_ASSIGN(project::Asset a, p->asset(aid));
+  VALTZ_TRY(unlocked_(a, layer));
+  if (!is_timeline(a)) {
+    return make_error(Code::InvalidArgument, msg::kTimelineNeedsClip);
+  }
+  auto ls = a.layers;
+  auto it = find_layer(ls, layer);
+  if (it == ls.end()) {
+    return make_error(Code::InvalidArgument, "no such layer");
+  }
+  if (!it->source) {
+    return make_error(Code::InvalidArgument, msg::kTrimEdgeNeedsTimed);
+  }
+  const Rational rate = rate_of_(*p, a);
+  media::PixelSize frame;
+  if (a.kind != AssetKind::Audio) {
+    VALTZ_ASSIGN(frame, own_frame_(*p, a, 0));
+  }
+  VALTZ_ASSIGN(TimedSource src,
+               timed_source_(pid, *p, *it, false, frame, 0,
+                             a.kind == AssetKind::Audio));
+  if (src.seconds <= 0) {
+    return make_error(Code::InvalidArgument, msg::kTrimEdgeNeedsTimed);
+  }
+  const media::LayerTiming t =
+      timing_over_(it->time, src, rate, speed_keys_of(a, it->id));
+  if (!t.constant_speed()) {
+    return make_error(Code::InvalidArgument, msg::kTrimEdgeKeyedSpeed);
+  }
+  // In SOURCE seconds: what its marks span, and what its content does --
+  // a part's, its span of the clip.
+  const double fps = rate.to_double();
+  const double speed = std::max(1e-6, t.speed_at_local(0));
+  const Rational marks = it->time.rate.num > 0 ? it->time.rate
+                                                : src.mark_rate;
+  const double mrate = marks.to_double();
+  const Rational span = src.span_rate.num > 0 ? src.span_rate
+                                              : src.mark_rate;
+  const auto [lo, hi] = content_span(src.seconds, src.span_in, src.span_out,
+                                     span.to_double());
+  const double in_s = std::max(lo, t.in);
+  const double out_s = std::min(hi, t.out >= media::kForever / 2
+                                        ? hi : t.out);
+  // A frame of the timeline, in source seconds.
+  const double step = speed / fps;
+  auto& tm = it->time;
+  if (left) {
+    // How far the edge moves, held so the mark-in stays in the content,
+    // a frame before the mark-out, and the start at frame 0 or after.
+    std::int64_t d = to - tm.offset;
+    const auto most_back = static_cast<std::int64_t>(
+        std::floor((in_s - lo) / step + 1e-6));
+    const auto most_fwd = static_cast<std::int64_t>(
+        std::floor((out_s - in_s) / step + 1e-6)) - 1;
+    d = std::clamp(d, -std::min(most_back, tm.offset),
+                   std::max<std::int64_t>(0, most_fwd));
+    if (d == 0) {
+      return ok_status();
+    }
+    const double n_in = in_s + static_cast<double>(d) * step;
+    tm.in = std::max<std::int64_t>(
+        0, std::llround((n_in - lo) * mrate));
+    tm.offset += d;
+    if (tm.duration > 0) {
+      tm.duration = std::max<std::int64_t>(1, tm.duration - d);
+    }
+  } else {
+    const auto len_now = static_cast<std::int64_t>(
+        std::llround(t.length * fps));
+    std::int64_t len = to - tm.offset;
+    const auto most = static_cast<std::int64_t>(
+        std::floor((hi - in_s) / step + 1e-6));
+    len = std::clamp<std::int64_t>(len, 1, std::max<std::int64_t>(1, most));
+    if (len == len_now) {
+      return ok_status();
+    }
+    const double n_out = in_s + static_cast<double>(len) * step;
+    // Inclusive: the last of its frames.
+    tm.out = std::max<std::int64_t>(
+        tm.in < 0 ? 0 : tm.in,
+        std::llround((n_out - lo) * mrate) - 1);
+    if (tm.in < 0) {
+      tm.in = 0;
+    }
+    if (tm.duration > 0) {
+      tm.duration = len;
+    }
+  }
+  if (tm.rate.num <= 0) {
+    tm.rate = marks;
+  }
+  VALTZ_TRY(p->set_layers(aid, std::move(ls)));
+  VALTZ_TRY(grow_to_content_(pid, *p, aid));
+  post_("assets.changed", JobId{}, {{"project", pid}, {"asset", aid},
+                                    {"reason", "layers"}});
+  return ok_status();
+}
+
 bool
 Controller::sequenced_(const project::Asset& comp, const project::Asset& src)
 {
@@ -5464,6 +5611,7 @@ Controller::derive_modified(ProjectId pid, AssetId source, std::string name)
       size, rate, name.empty() ? s.name : std::move(name), s.folder));
   project::Layer l0;
   l0.source = source;
+  l0.name = utf8_prefix(one_line(s.name), 64);
   VALTZ_TRY(p->set_layers(c, {l0}));
   return c;
 }

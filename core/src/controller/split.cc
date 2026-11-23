@@ -525,6 +525,11 @@ Controller::split_plan_(const project::Recipe& r, const engine::ModelRef& ref,
   if (ane && std::ranges::find(families, "h3-ane") == families.end()) {
     return no(msg::kSplitNeuralEngine);
   }
+  // pi-H3: vpipe binds its adapter's whole-tensor overwrites on a whole
+  // DiT alone, never a rank's share.
+  if (jget(t, "pi_h3", false)) {
+    return no(msg::kSplitPiH3);
+  }
   const bool taomate_streams =
       jget(t, "taomate", false) && !jget(t, "taomate_lora", false);
   if (jget(t, "vdn", false) || taomate_streams || !ref.branch.empty() ||

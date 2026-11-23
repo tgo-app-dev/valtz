@@ -200,9 +200,18 @@ struct TuningPanel: View {
         ForEach(Array(parts.enumerated()), id: \.element.id) { n, e in
             checkpointRow(loras.count + n + 1, e)
         }
+        // MiniMax H3's DIALS: a constant strength each, or a schedule
+        // over the clip's time.
+        if let o = info.options.first(where: { $0.key == "dials" }) {
+            ForEach(info.tuning.dials) { d in
+                dialRows(d, curves: o.curves)
+            }
+        }
         GridRow {
             Color.clear.gridCellUnsizedAxes([.horizontal, .vertical])
-            Text("Drop LoRA, DiT or VAE weights on this panel: .safetensors files or folders, or a Draw Things .ckpt of a DiT.")
+            Text(info.options.contains(where: { $0.key == "dials" })
+                 ? "Drop LoRA, DiT or VAE weights, or a Dial, on this panel: .safetensors files or folders, or a Draw Things .ckpt of a DiT."
+                 : "Drop LoRA, DiT or VAE weights on this panel: .safetensors files or folders, or a Draw Things .ckpt of a DiT.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -268,6 +277,7 @@ struct TuningPanel: View {
         let turbo = l.path == info.turboLoRA
         let blocked = turbo && (info.tuning.flags["hyperflow"] == true ||
                                 info.tuning.flags["pika_flex"] == true ||
+                                info.tuning.flags["pi_h3"] == true ||
                                 info.tuning.flags["taomate"] == true)
         return weightRow(
             number: number, name: info.name(l), path: l.path,
@@ -278,6 +288,8 @@ struct TuningPanel: View {
                                    ? String(localized: "TaoMate runs in its place")
                                    : info.tuning.flags["pika_flex"] == true
                                    ? String(localized: "Pika H3 Flex runs in its place")
+                                   : info.tuning.flags["pi_h3"] == true
+                                   ? String(localized: "pi-H3 runs in its place")
                                    : String(localized: "HyperFlow runs in its place"))
                             : String(localized: "Eight LoRAs run at a time"),
             fast: turbo,
@@ -305,6 +317,106 @@ struct TuningPanel: View {
                 .padding(.horizontal, 6)
                 .padding(.vertical, 1)
                 .background(.quaternary, in: Capsule())
+        }
+    }
+
+    /// A DIAL's rows: { its on box, Constant | Schedule, its name, remove },
+    /// then its strength -- a slider from -3 to 3 (its two sides' words at
+    /// its ends) -- or its schedule over the clip (DialCurveEditor).
+    @ViewBuilder
+    private func dialRows(_ d: TuningDial, curves: Bool) -> some View {
+        GridRow {
+            Toggle(d.name, isOn: Binding(
+                get: { d.on && !d.missing },
+                set: { on in model.setDial(d.path) { $0.on = on } }))
+                .labelsHidden()
+                .toggleStyle(.checkbox)
+                .disabled(d.missing)
+                .help("Steer the clip with this Dial")
+                .gridColumnAlignment(.trailing)
+            if curves {
+                Picker("", selection: Binding(
+                    get: { d.scheduled },
+                    set: { on in
+                        model.setDial(d.path) {
+                            $0.points = on
+                                ? [[0, $0.strength], [1, $0.strength]] : []
+                        }
+                    })) {
+                    Text("Constant").tag(false)
+                    Text("Schedule").tag(true)
+                }
+                .labelsHidden()
+                .pickerStyle(.segmented)
+                .fixedSize()
+                .help("A strength for the whole clip, or a strength that changes over the clip's time")
+            } else {
+                Text("Constant").foregroundStyle(.secondary)
+                    .help("A picture is one frame: a Dial runs at one strength")
+            }
+            HStack(spacing: 6) {
+                Image(systemName: "dial.medium")
+                    .foregroundStyle(.secondary)
+                Text(verbatim: d.name)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .foregroundStyle(d.missing ? .secondary : .primary)
+                    .strikethrough(d.missing)
+                    .help(d.missing ? String(localized: "File not found: \(d.path)")
+                          : [d.about, d.notes].filter { !$0.isEmpty }
+                              .joined(separator: "\n\n"))
+                if d.missing {
+                    Text("Not found")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.red)
+                }
+                Spacer(minLength: 0)
+                Button {
+                    model.removeDial(d.path)
+                } label: {
+                    Image(systemName: "minus.circle")
+                }
+                .buttonStyle(.borderless)
+                .help("Take this Dial off the list")
+            }
+        }
+        GridRow {
+            Color.clear.gridCellUnsizedAxes([.horizontal, .vertical])
+            Group {
+                if d.scheduled {
+                    DialCurveEditor(points: d.points, negative: d.negative,
+                                    positive: d.positive) { pts in
+                        model.setDial(d.path) { $0.points = pts }
+                    }
+                } else {
+                    VStack(alignment: .leading, spacing: 2) {
+                        HStack(spacing: 8) {
+                            Slider(value: Binding(
+                                get: { d.strength },
+                                set: { v in
+                                    model.setDial(d.path) {
+                                        $0.strength = (v * 20).rounded() / 20
+                                    }
+                                }), in: DialCurveEditor.range)
+                            Text(verbatim: String(format: "%+.2f", d.strength))
+                                .monospacedDigit()
+                                .frame(width: 40, alignment: .trailing)
+                        }
+                        HStack {
+                            Text(verbatim: d.negative.isEmpty ? "−3"
+                                 : "−3 · \(d.negative)")
+                            Spacer()
+                            Text(verbatim: d.positive.isEmpty ? "+3"
+                                 : "\(d.positive) · +3")
+                        }
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                    }
+                }
+            }
+            .disabled(!d.on || d.missing)
+            .gridCellColumns(2)
         }
     }
 
@@ -440,6 +552,9 @@ struct TuningPanel: View {
         case "steps": String(localized: "Steps")
         case "hyperflow": String(localized: "HyperFlow")
         case "pika_flex": String(localized: "Pika H3 Flex")
+        case "pi_h3": String(localized: "pi-H3")
+        case "pi_h3_steps": String(localized: "pi-H3 steps")
+        case "pi_h3_vae": String(localized: "Decode with the VAE")
         case "taomate": String(localized: "TaoMate")
         case "taomate_lora": String(localized: "As a LoRA only")
         case "vdn": String(localized: "VDN branch")
@@ -517,6 +632,9 @@ struct TuningPanel: View {
         case "steps": String(localized: "Denoising steps")
         case "hyperflow": String(localized: "8-step flow-map adapter; each step ~9% slower")
         case "pika_flex": String(localized: "Pika Labs' 6-step adapter, on its own schedule")
+        case "pi_h3": String(localized: "pi-Flow's 2- or 4-step adapter, over the pruned DiT")
+        case "pi_h3_steps": String(localized: "Four, or two for a draft")
+        case "pi_h3_vae": String(localized: "Off: DWD, its pixel head makes the frames (recommended)")
         case "taomate": String(localized: "3-step streaming method; its cache on disk")
         case "taomate_lora": String(localized: "Its adapter for 3 steps; no streaming, no cache")
         case "vdn": String(localized: "Linear attention for long, large clips")
@@ -552,6 +670,9 @@ struct TuningPanel: View {
     static func help(_ key: String) -> String {
         switch own(key) {
         case "hyperflow": String(localized: "Video Rebirth's flow-map adapter brings its own 8-step grid. It takes a LoRA slot, in place of the Turbo LoRA; keep the shifts at 12 and 3, which it was trained at.")
+        case "pi_h3": String(localized: "Lakonik's pi-H3: pi-Flow v2 distillations of MiniMax H3 FL2VA into four or two steps, for a clip from words, a first frame, a last frame or both, with its soundtrack. Each is an adapter trained on Comfy-Org's PRUNED FL2VA DiT, which runs in place of FL2VA's own (21 GB at int8; its text encoder and VAEs are FL2VA's). Its steps, its grid and its shifts are its own; it takes a LoRA slot in place of the Turbo LoRA, and HyperFlow, Pika H3 Flex, TaoMate, VDN and MotionCache are off with it. Not on a clip split with a paired Mac. No Favor preset turns it on.")
+        case "pi_h3_steps": String(localized: "Four steps, or two -- each its own adapter, a download of its own. The release finds four the better clip; two is a quick draft.")
+        case "pi_h3_vae": String(localized: "Off -- the release's recommendation -- pi-H3's DWD adapter runs (Decoding Without a Decoder): at the last step the DiT's features become the frames through the adapter's own pixel head, and the video VAE is never loaded, a lighter decode (3.1 GB against 5.8 at 832 × 480 × 73); a clip past 768P is then made at its size in one pass (there is no latent to regenerate) and keeps no latents. On, its VAE-decoded adapter runs and the clip is decoded as usual.")
         case "pika_flex": String(localized: "Pika Labs' six-step post-training of MiniMax H3, an adapter for each partition (FL2VA's and Ref2VA's). Its manifest states how it must be sampled: its own grid of six steps at shifts 12 and 3, the clip's estimate put back at the next step's noise with fresh noise each step, which a plain six-step run is not. The steps and shifts are its own; it takes a LoRA slot in place of the Turbo LoRA, and HyperFlow, TaoMate and MotionCache are off with it. A clip that opens or ends on a picture shows that picture to the prompt encoder too, as Pika's release does. Made for 480p and 768p, 5 to 15 seconds; no Favor preset turns it on.")
         case "taomate": String(localized: "TaoMate-H3's streaming method, not a LoRA: the base model writes the soundtrack, then its adapter writes the video in chunks, 3 steps each, against a cache of the chunks before. It takes a LoRA slot in place of the Turbo LoRA. Words to a clip only, made in whole 5-second requests. That cache is kept on disk (in 8 bits with int8 GEMM) and read back a block at a time. An alternative to the Turbo LoRA: no Favor preset turns it on.")
         case "taomate_lora": String(localized: "TaoMate-H3's adapter run as an ordinary LoRA: 3 steps over the whole clip, at the shifts TaoMate's own schedule uses (video 12, audio 3). No soundtrack pass by the base model, no chunks and no cache, so no disk traffic, and a clip may open on a picture. Not the method the adapter was trained for: judge its results by eye.")
@@ -609,6 +730,8 @@ struct TuningPanel: View {
         case ("ane_int8_tier", "token"): String(localized: "Per Token")
         case ("ane_int8_tier", "token_plain"):
             String(localized: "Per Token, Unrotated")
+        case ("pi_h3_steps", "4"): String(localized: "4 Steps")
+        case ("pi_h3_steps", "2"): String(localized: "2 Steps")
         case ("sol_threshold", "diag"): String(localized: "Diagonal")
         case ("sol_threshold", "exact"): String(localized: "Exact")
         case ("refine_start", "draft"): String(localized: "Keep the Draft")
@@ -740,9 +863,10 @@ private enum TuningGroup: CaseIterable, Identifiable {
     static func of(_ key: String) -> TuningGroup {
         if key.hasPrefix("regenerate_") { return .regenerate }
         return switch key {
-        case "steps", "hyperflow", "pika_flex", "taomate", "taomate_lora":
+        case "steps", "hyperflow", "pika_flex", "pi_h3", "pi_h3_steps",
+             "pi_h3_vae", "taomate", "taomate_lora":
             .steps
-        case "loras", "dits", "vaes": .weights
+        case "loras", "dits", "vaes", "dials": .weights
         case "vdn", "vdn_range", "sol_attn", "sol_threshold", "sol_tau",
              "sage_attn", "sage_pv8", "sage_pv8_all_rows":
             .attention

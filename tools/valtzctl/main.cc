@@ -53,6 +53,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <format>
+#include <ranges>
 #include <fstream>
 #include <iostream>
 #include <iterator>
@@ -171,6 +172,9 @@ usage()
       "         a prompt's is then kept as its words change, \"\" names it\n"
       "         from its words again)\n"
       "  save <project.valtz> [--as <new.valtz>] | revert <project.valtz>\n"
+      "  file <project.valtz> [info | move <path> | tags <a,b> | lock |\n"
+      "       unlock | duplicate <path>]   its file: renamed or moved,\n"
+      "       tagged, locked, copied as a project of its own\n"
       "         (the working copy written to its package, or read back\n"
       "         from it; every command saves as it ends, but --unsaved)\n"
       "  undo <project.valtz> | redo <project.valtz>  (its history of\n"
@@ -553,6 +557,7 @@ usage()
       "         [--tune k=v,...]\n"
       "         [--turbo none|<id>|<file>] [--lora <file>[:scale]]...\n"
       "         [--dit <file|folder>] [--vae <file|folder>]\n"
+      "         [--dial <file>[:strength] | --dial <file>@x:s,x:s,...]...\n"
       "         (Favor's options for the model -- their values at the\n"
       "         preference, with --tune's laid on as Custom does, their\n"
       "         ranges and what this Mac can have; --continues: as for a\n"
@@ -568,7 +573,23 @@ usage()
       "         (regenerate_sol_tau=1.75); --turbo the catalog's\n"
       "         few-step LoRA off (none) or on, or a file in its place;\n"
       "         --lora adds one -- eight run, the first on -- at its\n"
-      "         scale, -2..2 (1 unsaid; negative subtracts the LoRA))\n"
+      "         scale, -2..2 (1 unsaid; negative subtracts the LoRA);\n"
+      "         --dial a MiniMax H3 Dial (MATLOWAI/H3-Dials) at a\n"
+      "         strength -3..3, or a clip's SCHEDULE of strengths over\n"
+      "         its time, x 0..1 its first frame to its end, linear\n"
+      "         between, two points at least)\n"
+      "  train <model-id> <picture|folder>... --name N [--trigger T]\n"
+      "         [--steps N] [--epochs N] [--rank N] [--resolution 512,768]\n"
+      "         [--lr X] [--optimizer adamw|prodigy|lion|sgd]\n"
+      "         [--schedule constant|linear|cosine|cosine_restarts]\n"
+      "         [--repeats N] [--batch N] [--seed N] [--save-every N]\n"
+      "         [--preview <prompt>]... [--template T] [--flip] [--i8]\n"
+      "         [--save-after s] [--preview-after s] [--stop-after s]\n"
+      "         (a LoRA trained on the pictures -- Qwen-Image 2.1 --\n"
+      "         into <models>/trained/<name>/: each picture's caption its\n"
+      "         .txt beside it; stopped, the same name resumes it)\n"
+      "  trained [rm <name> | end <name>]  (the runs kept; end: its\n"
+      "         resume state deleted, its latest checkpoint its adapter)\n"
       "  export <project.valtz> <asset-id|file> --format F -o <file>\n"
       "         [--quality 1..100]\n"
       "         [--bitrate 20M] [--max-bitrate 30M] [--video-quality 0..1]\n"
@@ -1088,6 +1109,17 @@ numbers_arg(const std::string& v)
 // list, as Custom's panel sets it. --turbo turns the catalog's Turbo LoRA
 // off (none) or on, or puts a file first, on; each --lora is added, on,
 // after the Turbo LoRA -- two on at most, the first ones (vpipe's slots).
+void
+must_exist(const std::string& flag, const std::string& path)
+{
+  std::error_code ec;
+  if (!std::filesystem::exists(path, ec)) {
+    std::fprintf(stderr, "valtzctl: %s %s: no such file or folder\n",
+                 flag.c_str(), path.c_str());
+    std::exit(2);
+  }
+}
+
 bool
 lora_arg(Json& tuning, const std::string& flag, const std::string& v)
 {
@@ -1105,7 +1137,40 @@ lora_arg(Json& tuning, const std::string& flag, const std::string& v)
     if (!tuning.contains(list)) {
       tuning[list] = Json::array();
     }
+    must_exist(flag, v);
     tuning[list].push_back({{"path", v}, {"on", true}});
+    return true;
+  }
+  // --dial <file>[:strength] -- a DIAL (MiniMax H3's steering) at a
+  // constant strength (-2..2), or <file>@x:s,x:s,... its SCHEDULE over
+  // the clip's time (x 0 its first frame .. 1 its end).
+  if (flag == "--dial") {
+    Json d = {{"on", true}};
+    std::string path = v;
+    if (const auto at = v.rfind('@'); at != std::string::npos) {
+      path = v.substr(0, at);
+      Json pts = Json::array();
+      std::string rest = v.substr(at + 1);
+      for (std::size_t i = 0; i <= rest.size();) {
+        const std::size_t j = std::min(rest.find(',', i), rest.size());
+        const std::string pt = rest.substr(i, j - i);
+        if (const auto c = pt.find(':'); c != std::string::npos) {
+          pts.push_back(Json::array({std::atof(pt.substr(0, c).c_str()),
+                                     std::atof(pt.substr(c + 1).c_str())}));
+        }
+        i = j + 1;
+      }
+      d["points"] = std::move(pts);
+    } else if (const auto c = v.rfind(':'); c != std::string::npos) {
+      path = v.substr(0, c);
+      d["strength"] = std::atof(v.substr(c + 1).c_str());
+    }
+    must_exist(flag, path);
+    d["path"] = path;
+    if (!tuning.contains("dials")) {
+      tuning["dials"] = Json::array();
+    }
+    tuning["dials"].push_back(std::move(d));
     return true;
   }
   if (flag != "--lora") {
@@ -1126,6 +1191,10 @@ lora_arg(Json& tuning, const std::string& flag, const std::string& v)
       scale = d;
     }
   }
+  // A file not there is refused by name: the core would leave it out,
+  // the job running without it -- a path split by the shell at a space
+  // made a LoRA's comparison come out as the model alone (2026-11-22).
+  must_exist(flag, path);
   // A list said replaces the preset's, so the Turbo LoRA comes back in by
   // "turbo" (unless --turbo says otherwise).
   if (!tuning.contains("loras")) {
@@ -2578,6 +2647,8 @@ main(int argc, char** argv)
   cfg.keep_working_copies = true;
   cfg.with_engine = cmd == "generate" || cmd == "video" || cmd == "audio" ||
                     cmd == "quantize" || cmd == "compress" || cmd == "ops" ||
+                    cmd == "train" || cmd == "trained" ||
+                    cmd == "train-caption" ||
                     find_asset_operation(cmd) != nullptr ||
                     (cmd == "ext" && (args.empty() || args[0] == "list")) ||
                     cmd == "status" || cmd == "families" ||
@@ -3432,6 +3503,45 @@ main(int argc, char** argv)
     std::cout << to_text(out, 2) << "\n";
     return 0;
   }
+  // `file <project.valtz> [info | move <path> | tags <a,b,...> | lock |
+  // unlock]`: the project's FILE, as its title bar's panel has it --
+  // renamed or moved (nothing unsaved written), its Finder tags, locked.
+  if (cmd == "file") {
+    if (args.empty()) {
+      return usage();
+    }
+    auto pid = open_or_fail(c, args[0]);
+    if (!pid.ok()) {
+      return fail(pid.error());
+    }
+    const std::string op = args.size() > 1 ? args[1] : "info";
+    Status st = ok_status();
+    if (op == "move" && args.size() > 2) {
+      st = c.move_project(*pid, args[2]);
+    } else if (op == "tags") {
+      std::vector<std::string> tags;
+      std::string all = args.size() > 2 ? args[2] : "";
+      for (std::size_t at = 0; at <= all.size();) {
+        const std::size_t to = std::min(all.find(',', at), all.size());
+        if (to > at) {
+          tags.push_back(all.substr(at, to - at));
+        }
+        at = to + 1;
+      }
+      st = c.set_project_tags(*pid, tags);
+    } else if (op == "lock" || op == "unlock") {
+      st = c.set_project_locked(*pid, op == "lock");
+    } else if (op == "duplicate" && args.size() > 2) {
+      st = c.duplicate_project(*pid, args[2]);
+    } else if (op != "info") {
+      return usage();
+    }
+    if (!st.ok()) {
+      return fail(st.error());
+    }
+    std::cout << to_text(c.project_file(*pid), 2) << "\n";
+    return 0;
+  }
   if (cmd == "new") {
     if (args.empty()) {
       return usage();
@@ -4194,6 +4304,14 @@ main(int argc, char** argv)
     } else if (op == "stretch") {
       // <layer> <frames>: a still's length on the timeline (its pages).
       st = c.stretch_layer(*pid, *aid, layer, std::atoll(arg.c_str()));
+    } else if (op == "edge") {
+      // <layer> left|right <frame>: its block's edge dragged there -- the
+      // left one its mark-in and start, the right one its mark-out.
+      if (plain.size() < 6 || (arg != "left" && arg != "right")) {
+        return usage();
+      }
+      st = c.trim_layer_edge(*pid, *aid, layer, arg == "left",
+                             std::atoll(plain[5].c_str()));
     } else if (op == "move-key") {
       // <layer> <from> <to>: its key, every track's, at another frame.
       if (plain.size() < 6) {
@@ -5847,7 +5965,7 @@ main(int argc, char** argv)
       } else if (a == "--tune") {
         req.tuning.update(tune_spec(next()));
       } else if (a == "--turbo" || a == "--lora" || a == "--dit" ||
-                 a == "--vae") {
+                 a == "--vae" || a == "--dial") {
         lora_arg(req.tuning, a, next());
       } else if (a == "--mode") {
         req.mode = next();
@@ -5971,7 +6089,7 @@ main(int argc, char** argv)
       } else if (a == "--tune") {
         req.tuning.update(tune_spec(next()));
       } else if (a == "--turbo" || a == "--lora" || a == "--dit" ||
-                 a == "--vae") {
+                 a == "--vae" || a == "--dial") {
         lora_arg(req.tuning, a, next());
       } else if (a == "--first" || a == "--last" || a == "--ref" ||
                  a == "--continue") {
@@ -6730,6 +6848,279 @@ main(int argc, char** argv)
       return fail(j.error());
     }
     return follow(c, *j);
+  }
+  if (cmd == "trained") {
+    // The trainer's runs (DESIGN §8c); `trained rm <name>` deletes one.
+    if (args.size() == 2 && args[0] == "end") {
+      // The trainer's Stop: its resume state deleted, its adapter kept.
+      if (Status st = c.finish_trained(args[1]); !st.ok()) {
+        return fail(st.error());
+      }
+      std::printf("%s ended\n", args[1].c_str());
+      return 0;
+    }
+    if (args.size() == 2 && args[0] == "rm") {
+      if (Status st = c.remove_trained(args[1]); !st.ok()) {
+        return fail(st.error());
+      }
+      std::printf("%s deleted\n", args[1].c_str());
+      return 0;
+    }
+    for (const auto& r : c.trained_loras()) {
+      std::printf("%s  %s  trigger \"%s\"  %zu pictures  %zu checkpoints  "
+                  "%zu previews%s%s\n  %s\n",
+                  jget<std::string>(r, "name", "").c_str(),
+                  jget<std::string>(r, "model", "").c_str(),
+                  jget<std::string>(r, "trigger", "").c_str(),
+                  jget(r, "items", Json::array()).size(),
+                  jget(r, "checkpoints", Json::array()).size(),
+                  jget(r, "previews", Json::array()).size(),
+                  jget(r, "resumable", false) ? "  resumable" : "",
+                  jget<std::string>(r, "job", "").empty() ? ""
+                                                          : "  TRAINING",
+                  jget<std::string>(r, "adapter", "").empty()
+                      ? jget<std::string>(r, "folder", "").c_str()
+                      : jget<std::string>(r, "adapter", "").c_str());
+    }
+    return 0;
+  }
+  if (cmd == "train-caption") {
+    // The trainer's auto captions (DESIGN §8c): train-caption
+    // <picture|clip|folder>... --trigger T --meaning "what T is"
+    // [--write]: each sample shown to the agent's model (else the micro
+    // agent, else the helper where it sees), its caption printed --
+    // --write puts it in a .txt beside the sample where it has none.
+    std::string trigger = "ohwx", meaning;
+    bool write = false;
+    std::vector<fs::path> files;
+    for (std::size_t i = 0; i < args.size(); ++i) {
+      const std::string& a = args[i];
+      if (a == "--trigger" && i + 1 < args.size()) {
+        trigger = args[++i];
+      } else if (a == "--meaning" && i + 1 < args.size()) {
+        meaning = args[++i];
+      } else if (a == "--write") {
+        write = true;
+      } else if (fs::is_directory(a)) {
+        std::vector<fs::path> in;
+        for (const auto& e : fs::recursive_directory_iterator(a)) {
+          const auto x = e.path().extension().string();
+          if (e.is_regular_file() &&
+              std::string_view(".png.jpg.jpeg.webp.bmp.tif.tiff.mp4.mov"
+                               ".mkv.webm.avi.m4v")
+                      .find(x.empty() ? "?" : x) != std::string_view::npos &&
+              e.path().parent_path().filename() != "references") {
+            in.push_back(e.path());
+          }
+        }
+        std::ranges::sort(in);
+        files.insert(files.end(), in.begin(), in.end());
+      } else {
+        files.emplace_back(a);
+      }
+    }
+    if (files.empty()) {
+      return usage();
+    }
+    for (const auto& f : files) {
+      fs::path side = f;
+      side.replace_extension(".txt");
+      if (write && fs::exists(side)) {
+        std::printf("%s: has a caption\n", f.filename().c_str());
+        continue;
+      }
+      const auto t0 = std::chrono::steady_clock::now();
+      auto r = c.caption_training_sample(f, trigger, meaning);
+      const double sec = std::chrono::duration<double>(
+          std::chrono::steady_clock::now() - t0).count();
+      if (!r.ok()) {
+        std::printf("%s: %s\n", f.filename().c_str(),
+                    r.error().message.c_str());
+        continue;
+      }
+      const std::string cap = jget<std::string>(*r, "caption", "");
+      std::printf("%s (%s, %.1f s): %s\n", f.filename().c_str(),
+                  jget<std::string>(*r, "model", "").c_str(), sec,
+                  cap.c_str());
+      if (write) {
+        std::ofstream(side, std::ios::binary) << cap << "\n";
+      }
+    }
+    return 0;
+  }
+  if (cmd == "train") {
+    // A LoRA trained (DESIGN §8c): train <model> <picture|folder>...
+    // --name N [--trigger T] [--steps N] [--epochs N] [--rank N]
+    // [--resolution 512,768] [--lr X] [--optimizer O] [--schedule S]
+    // [--repeats N] [--batch N] [--seed N] [--save-every N]
+    // [--preview <prompt>]... [--template T] [--flip] [--i8]
+    // [--frames 39] [--windows 2] [--no-sound] [--tasks t2va=1,i2va=1]
+    // [--loraplus 16] [--audio-weight X]  (MiniMax H3's clips: a sample's
+    // references its .refs, a file a line)
+    // [--save-after s] [--preview-after s] [--stop-after s]
+    if (args.empty()) {
+      return usage();
+    }
+    Json req = {{"model", args[0]}, {"items", Json::array()},
+                {"dataset", Json::object()}, {"optimizer", Json::object()},
+                {"train", Json::object()}};
+    double save_after = -1, preview_after = -1, stop_after = -1;
+    Json previews = Json::array();
+    for (std::size_t i = 1; i < args.size(); ++i) {
+      const std::string& a = args[i];
+      const bool v = i + 1 < args.size();
+      const auto num = [&] { return std::strtod(args[++i].c_str(), nullptr); };
+      if (a == "--name" && v) {
+        req["name"] = args[++i];
+      } else if (a == "--trigger" && v) {
+        req["dataset"]["trigger_word"] = args[++i];
+      } else if (a == "--template" && v) {
+        req["dataset"]["caption_template"] = args[++i];
+      } else if (a == "--resolution" && v) {
+        Json r = Json::array();
+        for (const auto part : std::views::split(args[++i], ',')) {
+          r.push_back(std::atoi(std::string(part.begin(), part.end())
+                                    .c_str()));
+        }
+        req["dataset"]["resolution"] = r;
+      } else if (a == "--preview" && v) {
+        previews.push_back(args[++i]);
+      } else if (a == "--flip") {
+        req["dataset"]["flip"] = "random";
+      } else if (a == "--frames" && v) {
+        req["dataset"]["frames"] = Json::array({static_cast<int>(num())});
+      } else if (a == "--windows" && v) {
+        req["dataset"]["windows"] = static_cast<int>(num());
+      } else if (a == "--no-sound") {
+        req["dataset"]["audio"] = "none";
+      } else if (a == "--tasks" && v) {
+        Json mix = Json::object();
+        for (const auto part : std::views::split(args[++i], ',')) {
+          const std::string kv(part.begin(), part.end());
+          const auto eq = kv.find('=');
+          mix[kv.substr(0, eq)] =
+              eq == std::string::npos ? 1.0
+                                      : std::strtod(kv.c_str() + eq + 1,
+                                                    nullptr);
+        }
+        req["dataset"]["task_mix"] = mix;
+      } else if (a == "--loraplus" && v) {
+        req["optimizer"]["loraplus_lr_ratio"] = num();
+      } else if (a == "--audio-weight" && v) {
+        req["train"]["audio_loss_weight"] = num();
+      } else if (a == "--steps" && v) {
+        req["train"]["steps"] = static_cast<int>(num());
+      } else if (a == "--epochs" && v) {
+        req["train"]["epochs"] = static_cast<int>(num());
+      } else if (a == "--rank" && v) {
+        req["train"]["rank"] = static_cast<int>(num());
+      } else if (a == "--batch" && v) {
+        req["train"]["batch_size"] = static_cast<int>(num());
+      } else if (a == "--seed" && v) {
+        req["train"]["seed"] = static_cast<int>(num());
+      } else if (a == "--save-every" && v) {
+        req["train"]["save_every"] = static_cast<int>(num());
+        req["train"]["preview_every"] = req["train"]["save_every"];
+      } else if (a == "--i8") {
+        req["train"]["i8_gemm"] = true;
+      } else if (a == "--lr" && v) {
+        req["optimizer"]["learning_rate"] = num();
+      } else if (a == "--optimizer" && v) {
+        req["optimizer"]["optimizer"] = args[++i];
+      } else if (a == "--schedule" && v) {
+        req["optimizer"]["lr_schedule"] = args[++i];
+      } else if (a == "--repeats" && v) {
+        req["repeats"] = static_cast<int>(num());
+      } else if (a == "--save-after" && v) {
+        save_after = num();
+      } else if (a == "--preview-after" && v) {
+        preview_after = num();
+      } else if (a == "--stop-after" && v) {
+        stop_after = num();
+      } else {
+        req["items"].push_back(a);
+      }
+    }
+    if (!previews.empty()) {
+      req["dataset"]["preview_prompts"] = previews;
+    }
+    auto j = c.train_lora(req);
+    if (!j.ok()) {
+      return fail(j.error());
+    }
+    const JobId job = *j;
+    const auto t0 = std::chrono::steady_clock::now();
+    const auto since = [&] {
+      return std::chrono::duration<double>(
+          std::chrono::steady_clock::now() - t0).count();
+    };
+    std::string phase;
+    for (;;) {
+      if (save_after >= 0 && since() >= save_after) {
+        save_after = -1;
+        auto r = c.train_command(job, "save", Json::object());
+        std::fprintf(stderr, "  save now: %s\n",
+                     r.ok() ? to_text(*r).c_str()
+                            : r.error().message.c_str());
+      }
+      if (preview_after >= 0 && since() >= preview_after) {
+        preview_after = -1;
+        auto r = c.train_command(job, "preview", {{"prompt", 0}});
+        std::fprintf(stderr, "  preview now: %s\n",
+                     r.ok() ? to_text(*r).c_str()
+                            : r.error().message.c_str());
+      }
+      if (stop_after >= 0 && since() >= stop_after) {
+        stop_after = -1;
+        std::fprintf(stderr, "  stopping\n");
+        (void)c.cancel(job);
+      }
+      Event ev;
+      if (!c.events().wait(ev, 500) || ev.job != job) {
+        continue;
+      }
+      if (ev.kind == "job.progress") {
+        const auto now = jget<std::string>(ev.data, "phase", "");
+        const Json m = jget(ev.data, "metrics", Json());
+        const Json cp = jget(ev.data, "checkpoint", Json());
+        if (m.is_object()) {
+          const int step = jget(m, "step", 0);
+          if (step == 1 || step % 10 == 0) {
+            // The status bar's meter as it reads now (vpipe's tally).
+            const Json st = c.machine_status();
+            std::fprintf(stderr, "  step %d/%d loss %.4f lr %.2e %.2f s"
+                         " %.1f TFLOP/s\n",
+                         step, jget(m, "total", 0), jget(m, "loss", 0.0),
+                         jget(m, "lr", 0.0), jget(m, "sec", 0.0),
+                         jget(st, "gpu_tflops", 0.0) +
+                             jget(st, "ane_tflops", 0.0));
+          }
+        } else if (cp.is_object()) {
+          std::fprintf(stderr, "  checkpoint step %d loss %.4f %s\n",
+                       jget(cp, "step", 0), jget(cp, "loss", 0.0),
+                       jget<std::string>(cp, "path", "").c_str());
+        } else if (now != phase || now == "train-encode") {
+          if (now != phase || jget(ev.data, "done", 0) % 8 == 0) {
+            std::fprintf(stderr, "  %s %d/%d %s\n", now.c_str(),
+                         jget(ev.data, "done", 0), jget(ev.data, "total", 0),
+                         jget<std::string>(ev.data, "detail", "").c_str());
+          }
+        }
+        phase = now;
+      } else if (ev.kind == "job.finished") {
+        std::printf("%s (%.0f s)\n",
+                    jget<std::string>(ev.data, "path", "").c_str(), since());
+        return 0;
+      } else if (ev.kind == "job.failed") {
+        std::fprintf(stderr, "failed: %s\n",
+                     jget<std::string>(ev.data, "message", "").c_str());
+        return 1;
+      } else if (ev.kind == "job.cancelled") {
+        std::printf("stopped after %.0f s: its state kept, `train` again "
+                    "with the same name resumes it\n", since());
+        return 0;
+      }
+    }
   }
   if (cmd == "compress") {
     int bits = 0;

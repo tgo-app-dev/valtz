@@ -11,13 +11,17 @@ import UniformTypeIdentifiers
 /// .viewOnly), the ATLAS -- the project as a graph of what each asset is
 /// made from (Views/AtlasView) -- or the log of what the engine reports.
 enum AppScreen: String, CaseIterable, Identifiable, Sendable {
-    case editor, atlas, log
+    case editor, atlas, trainer, log
     var id: String { rawValue }
+    /// The project's screens, at the ☰ column's top; the trainer and the
+    /// log -- which are not the project's -- at its foot, above Settings.
+    var ofTheProject: Bool { self == .editor || self == .atlas }
 
     var label: String {
         switch self {
         case .editor: String(localized: "Editor")
         case .atlas: String(localized: "Atlas")
+        case .trainer: String(localized: "LoRA Trainer")
         case .log: String(localized: "Log")
         }
     }
@@ -26,6 +30,7 @@ enum AppScreen: String, CaseIterable, Identifiable, Sendable {
         switch self {
         case .editor: "square.and.pencil"
         case .atlas: "point.3.connected.trianglepath.dotted"
+        case .trainer: "dumbbell"
         case .log: "text.alignleft"
         }
     }
@@ -462,7 +467,7 @@ extension Comparable {
 }
 
 enum SizeClass: Int, CaseIterable, Identifiable, Sendable {
-    case draft = 512, standard = 1024, large = 1536
+    case draft = 512, standard = 1024, large = 2048
     /// 4K: 4096 pixels on the LONG side (4096 x 4096 square, 4096 x 2304
     /// at 16:9) -- offered only for a model that makes them (catalog
     /// `max_edge`: FLUX.3 Image Klein, MiniMax-H3-Image), for pictures. A clip's is 2K:
@@ -471,18 +476,25 @@ enum SizeClass: Int, CaseIterable, Identifiable, Sendable {
     case ultra = 4096
     var id: Int { rawValue }
     /// The side of the square of its area, for what is made: a picture is
-    /// about rawValue² pixels; a clip about 832 × 480, 960 × 544 or
-    /// 1280 × 720 at 16:9 -- the sizes video models are made for, and
-    /// time grows with every pixel of every frame.
+    /// about rawValue² pixels (Large about 4 MP); a clip about 832 × 480,
+    /// 960 × 544 at 16:9 -- the sizes video models are made for, and time
+    /// grows with every pixel of every frame -- its Large 768P, 768 on
+    /// its SHORT side whatever its shape (`videoShortSide`; this the side
+    /// of its area at 16:9).
     func edge(_ m: Modality) -> Int {
         guard m == .video else { return rawValue }
         switch self {
         case .draft: return 632
         case .standard: return 723
-        case .large: return 960
+        case .large: return 1028
         case .ultra: return 2560   // the long side, as a picture's 4K
         }
     }
+    /// A clip's Large: 768 on its short side (768P), what the video
+    /// models make in one pass (MiniMax H3; past it, drafted there and
+    /// regenerated).
+    static let videoShortSide = 768
+
     func label(_ m: Modality) -> String {
         switch self {
         case .draft: String(localized: "Draft")
@@ -497,8 +509,17 @@ enum SizeClass: Int, CaseIterable, Identifiable, Sendable {
         switch self {
         case .draft: String(localized: "About 512 × 512 pixels: the quickest")
         case .standard: String(localized: "About 1024 × 1024 pixels")
-        case .large: String(localized: "About 1536 × 1536 pixels")
+        case .large: String(localized: "About 2048 × 2048 pixels: about 4 megapixels")
         case .ultra: String(localized: "4096 pixels on the long side: up to 16 times Standard's pixels, and many times longer to make")
+        }
+    }
+    /// A clip's preset, as its segment's tooltip says it.
+    var videoTip: String {
+        switch self {
+        case .draft: String(localized: "About 832 × 480 at 16:9: the quickest")
+        case .standard: String(localized: "About 960 × 544 at 16:9")
+        case .large: String(localized: "768P: 768 pixels on the short side, 1376 × 768 at 16:9")
+        case .ultra: String(localized: "2560 pixels on the long side: drafted at 768P and regenerated")
         }
     }
 }
@@ -796,7 +817,7 @@ struct JobInfo {
     /// waited for a download before (2026-10-16).
     var inNoProject: Bool { Self.noProjectPurposes.contains(purpose) }
     static let noProjectPurposes: Set<String> =
-        ["download", "compress", "quantize", "fleet", "relocate"]
+        ["download", "compress", "quantize", "fleet", "relocate", "train"]
 
     var live: Bool { state == "queued" || state == "running" }
 }
@@ -1151,6 +1172,25 @@ final class AppModel: TuningHost {
     /// prompt (⌘4) -- programs written and drawn (DESIGN §4t) -- off
     /// until switched on, remembered as the Agent's is
     /// (VALTZ_SNAPSHOT_EXPERIMENTAL=procedural switches it on for a run).
+    /// Settings › Experimental's LoRA Trainer: the ☰ column's trainer
+    /// (DESIGN §8c). Off, the screen goes (a training goes on).
+    private(set) var trainerEnabled = AppModel.storedTrainerEnabled {
+        didSet {
+            if Self.keepsViewState {
+                UserDefaults.standard.set(trainerEnabled,
+                                          forKey: Self.trainerEnabledKey)
+            }
+        }
+    }
+
+    func setTrainerEnabled(_ on: Bool) {
+        guard on != trainerEnabled else { return }
+        withAnimation(Self.motion) {
+            trainerEnabled = on
+            if !on && screen == .trainer { screen = .editor }
+        }
+    }
+
     private(set) var proceduralEnabled = AppModel.storedProceduralEnabled {
         didSet {
             if Self.keepsViewState {
@@ -1222,6 +1262,8 @@ final class AppModel: TuningHost {
     }
     /// What the status bar shows (it polls only while the bar is shown).
     let monitor: MachineMonitor
+    /// The LoRA trainer's state (the ☰ column's trainer, DESIGN §8c).
+    @ObservationIgnored private(set) lazy var trainer = TrainerModel(app: self)
     /// Auto-update (Sparkle, when built in): Check for Updates…, and
     /// Settings › General › Updates.
     var updater: Updater { Updater.shared }
@@ -1229,6 +1271,7 @@ final class AppModel: TuningHost {
     private static let statusItemsKey = "view.statusBarHidden"
     private static let agentEnabledKey = "experimental.agent"
     private static let proceduralEnabledKey = "experimental.procedural"
+    private static let trainerEnabledKey = "experimental.trainer"
     private static let agentSpeedKey = "helper.agentSpeed"
     private static var keepsViewState: Bool {
         ProcessInfo.processInfo.environment["VALTZ_SNAPSHOT"] == nil
@@ -1242,6 +1285,9 @@ final class AppModel: TuningHost {
     private static var storedProceduralEnabled: Bool {
         keepsViewState
             && UserDefaults.standard.bool(forKey: proceduralEnabledKey)
+    }
+    private static var storedTrainerEnabled: Bool {
+        keepsViewState && UserDefaults.standard.bool(forKey: trainerEnabledKey)
     }
     private static var storedAgentShowsSpeed: Bool {
         keepsViewState && UserDefaults.standard.bool(forKey: agentSpeedKey)
@@ -2534,7 +2580,7 @@ final class AppModel: TuningHost {
     /// the stage (`putOnStage`: an asset set active or viewed, a project
     /// opened), which it then keeps. Watching the newest, queued, it
     /// showed no preview until the queue had drained to it.
-    @ObservationIgnored private var followsQueue = false
+    @ObservationIgnored var followsQueue = false
     /// The task Start began last: its prompt, captured, is the box's.
     @ObservationIgnored private var lastBegun: String?
     /// The TASK QUEUE (DESIGN §3a): this project's generations, upscales
@@ -5215,6 +5261,7 @@ final class AppModel: TuningHost {
         let names: [(String, String)] = [
             ("hyperflow", String(localized: "HyperFlow")),
             ("pika_flex", String(localized: "Pika H3 Flex")),
+            ("pi_h3", String(localized: "pi-H3")),
             ("taomate", String(localized: "TaoMate")),
             ("taomate_lora", String(localized: "LoRA only")),
             ("vdn", String(localized: "VDN")),
@@ -5857,6 +5904,7 @@ final class AppModel: TuningHost {
             navOpen = false
         }
         if s == .atlas { reloadAtlas(force: true) }
+        if s == .trainer { trainer.reload() }
     }
 
     /// The ☰ column's eye: the editor, view-only.
@@ -6473,10 +6521,15 @@ final class AppModel: TuningHost {
         let size = shownSizeClass
         let edge = size.edge(activeModality)
         let r = orientation == .square ? 1 : aspectRatio.ratio
-        // 4K is its long side; the others an area.
+        // 4K is its long side; a clip's Large its short side (768P); the
+        // others an area.
         let area = Double(edge * edge)
-        let long = size == .ultra ? Double(edge) : (area * r).squareRoot()
-        let short = size == .ultra ? Double(edge) / r : area / long
+        let shortSided = size == .large && activeModality == .video
+        let side = Double(SizeClass.videoShortSide)
+        let long = size == .ultra ? Double(edge)
+            : shortSided ? side * r : (area * r).squareRoot()
+        let short = size == .ultra ? Double(edge) / r
+            : shortSided ? side : area / long
         // A clip's edges are on the video model's grid (32 for H3), so
         // 16:9 Draft is 832 × 480; a picture's on 64.
         let grid = activeModality == .video ? Double(sizeGrid) : 64
@@ -6757,8 +6810,11 @@ final class AppModel: TuningHost {
             // A clip opening on a picture takes its shape, at the size
             // chosen here: a clip's time grows with every pixel of every
             // frame, so the picture's own resolution is not the measure.
+            // (Large: its short side 768, as the preset's.)
             let e = Double(sizeClass.edge(.video))
-            let k = (e * e / (w * h)).squareRoot()
+            let k = sizeClass == .large
+                ? Double(SizeClass.videoShortSide) / min(w, h)
+                : (e * e / (w * h)).squareRoot()
             w *= k
             h *= k
         }
@@ -7254,7 +7310,10 @@ final class AppModel: TuningHost {
     }
 
     /// The active composition while the stage watches a task.
-    @ObservationIgnored private var watchReturn: String?
+    @ObservationIgnored var watchReturn: String?
+    /// The watched task's first frame still to be fitted: a preview takes
+    /// the stage at FIT, whatever the stage was zoomed to before it.
+    @ObservationIgnored var liveFitPending = false
 
     /// The task the stage watches, as the app keeps it.
     private var watchedTask: TaskContext? {
@@ -7335,6 +7394,9 @@ final class AppModel: TuningHost {
             return
         }
         guard let ctx = taskContexts[job] else { return }
+        // Its first frame fitted to the stage (it was only when the stage
+        // was empty: one taking a zoomed stage showed at that zoom).
+        if generationJob != job { liveFitPending = true }
         if generationJob == nil {
             // What is active stays so while the stage watches.
             watchReturn = activeCompositionId
@@ -7358,6 +7420,7 @@ final class AppModel: TuningHost {
             showLive(img)
         } else if let base = ctx.base {
             // Nothing drawn yet: what it is made from, waiting.
+            fitLiveOnce()
             withAnimation(Self.motion) {
                 stage.a = base.image
                 stage.video = nil
@@ -7375,7 +7438,7 @@ final class AppModel: TuningHost {
 
     /// The stage leaves the task it watched, for what was picked; the task
     /// runs on (Assets lists it).
-    private func unwatchTask() {
+    func unwatchTask() {
         if exportShow != nil {
             withAnimation(Self.motion) { exportShow = nil }
         }
@@ -10433,8 +10496,28 @@ final class AppModel: TuningHost {
         /// on a drive not connected, a blob gone from the package
         /// (Project::missing_media): read-only too, to be looked at.
         var missing: [MissingMedia] = []
+        /// Its file locked (the Finder's Locked): every change refused --
+        /// the alert asks to unlock it or duplicate it (ProjectFile.swift).
+        var locked = false
     }
     var document = DocumentState()
+    /// The title's panel (Preview's): open, and the file it shows.
+    var titlePanelOpen = false
+    /// The window's width and the name's, for the title bar's groups to
+    /// fit (TitleBarControls: those without room fold into its ">>").
+    var titleBarWidth: CGFloat = 1024
+    var titleFieldWidth: CGFloat = 200
+    /// Each title-bar group's width as laid out.
+    var titleGroupWidths: [TitleBarFold: CGFloat] = [:]
+    /// The title bar's ">>" panel open.
+    var titleMoreOpen = false
+    var projectFile: ProjectFileInfo?
+    /// A refused change's words, said by the lock's alert (not flashed).
+    @ObservationIgnored var lockRefusedText: String?
+    @ObservationIgnored var lockAlertUp = false
+    /// The window's frame before a double-click on its title bar filled
+    /// the screen (TitleBarZoom), for the next to put it back.
+    @ObservationIgnored var unzoomedFrame: NSRect?
 
     /// A file the project uses that is missing (the core's
     /// "missing_media").
@@ -10517,7 +10600,8 @@ final class AppModel: TuningHost {
                              name: $0["name"] as? String ?? "",
                              path: $0["path"] as? String ?? "",
                              how: $0["how"] as? String ?? "")
-            })
+            },
+            locked: p["locked"] as? Bool ?? false)
         let took = next.agent && !document.agent
         // Its files missing from the first: what would change it put away,
         // and said once (the open's notice).
@@ -11312,7 +11396,6 @@ final class AppModel: TuningHost {
                     _ = ShortcutHints.shared.handle(event)
                     self.notePressOnBar(event)
                     Self.endTextEditing(for: event)
-                    self.endViewingIfOutside(event)
                 }
                 return event
             }) {
@@ -11964,6 +12047,10 @@ final class AppModel: TuningHost {
     /// The fit button: pressed in, it fits now and keeps fitting as the
     /// window, the panels or the image change; released, the zoom stays.
     func toggleFit() {
+        if screen == .trainer {
+            trainer.zoom(trainer.stageZoom == nil ? .actualSize : .fit)
+            return
+        }
         if currentViewer.fitting && currentViewer.zoom != nil {
             stage.unfitRequest += 1
         } else {
@@ -11974,6 +12061,7 @@ final class AppModel: TuningHost {
     /// There is an image on screen to zoom: a picture, or a finished
     /// clip's frames (not a sound's, nor a preview's).
     var canZoom: Bool {
+        if screen == .trainer { return trainer.stagePath != nil }
         // The Prompt Editor's stage is a small view, fitted.
         guard screen == .editor && stageVisible && !promptImmersive else {
             return false
@@ -11986,6 +12074,11 @@ final class AppModel: TuningHost {
 
     /// Zoom the stage.
     func zoom(_ step: ZoomStep) {
+        // The trainer's stage has a zoom of its own.
+        if screen == .trainer {
+            trainer.zoom(step)
+            return
+        }
         func apply(_ v: inout ViewerState) {
             switch step {
             case .zoomOut: v.zoomOutRequest += 1
@@ -12382,6 +12475,9 @@ final class AppModel: TuningHost {
            !pid.isEmpty, pid != projectId {
             return
         }
+        if ev.kind.hasPrefix("job."), trainer.training {
+            trainer.handle(ev)
+        }
         if ev.kind.hasPrefix("fleet.") || ev.kind == "job.runner" {
             handleFleet(ev)
             return
@@ -12585,9 +12681,20 @@ final class AppModel: TuningHost {
         stageBeforeBase = nil
         if !stageVisible {
             // The first frame: the icon gives way to the result card.
+            liveFitPending = false
             stage.fitRequest += 1
             withAnimation(Self.motion) { stageVisible = true }
+        } else {
+            fitLiveOnce()
         }
+    }
+
+    /// The watched task's first frame on a stage already showing
+    /// something: fitted, as a preview opened is.
+    func fitLiveOnce() {
+        guard liveFitPending else { return }
+        liveFitPending = false
+        stage.fitRequest += 1
     }
 
     /// A video's live preview: the whole clip as the model has it at this
@@ -12610,8 +12717,11 @@ final class AppModel: TuningHost {
         stageBeforeBase = nil
         stageOriginal = nil
         if !stageVisible {
+            liveFitPending = false
             stage.fitRequest += 1
             withAnimation(Self.motion) { stageVisible = true }
+        } else {
+            fitLiveOnce()
         }
     }
 
@@ -13333,6 +13443,8 @@ final class AppModel: TuningHost {
     /// A short-lived NOTICE over the composer -- an error's and a
     /// warning's tinted, and longer: the eye has to find them first.
     func flash(_ text: String, level: Notice.Level = .info) {
+        // A change refused for the file being locked: the alert says it.
+        if level == .error, let t = lockRefusedText, t == text { return }
         bannerTask?.cancel()
         withAnimation(Self.motion) { notice = Notice(text: text, level: level) }
         let seconds: Double = switch level {

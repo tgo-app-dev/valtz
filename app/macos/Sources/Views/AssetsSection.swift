@@ -220,7 +220,15 @@ extension AppModel {
         }
         // What to come back to: the active one -- kept while one viewed
         // asset follows another.
-        let back = viewedAsset == nil ? stageAssetId : viewReturn
+        var back = viewedAsset == nil ? stageAssetId : viewReturn
+        // A task's preview over the stage left for it: the composition
+        // behind the preview is what the viewing comes back to.
+        if generationJob != nil {
+            back = watchReturn ?? back
+            followsQueue = false
+            unwatchTask()
+            watchReturn = nil
+        }
         viewedAsset = a.id
         viewReturn = back
         if focusedReference != nil { endActivation(restore: false) }
@@ -278,6 +286,45 @@ extension AppModel {
     /// An asset from the list on the stage, viewed (its ⓧ shown).
     var viewingOnStage: Bool {
         viewedAsset != nil && viewedAsset == stageAssetId && !isGenerating
+    }
+
+    /// A task's PREVIEW over what the stage held -- the active composition
+    /// waiting behind it: a temporary preview, as a viewed asset is (its
+    /// ⓧ shown). The first generation onto an empty stage is not one.
+    var watchingOverStage: Bool {
+        generationJob != nil && watchReturn != nil && exportShow == nil
+    }
+
+    /// A TEMPORARY PREVIEW on the stage -- an asset viewed from the list,
+    /// a task's preview over what it held -- left by its ⓧ, Escape,
+    /// another asset clicked, or the timeline moved; a click elsewhere
+    /// leaves it be.
+    var temporaryPreviewOnStage: Bool { viewingOnStage || watchingOverStage }
+
+    func endTemporaryPreview() {
+        if watchingOverStage {
+            endWatching()
+        } else {
+            endViewing()
+        }
+    }
+
+    /// The stage leaves the task it watches -- it runs on, its result
+    /// landing where it was asked -- the active composition back.
+    func endWatching() {
+        guard generationJob != nil else { return }
+        let back = watchReturn
+        followsQueue = false
+        unwatchTask()
+        watchReturn = nil
+        swapStageAnimated { [weak self] in
+            guard let self else { return }
+            if let back, let a = self.asset(id: back) {
+                self.putOnStage(a)
+            } else {
+                self.clearStage()
+            }
+        }
     }
 
     /// The viewed asset off the stage, the active one back on it. Not

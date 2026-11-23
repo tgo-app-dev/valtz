@@ -6,6 +6,7 @@
 # talk to Objective-C frameworks; every public header is plain C++.
 
 set(VALTZ_CORE_SOURCES
+  src/base/finder.mm
   src/base/hash.cc
   src/base/id.cc
   src/base/log.cc
@@ -94,6 +95,7 @@ set(VALTZ_CORE_SOURCES
   src/controller/controller.cc
   src/controller/event-bus.cc
   src/controller/generate-nodes.cc
+  src/controller/training.cc
   src/controller/job-queue.cc
   src/controller/job-timing.cc
   src/controller/locations.cc
@@ -259,6 +261,7 @@ set_source_files_properties(
   src/media/stamp.mm
   src/media/probe.mm src/media/thumbnail.mm
   src/models/hardware.mm src/project/bookmark.mm src/base/url-fetch.mm
+  src/base/finder.mm
   PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
 
 if(VALTZ_HAVE_VPIPE)

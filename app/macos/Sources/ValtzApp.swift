@@ -1525,6 +1525,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if experimental.contains("procedural") {
                 m.setProceduralEnabled(true)
             }
+            if experimental.contains("trainer") {
+                m.setTrainerEnabled(true)
+            }
             // Settings › Agentic Helper › Show Speed, for the run.
             if env["VALTZ_SNAPSHOT_AGENT_SPEED"] == "1" {
                 m.setAgentShowsSpeed(true)
@@ -1570,6 +1573,47 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 m.addWeights(spec.split(separator: ",").map {
                     URL(fileURLWithPath: String($0))
                 })
+            }
+            // A DIAL's value (after WEIGHTS dropped it), as its panel
+            // sets it: "<n>=1.5" its constant strength, "<n>@0:0,0.5:1.5,
+            // 1:-1" its schedule (n from 0, the list's order), "<n>=off";
+            // printing `snapshot: dials <n>:<name>:on:<strength>|<x:s,..>
+            // job=` -- the rows a job would send.
+            if let spec = env["VALTZ_SNAPSHOT_DIALS"] {
+                for item in spec.split(separator: ";").map(String.init) {
+                    let sched = item.split(separator: "@", maxSplits: 1)
+                        .map(String.init)
+                    let kv = item.split(separator: "=", maxSplits: 1)
+                        .map(String.init)
+                    let n = Int((sched.count == 2 ? sched[0] : kv[0])) ?? 0
+                    let all = m.tuningInfo?.tuning.dials ?? []
+                    guard all.indices.contains(n) else { continue }
+                    let d = all[n]
+                    if sched.count == 2 {
+                        let pts = sched[1].split(separator: ",").compactMap {
+                            p -> [Double]? in
+                            let xy = p.split(separator: ":").compactMap {
+                                Double($0)
+                            }
+                            return xy.count == 2 ? xy : nil
+                        }
+                        m.setDial(d.path) { $0.points = pts }
+                    } else if kv.count == 2, kv[1] == "off" {
+                        m.setDial(d.path) { $0.on = false }
+                    } else if kv.count == 2, let v = Double(kv[1]) {
+                        m.setDial(d.path) { $0.strength = v; $0.points = [] }
+                    }
+                }
+                let list = (m.tuningInfo?.tuning.dials ?? []).enumerated()
+                    .map { i, d in
+                        "\(i):\(d.name):\(d.on ? "on" : "off"):"
+                            + (d.scheduled
+                               ? d.points.map { "\($0[0]):\($0[1])" }
+                                   .joined(separator: ",")
+                               : String(d.strength))
+                    }
+                FileHandle.standardError.write(Data(
+                    "snapshot: dials \(list.joined(separator: " ")) sent=\((m.tuningInfo?.tuning.json["dials"] as? [[String: Any]] ?? []).count)\n".utf8))
             }
             // Weights Custom lists, ON, whose files are not there --
             // "lora:<path>,vae:<path>,dit:<path>" -- as a list kept from
@@ -3180,7 +3224,90 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     let fr = NSApp.windows.first { $0.isVisible }?
                         .firstResponder
                     FileHandle.standardError.write(Data(
-                        "snapshot: click \(Int(xy[0])),\(Int(xy[1])) focus=\(fr.map { String(describing: type(of: $0)) } ?? "-") undo=\(m.undoMenuTitle.replacingOccurrences(of: " ", with: "_")) frame=\(m.videoFrame) rate=\(m.videoRate) headers=\(m.trayHeaders) panel=\(m.openPanel.map { "\($0)" } ?? "-") sweep=\(m.markSweep)\n".utf8))
+                        "snapshot: click \(Int(xy[0])),\(Int(xy[1])) focus=\(fr.map { String(describing: type(of: $0)) } ?? "-") undo=\(m.undoMenuTitle.replacingOccurrences(of: " ", with: "_")) frame=\(m.videoFrame) rate=\(m.videoRate) headers=\(m.trayHeaders) panel=\(m.openPanel.map { "\($0)" } ?? "-") sweep=\(m.markSweep) zoom=\(m.currentViewer.zoomText) fit=\(m.currentViewer.fitting) \(Self.cardSummary(m)) temporary=\(m.temporaryPreviewOnStage) liveImage=\(m.stage.a.map { "\($0.width)x\($0.height)" } ?? "-")\n".utf8))
+                }
+            }
+            // The TITLE's panel (ProjectFile.swift), in turn: "open",
+            // "close", "name:<n>", "tags:a,b", "lock:on|off", "edit" (a
+            // layer added, as a change refused while locked is) -- each
+            // printing `snapshot: title-panel <step> open= name= path=
+            // tags= locked= dirty= windows=` (VALTZ_SNAPSHOT_LOCK_ANSWER
+            // answers the lock's alert: unlock | duplicate | cancel).
+            if let m = model, let spec = env["VALTZ_SNAPSHOT_TITLE_PANEL"] {
+                for step in spec.split(separator: ";").map(String.init) {
+                    let kv = step.split(separator: ":", maxSplits: 1)
+                        .map(String.init)
+                    let arg = kv.count > 1 ? kv[1] : ""
+                    switch kv[0] {
+                    case "open":
+                        m.titlePanelOpen = true
+                        m.refreshProjectFile()
+                    case "close": m.titlePanelOpen = false
+                    case "name": m.renameProjectFile(arg)
+                    case "tags":
+                        m.setProjectTags(arg.split(separator: ",")
+                            .map(String.init))
+                    case "lock": m.setProjectLocked(arg != "off")
+                    case "edit":
+                        if let c = m.assets.first(where: \.isComposition) {
+                            let r = m.core?.layerOp(project: m.projectId ?? "",
+                                                    asset: c.id, "add",
+                                                    layer: "")
+                            if r?.ok == false { m.flash(r?.message ?? "",
+                                                        level: .error) }
+                        }
+                    default: break
+                    }
+                    try? await Task.sleep(for: .milliseconds(900))
+                    m.refreshProjectFile()
+                    let f = m.projectFile
+                    FileHandle.standardError.write(Data(
+                        "snapshot: title-panel \(step) open=\(m.titlePanelOpen) name=\(m.windowTitle) path=\(f?.path ?? "-") tags=\((f?.tags ?? []).joined(separator: ",")) locked=\(m.document.locked) dirty=\(m.document.dirty) windows=\(EditorWindows.shared.models.count) notice=\(m.notice?.text ?? "-")\n".utf8))
+                }
+            }
+            // The title bar's groups at this window's width
+            // (VALTZ_SNAPSHOT_TITLE_MORE=1: its ">>" panel opened):
+            // `snapshot: title-bar width= name= more=`.
+            if let m = model, env["VALTZ_SNAPSHOT_TITLE_MORE"] != nil {
+                try? await Task.sleep(for: .milliseconds(600))
+                m.titleMoreOpen = true
+                try? await Task.sleep(for: .milliseconds(600))
+            }
+            if let m = model, env["VALTZ_SNAPSHOT_TITLE_BAR"] != nil {
+                FileHandle.standardError.write(Data(
+                    "snapshot: title-bar width=\(Int(m.titleBarWidth)) name=\(Int(m.titleFieldWidth)) more=\(m.titleMoreOpen) fit=\(m.titleBarFit.map { "\($0)" }.joined(separator: ",")) groups=\(m.titleGroupWidths.map { "\($0.key):\(Int($0.value))" }.sorted().joined(separator: ",")) \(TitleBarZoom.items(m.editorWindow))\n".utf8))
+            }
+            // Double-clicks on the TITLE BAR through the app's event
+            // queue, as a hand's come ("x,y;..." points from the window's
+            // top left): each printing `snapshot: title-double x,y
+            // frame=x,y,wxh visible=x,y,wxh` (TitleBarZoom).
+            if let spec = env["VALTZ_SNAPSHOT_TITLE_DOUBLE"] {
+                for d in spec.split(separator: ";") {
+                    let xy = d.split(separator: ",").compactMap {
+                        Double($0)
+                    }
+                    guard xy.count == 2, let win = model?.editorWindow
+                    else { continue }
+                    let p = NSPoint(x: xy[0], y: win.frame.height - xy[1])
+                    for (type, n) in [(NSEvent.EventType.leftMouseDown, 1),
+                                      (.leftMouseUp, 1),
+                                      (.leftMouseDown, 2), (.leftMouseUp, 2)] {
+                        if let ev = NSEvent.mouseEvent(
+                            with: type, location: p, modifierFlags: [],
+                            timestamp: ProcessInfo.processInfo.systemUptime,
+                            windowNumber: win.windowNumber, context: nil,
+                            eventNumber: 0, clickCount: n, pressure: 1) {
+                            NSApp.postEvent(ev, atStart: false)
+                        }
+                        try? await Task.sleep(for: .milliseconds(60))
+                    }
+                    try? await Task.sleep(for: .milliseconds(900))
+                    func box(_ r: NSRect?) -> String {
+                        guard let r else { return "-" }
+                        return "\(Int(r.minX)),\(Int(r.minY)),\(Int(r.width))x\(Int(r.height))"
+                    }
+                    FileHandle.standardError.write(Data(
+                        "snapshot: title-double \(d) frame=\(box(win.frame)) visible=\(box(win.screen?.visibleFrame))\n".utf8))
                 }
             }
             // Drags posted to the window ("x,y>x2,y2" in points from
@@ -3209,7 +3336,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                                         to: (ends[1][0], ends[1][1]))
                     try? await Task.sleep(for: .milliseconds(500))
                     FileHandle.standardError.write(Data(
-                        "snapshot: drag \(d) panels=\(Self.panelSummary(m)) frame=\(m.videoFrame) rate=\(m.videoRate)\n".utf8))
+                        "snapshot: drag \(d) panels=\(Self.panelSummary(m)) frame=\(m.videoFrame) rate=\(m.videoRate) timelineRows=\(m.timelineRows) timeline=\(m.timelineOpen)\n".utf8))
                 }
             }
             // The project as a document (DESIGN §5b), in turn: "undo",
@@ -4135,6 +4262,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                                characters: "d",
                                charactersIgnoringModifiers: "d",
                                isARepeat: false, keyCode: 2) {
+                            NSApp.postEvent(ev, atStart: false)
+                        }
+                    // "back": Backspace -- the selected layer taken off,
+                    // asked (VALTZ_SNAPSHOT_REMOVE_ANSWER=remove|cancel).
+                    case "key" where arg == "back":
+                        if let w = m.editorWindow,
+                           let ev = NSEvent.keyEvent(
+                               with: .keyDown, location: .zero,
+                               modifierFlags: [], timestamp: 0,
+                               windowNumber: w.windowNumber, context: nil,
+                               characters: "\u{7F}",
+                               charactersIgnoringModifiers: "\u{7F}",
+                               isARepeat: false, keyCode: 51) {
                             NSApp.postEvent(ev, atStart: false)
                         }
                     case "key" where arg == "s" || arg == "esc":
@@ -5250,6 +5390,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     // it: the active composition back.
                     case "unview":
                         m.endViewing()
+                    // A temporary preview's ⓧ (a viewed asset, a task's
+                    // preview over the stage); the timeline moved to a
+                    // frame, as a click on it moves it.
+                    case "closepreview":
+                        m.endTemporaryPreview()
+                    // "pdrag:x,y>x2,y2": a drag posted to the window (an
+                    // AppKit view's own handling sees it: the timeline's
+                    // top edge), printing `snapshot: pdrag ... rows=`.
+                    case "pdrag":
+                        let ends = arg.split(separator: ">").map {
+                            $0.split(separator: ",").compactMap { Double($0) }
+                        }
+                        if ends.count == 2, ends[0].count == 2,
+                           ends[1].count == 2 {
+                            await Self.postDrag(from: (ends[0][0], ends[0][1]),
+                                                to: (ends[1][0], ends[1][1]))
+                            try? await Task.sleep(for: .milliseconds(500))
+                            FileHandle.standardError.write(Data(
+                                "snapshot: pdrag \(arg) rows=\(m.timelineRows)\n".utf8))
+                        }
+                    case "tlseek":
+                        m.timelineSeek(Int(arg) ?? 0)
                     case "cancel":
                         if let t = m.tasks.first(where: {
                             $0.position == Int(arg) }) {
@@ -5772,7 +5934,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     }
                     try? await Task.sleep(for: .milliseconds(400))
                     FileHandle.standardError.write(Data(
-                        "snapshot: task \(step.replacingOccurrences(of: " ", with: "_")) tasks=\(Self.taskSummary(m)) compareOn=\(m.compareOn) canCompare=\(m.canToggleCompare) activeComp=\(m.activeComposition.map { "\($0.name.replacingOccurrences(of: " ", with: "_")):\($0.layerStack.count)layers" } ?? "-") watched=\(m.tasks.first { $0.job == m.generationJob }?.badge ?? (m.generationJob == nil ? "-" : "done")) live=\(m.generationJob == nil ? "-" : "\(m.liveStep)/\(m.liveSteps)") stage=\(m.stageAssetId.flatMap { id in m.asset(id: id)?.name }?.replacingOccurrences(of: " ", with: "_") ?? "-") caption=\(m.generationCaption.replacingOccurrences(of: " ", with: "_")) downloads=\(Self.downloadSummary(m)) generating=\(m.isGenerating) memoryFailure=\(m.memoryFailure != nil) landing=\(Self.landingSummary(m)) \(Self.closingSummary(m)) frame=\(m.videoFrame) rate=\(m.videoRate) muted=\(m.videoMuted) \(Self.keyboardSummary(m)) bar=\(Self.rectText(m.stageBarFrame)) \(Self.scrubberSummary()) \(Self.stageShowSummary(m)) notice=\(m.notice.map { "\($0.level):" + $0.text.replacingOccurrences(of: " ", with: "_") } ?? "-") headers=\(m.trayHeaders) panel=\(m.openPanel.map { "\($0)" } ?? "-") sweep=\(m.markSweep)\n".utf8))
+                        "snapshot: task \(step.replacingOccurrences(of: " ", with: "_")) tasks=\(Self.taskSummary(m)) compareOn=\(m.compareOn) canCompare=\(m.canToggleCompare) activeComp=\(m.activeComposition.map { "\($0.name.replacingOccurrences(of: " ", with: "_")):\($0.layerStack.count)layers" } ?? "-") watched=\(m.tasks.first { $0.job == m.generationJob }?.badge ?? (m.generationJob == nil ? "-" : "done")) live=\(m.generationJob == nil ? "-" : "\(m.liveStep)/\(m.liveSteps)") stage=\(m.stageAssetId.flatMap { id in m.asset(id: id)?.name }?.replacingOccurrences(of: " ", with: "_") ?? "-") caption=\(m.generationCaption.replacingOccurrences(of: " ", with: "_")) downloads=\(Self.downloadSummary(m)) generating=\(m.isGenerating) memoryFailure=\(m.memoryFailure != nil) landing=\(Self.landingSummary(m)) \(Self.closingSummary(m)) frame=\(m.videoFrame) rate=\(m.videoRate) muted=\(m.videoMuted) \(Self.keyboardSummary(m)) bar=\(Self.rectText(m.stageBarFrame)) \(Self.scrubberSummary()) \(Self.stageShowSummary(m)) notice=\(m.notice.map { "\($0.level):" + $0.text.replacingOccurrences(of: " ", with: "_") } ?? "-") headers=\(m.trayHeaders) panel=\(m.openPanel.map { "\($0)" } ?? "-") sweep=\(m.markSweep) zoom=\(m.currentViewer.zoomText) fit=\(m.currentViewer.fitting) \(Self.cardSummary(m)) temporary=\(m.temporaryPreviewOnStage) liveImage=\(m.stage.a.map { "\($0.width)x\($0.height)" } ?? "-")\n".utf8))
                 }
             }
             // THE AGENT (DESIGN §9b), driven as its card drives it:
@@ -6809,6 +6971,121 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if let m = model, let s = env["VALTZ_SNAPSHOT_SCREEN"],
            let screen = AppScreen(rawValue: s) {
             m.show(screen)
+        }
+        // The LoRA TRAINER driven (VALTZ_SNAPSHOT_EXPERIMENTAL=trainer,
+        // _SCREEN=trainer): "add:<file|folder>;name:N;trigger:T;steps:N;
+        // res:512;select:<n>;caption:<words>;preview:<n>;start;
+        // until:train|done@<s>;wait:<s>;save;previewnow;stop;load:<run>;
+        // nav;draw:<file.png>" -- each printing `snapshot: trainer <step>
+        // items= selected= phase= done= total= loss= checkpoints=
+        // previews= job= runs= blocker= shown=`.
+        if let m = model, let spec = env["VALTZ_SNAPSHOT_TRAINER"] {
+            let t = m.trainer
+            t.reload()
+            for step in spec.split(separator: ";").map(String.init) {
+                let kv = step.split(separator: ":", maxSplits: 1)
+                    .map(String.init)
+                let arg = kv.count == 2 ? kv[1] : ""
+                switch kv[0] {
+                case "model": t.choose(arg)
+                case "meaning": t.triggerMeaning = arg
+                case "autocaption": t.autoCaption = arg != "off"
+                case "caption": t.captionMissing()
+                case "answer": t.answerMeaning(arg)
+                case "add": t.add([URL(fileURLWithPath: arg)])
+                case "name": t.name = arg
+                case "frames": t.frames = Int(arg) ?? t.frames
+                case "windows": t.windows = Int(arg) ?? t.windows
+                case "trigger": t.trigger = arg
+                case "steps":
+                    t.length = .steps
+                    t.steps = Int(arg) ?? 30
+                case "save-every": t.saveEvery = Int(arg) ?? 0
+                case "res":
+                    t.resolutions = Set(arg.split(separator: ",")
+                        .compactMap { Int($0) })
+                case "select":
+                    if let n = Int(arg), t.items.indices.contains(n) {
+                        t.showSample(t.items[n].id)
+                    }
+                case "caption":
+                    if let id = t.selected { t.setCaption(id, arg) }
+                case "preview":
+                    if let n = Int(arg), t.previews.indices.contains(n) {
+                        t.showPreview(t.previews[n])
+                    }
+                case "start": t.start()
+                case "save": t.command("save")
+                case "previewnow": t.command("preview")
+                case "stop": t.stop()
+                case "pause": t.pause()
+                case "end": t.endRun()
+                case "drag":
+                    // "x,y>x2,y2": posted to the window, points from its
+                    // top left -- an island's edge dragged.
+                    let ends = arg.split(separator: ">").map {
+                        $0.split(separator: ",").compactMap { Double($0) }
+                    }
+                    if ends.count == 2, ends[0].count == 2, ends[1].count == 2 {
+                        await Self.postDrag(from: (ends[0][0], ends[0][1]),
+                                            to: (ends[1][0], ends[1][1]))
+                    }
+                case "tab": t.tab = arg == "samples" ? .samples : .settings
+                case "zoom":
+                    t.zoom(arg == "in" ? .zoomIn : arg == "out" ? .zoomOut
+                           : arg == "actual" ? .actualSize : .fit)
+                case "search": t.query = arg
+                case "scroll": t.scrollTo = arg
+                case "stage":
+                    t.stageShows = arg == "preview" ? .preview : .sample
+                case "range":
+                    let r = arg.split(separator: "-").compactMap { Double($0) }
+                    t.lossRange = r.count == 2 ? r[0]...r[1] : nil
+                case "load":
+                    if let r = t.runs.first(where: { $0.name == arg }) {
+                        t.load(r)
+                    }
+                case "nav": m.toggleNav()
+                case "wait":
+                    try? await Task.sleep(for: .seconds(Double(arg) ?? 1))
+                case "until":
+                    let w = arg.split(separator: "@").map(String.init)
+                    let limit = Date().addingTimeInterval(
+                        Double(w.count > 1 ? w[1] : "120") ?? 120)
+                    while Date() < limit {
+                        if w[0] == "captioned" ? !t.captioning
+                            : w[0] == "asked" ? t.askingMeaning
+                            : w[0] == "done" ? !t.training
+                            : t.phase == w[0] { break }
+                        try? await Task.sleep(for: .milliseconds(250))
+                    }
+                case "draw":
+                    try? await Task.sleep(for: .milliseconds(400))
+                    Self.drawWindow(to: arg)
+                default: break
+                }
+                try? await Task.sleep(for: .milliseconds(200))
+                FileHandle.standardError.write(Data("""
+                    snapshot: trainer \(step) items=\(t.items.count) \
+                    selected=\(t.selectedItem?.name ?? "-") phase=\(t.phase) \
+                    done=\(t.done) total=\(t.total) \
+                    loss=\(t.losses.last.map { String(format: "%.4f", $0) } ?? "-") \
+                    checkpoints=\(t.checkpoints.count) \
+                    previews=\(t.previews.count) job=\(t.job ?? "-") \
+                    runs=\(t.runs.map(\.name).joined(separator: ",")) \
+                    blocker=\(t.blocker ?? "-") \
+                    shown=\(t.stagePath.map { URL(fileURLWithPath: $0).lastPathComponent } ?? "-") \
+                    stage=\(t.stageShows == .sample ? "sample" : "preview") \
+                    island=\(Int(t.islandWidth)) progress=\(Int(t.progressHeight)) \
+                    asking=\(t.askingMeaning) captioning=\(t.captionQueue.count + (t.captioningNow == nil ? 0 : 1)) captioner=\(t.captioner) uncaptioned=\(t.uncaptioned.count) captions=\(t.items.prefix(3).map { $0.captionedBy.isEmpty ? "-" : $0.caption }.joined(separator: " | ")) \
+                    lr=\(t.learningRate) model=\(t.modelId) rank=\(t.rank) clips=\(t.items.filter(\.isClip).count) refs=\(t.items.map(\.references.count).reduce(0, +)) \
+                    query=\(t.query) found=\(t.shownItems.map(\.name).joined(separator: ",")) tab=\(t.tab == .samples ? "samples" : "settings") \
+                    zoom=\(t.stageZoom.map { String(format: "%.2f", $0) } ?? "fit")@\(String(format: "%.3f", t.stageScale)) \
+                    outcome=\(t.outcome ?? "-") screen=\(m.screen.rawValue) \
+                    flops=\(Self.flopsSummary(m.monitor.load.flops))
+
+                    """.utf8))
+            }
         }
         let settings = env["VALTZ_SNAPSHOT_SETTINGS"] != nil
         if settings,
@@ -8024,7 +8301,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                                  flags: NSEvent.ModifierFlags = [],
                                  release: Bool = true,
                                  up: Bool = false) async {
-        guard let win = NSApp.windows.first(where: { $0.isVisible }) else {
+        // The editor's window first (another visible one -- a helper's,
+        // the ⌘? labels' -- took the drag before).
+        guard let win = NSApp.windows.first(where: {
+            $0.isVisible && EditorWindows.shared.isEditor($0)
+        }) ?? NSApp.windows.first(where: { $0.isVisible }) else {
             return
         }
         func post(_ type: NSEvent.EventType, _ x: Double, _ y: Double) {

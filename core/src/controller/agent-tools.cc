@@ -2541,6 +2541,19 @@ constexpr OptionWords kOptionWords[] = {
      "Pika Labs' six-step post-training of MiniMax H3: its adapter AND its "
      "own sampling (6 steps, shifts 12 / 3) together -- the Turbo LoRA, "
      "HyperFlow, TaoMate and MotionCache off"},
+    {"pi_h3", "pi-H3",
+     "pi-h3|pi h3|pih3|pi flow|pi-flow|piflow|pi-h3 lora|pi h3 lora|"
+     "pi-h3 adapter|lakonik|dwd|decoding without a decoder",
+     "Lakonik's pi-Flow distillation of MiniMax H3 FL2VA into 4 steps (or "
+     "2: pi_h3_steps), over the pruned DiT, its grid its own -- with DWD "
+     "(the default; pi_h3_vae for the VAE) the frames made by its pixel "
+     "head, no VAE decoder; the Turbo LoRA, HyperFlow, Pika, TaoMate, VDN off"},
+    {"pi_h3_steps", "pi-H3 steps", "pi-h3 2 step|pi-h3 two steps|pi h3 2step",
+     "pi-H3's 4-step adapter or its 2-step one (\"4\" or \"2\")"},
+    {"pi_h3_vae", "pi-H3 decoded by the VAE",
+     "pi-h3 with the vae|pi-h3 vae|pi-h3 without dwd|no dwd",
+     "pi-H3's VAE-decoded adapter in place of its DWD one (whose pixel "
+     "head makes the frames, no VAE decoder: the default)"},
     {"hyperflow", "HyperFlow",
      "hyperflow|hyper flow|hyperflow lora|hyperflow adapter|video rebirth|"
      "flow map|flowmap",

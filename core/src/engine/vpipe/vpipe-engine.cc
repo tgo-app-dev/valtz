@@ -267,6 +267,7 @@ public:
         R"({"output_fps": 48, "method": "rife", "hf_dir": "probe"})");
     // A sound's beats (DESIGN §4v, §15 0zzzj): vpipe's beat-track.
     _tracks_beats = has_stage_("beat-track");
+    _trains_loras = has_stage_("train-lora");
     // RelayVSR (DESIGN §4f, §15 0zzzq): vpipe's relayvsr-upscale.
     _relays = has_stage_("relayvsr-upscale");
     // A DiT split with another Mac (DESIGN §11c, §15 0zzzm): vpipe's
@@ -825,6 +826,31 @@ public:
     return out;
   }
 
+  Result<Json>
+  job_command(JobId job, std::string_view name, const Json& args) override
+  {
+    vpipe::CommandHandle cmd;
+    {
+      std::lock_guard lk(_cmd_mu);
+      if (job.is_nil() || job != _cmd_job || !_cmd_stage.valid()) {
+        return make_error(Code::NotFound,
+                          "that job is not running, or takes no commands");
+      }
+      cmd = _cmd_stage.command(name, vp::to_flex(args.is_object()
+                                                     ? args
+                                                     : Json::object()));
+    }
+    // Served between optimizer steps: a step of a large picture takes
+    // seconds, a preview's sampling longer.
+    const auto st = cmd.wait(10 * 60 * 1000);
+    if (st != vpipe::CommandState::Replied) {
+      return make_error(Code::Engine, std::format(
+          "{}: {} ({})", name, cmd.error(), vpipe::command_state_name(st)));
+    }
+    vpipe::FlexData r = cmd.result();
+    return vp::from_flex(r.is_object() ? r : vpipe::FlexData::make_object());
+  }
+
   bool
   supports(std::string_view op) const override
   {
@@ -840,6 +866,7 @@ public:
            (op == kOpRegenerateInContext && _regenerates_ic) ||
            (op == kOpInterpolateVideo && _interpolates) ||
            (op == kOpTrackBeats && _tracks_beats) ||
+           (op == kOpTrainLora && _trains_loras) ||
            (op == kOpUpscaleRelay && _relays);
   }
 
@@ -1910,6 +1937,8 @@ private:
       built = vp::build_speech(spec, voices);
     } else if (spec.op == kOpQuantizeModel) {
       built = vp::build_quantize_model(spec);
+    } else if (spec.op == kOpTrainLora) {
+      built = vp::build_train_lora(spec);
     } else if (spec.op == kOpUpscaleVideo) {
       // Open-H3-Regenerate-2K's refine (DESIGN §4q), else FlashVSR's.
       built = spec.model.regenerate_lora.empty()
@@ -2351,6 +2380,31 @@ private:
     read(g.transcript_sink, on_transcript);
     read(g.events_sink, on_events);
     read(g.beats_sink, on_beats);
+    // A LoRA's training: its steps and its checkpoints, as they come.
+    read(g.metrics_sink, [&](vp::SinkBeat&& b) {
+      JobEvent ev;
+      ev.job = spec.id;
+      ev.kind = JobEventKind::Progress;
+      const auto step = jget<std::int64_t>(b.meta, "step", 0);
+      const auto total = jget<std::int64_t>(b.meta, "total", 0);
+      ev.progress = total > 0 ? static_cast<float>(step) / total : -1.0f;
+      ev.data = {{"phase", kPhaseTrain}, {"done", step}, {"total", total},
+                 {"metrics", b.meta}};
+      q.sink(ev);
+    });
+    read(g.checkpoint_sink, [&](vp::SinkBeat&& b) {
+      JobEvent ev;
+      ev.job = spec.id;
+      ev.kind = JobEventKind::Progress;
+      ev.progress = -1.0f;
+      ev.data = {{"phase", kPhaseTrain}, {"checkpoint", b.meta}};
+      q.sink(ev);
+    });
+    if (!g.command_stage.empty()) {
+      std::lock_guard lk(_cmd_mu);
+      _cmd_job = spec.id;
+      _cmd_stage = h.stage(g.command_stage);
+    }
     read(g.summary_sink, on_summary);
     read(g.stem_sink, [&](vp::SinkBeat&& b) {
       on_stem(stems[0], true, std::move(b));
@@ -2555,6 +2609,11 @@ private:
     // Every sink has answered end of stream, or the stop cancelled its
     // reader's command: the joins are prompt.
     readers.clear();
+    if (!g.command_stage.empty()) {
+      std::lock_guard lk(_cmd_mu);
+      _cmd_job = JobId{};
+      _cmd_stage = vpipe::StageHandle{};
+    }
     unload_(h, lane);
     // What the encoders made, kept for the jobs after -- whatever became
     // of this one after them: a refusal for memory, a cancel, a failure
@@ -2840,6 +2899,17 @@ private:
         out.data = {{"output", st.name}};
         q.sink(out);
       }
+    } else if (spec.op == kOpTrainLora) {
+      if (!fs::is_regular_file(g.output, ec)) {
+        fail_(q, Code::Engine, no_file_(lane, "its adapter"));
+        return;
+      }
+      JobEvent out;
+      out.job = spec.id;
+      out.kind = JobEventKind::Output;
+      out.output = g.output;
+      out.data = {{"adapter", g.output.string()}};
+      q.sink(out);
     } else if (spec.op == kOpTrackBeats) {
       // Told as text, kept as data: what the timeline places them by.
       fs::remove(heard, ec);
@@ -3610,6 +3680,12 @@ private:
   bool                                  _regenerates_ic = false;
   bool                                  _interpolates = false;
   bool                                  _tracks_beats = false;
+  bool                                  _trains_loras = false;
+  // The running job whose stage takes commands (a LoRA's training),
+  // under _cmd_mu.
+  std::mutex                            _cmd_mu;
+  JobId                                 _cmd_job;
+  vpipe::StageHandle                    _cmd_stage{};
   bool                                  _relays = false;
   bool                                  _splits_dit = false;
   fs::path                              _plugin_path;

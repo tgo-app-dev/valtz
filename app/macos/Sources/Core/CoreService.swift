@@ -1,3 +1,4 @@
+import AppKit
 import CoreGraphics
 import Foundation
 import ValtzBridge
@@ -109,6 +110,28 @@ final class CoreService: @unchecked Sendable {
                        keepOriginal: Bool = false) -> CoreReply {
         send(core.compress_model, ["model": id, "bits": bits,
                                    "keep_original": keepOriginal])
+    }
+    // LoRA TRAINING (core Controller::train_lora).
+    func trainerInfo() -> CoreReply { send(core.trainer_info, [:]) }
+    func trainLoRA(_ request: [String: Any]) -> CoreReply {
+        send(core.train_lora, request)
+    }
+    func trainedLoRAs() -> CoreReply { send(core.trained_loras, [:]) }
+    func removeTrained(_ name: String) -> CoreReply {
+        send(core.remove_trained, ["name": name])
+    }
+    func finishTrained(_ name: String) -> CoreReply {
+        send(core.finish_trained, ["name": name])
+    }
+    func trainCommand(_ job: String, _ name: String,
+                      _ args: [String: Any] = [:]) -> CoreReply {
+        send(core.train_command, ["job": job, "name": name, "args": args])
+    }
+    /// A training sample captioned by the agent's model (blocking).
+    func captionTrainingSample(_ path: String, trigger: String,
+                               meaning: String) -> CoreReply {
+        send(core.caption_training_sample,
+             ["path": path, "trigger": trigger, "meaning": meaning])
     }
     /// A copy and its original both kept: which one runs.
     func useCompressed(_ id: String, _ compressed: Bool) -> CoreReply {
@@ -480,7 +503,10 @@ final class CoreService: @unchecked Sendable {
                                 end: (m["end"] as? NSNumber)?.doubleValue
                                     ?? at,
                                 text: m["text"] as? String ?? "")
-                        })
+                        },
+                    contentIn: value("content_in"),
+                    contentOut: value("content_out"),
+                    speed: finite("speed"))
             }
         return StackPlayback(plan: plan, width: w, height: h, frames: frames,
                              rate: FrameRate(num: num, den: den),
@@ -1083,6 +1109,31 @@ final class CoreService: @unchecked Sendable {
         let text = String(s)
         let obj = (try? JSONSerialization.jsonObject(
             with: Data(text.utf8)) as? [String: Any]) ?? [:]
-        return CoreReply(ok: obj["ok"] as? Bool ?? false, payload: obj)
+        let r = CoreReply(ok: obj["ok"] as? Bool ?? false, payload: obj)
+        // A change refused for its project's file being locked: the
+        // window in front asks to unlock it (AppModel.projectLockedRefused).
+        if !r.ok, obj["key"] as? String == "core.project_locked" {
+            let words = r.message
+            let ask: @MainActor () -> Void = {
+                EditorWindows.shared.owner(of: NSApp.keyWindow
+                                           ?? NSApp.mainWindow)?
+                    .projectLockedRefused(words)
+            }
+            // At once on the main thread (where the person's changes are
+            // asked): its caller's flash of the same words comes after,
+            // and is not shown.
+            if Thread.isMainThread {
+                MainActor.assumeIsolated { ask() }
+            } else {
+                Task { @MainActor in ask() }
+            }
+        }
+        return r
+    }
+
+    /// The project's FILE (its title bar's panel): {"op": "info" | "move"
+    /// (path) | "tags" (tags) | "lock" (locked)} -> {"file": ...}.
+    func projectFile(_ id: String, _ request: [String: Any]) -> CoreReply {
+        send({ core.project_file(std.string(id), $0) }, request)
     }
 }

@@ -179,6 +179,7 @@ says_where_or_how(std::string_view clause)
   });
 }
 
+
 }  // namespace
 
 std::vector<std::string>
@@ -324,6 +325,99 @@ micro_refine_words(std::string_view prompt,
     }
   }
   return refine_prompt(out);
+}
+
+std::string
+training_caption_request(std::string_view trigger, std::string_view meaning,
+                         int frames)
+{
+  const std::string t(trigger.empty() ? "ohwx" : trigger);
+  std::string r;
+  r += frames > 1
+           ? std::format("These are {} frames of one video clip, in order. ",
+                         frames)
+           : std::string("This is one picture. ");
+  r += std::format(
+      "It is a training sample for teaching an image model a new word, "
+      "\"{}\". \"{}\" means: {}\n\n", t, t,
+      meaning.empty() ? std::string("the subject the samples share")
+                      : std::string(meaning));
+  r += std::format(
+      "Write ONE caption for it: a single sentence of 12 to 40 words, in "
+      "English, that BEGINS with the word \"{0}\" as its subject -- "
+      "\"{0}\" stands for the subject and is all that is said of it.\n"
+      "- Never describe {0} itself: not its kind (no \"robot\", \"toy\", "
+      "\"creature\", \"teapot\", \"person\"), shape, colours, material, "
+      "face or clothes. The word is to learn that look; words describing "
+      "it would learn it instead.\n"
+      "- Describe everything else: what {0} is doing, where it is, what is "
+      "around it, the setting, the light, the time of day, the camera's "
+      "framing and angle{1}.\n"
+      "Example: \"{0} sits on a mossy log in a pine forest, soft morning "
+      "light from the left, a close shot at eye level.\"\n"
+      "If {0} is not in the sample at all, describe the sample without "
+      "it.\n\n"
+      "Reply with the caption alone: no quotes, no label, no other words.",
+      t, frames > 1 ? ", and how things move over the clip" : "");
+  return r;
+}
+
+std::string
+training_caption(std::string_view reply, std::string_view trigger)
+{
+  std::string s(reply);
+  // Its thinking, where a model wrote some.
+  if (const auto e = s.rfind("</think>"); e != std::string::npos) {
+    s = s.substr(e + 8);
+  }
+  const auto trim = [](std::string& x) {
+    const auto ws = [](char c) {
+      return c == ' ' || c == '\n' || c == '\r' || c == '\t';
+    };
+    while (!x.empty() && ws(x.front())) x.erase(x.begin());
+    while (!x.empty() && ws(x.back())) x.pop_back();
+  };
+  trim(s);
+  // Its first paragraph.
+  if (const auto p = s.find("\n\n"); p != std::string::npos) {
+    s = s.substr(0, p);
+  }
+  for (auto& c : s) {
+    if (c == '\n' || c == '\r') c = ' ';
+  }
+  // A label before it.
+  for (const char* label : {"Caption:", "caption:", "CAPTION:"}) {
+    if (s.starts_with(label)) {
+      s = s.substr(std::string_view(label).size());
+      trim(s);
+    }
+  }
+  // Quotes round it, straight or curly.
+  for (const auto& [o, c] : {std::pair<std::string_view, std::string_view>
+                                 {"\"", "\""},
+                             {"\u201c", "\u201d"}, {"'", "'"}}) {
+    if (s.size() >= o.size() + c.size() && s.starts_with(o) &&
+        s.ends_with(c)) {
+      s = s.substr(o.size(), s.size() - o.size() - c.size());
+      trim(s);
+    }
+  }
+  if (s.empty()) {
+    return {};
+  }
+  // The trigger as given, where the model changed its case.
+  if (!trigger.empty()) {
+    std::string lower = s, want(trigger);
+    for (auto& c : lower) c = static_cast<char>(std::tolower(
+                              static_cast<unsigned char>(c)));
+    for (auto& c : want) c = static_cast<char>(std::tolower(
+                             static_cast<unsigned char>(c)));
+    for (auto at = lower.find(want); at != std::string::npos;
+         at = lower.find(want, at + want.size())) {
+      s.replace(at, want.size(), trigger);
+    }
+  }
+  return std::string(utf8_prefix(s, 600));
 }
 
 }

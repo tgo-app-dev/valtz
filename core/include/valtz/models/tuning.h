@@ -57,6 +57,17 @@
 //                          are its 6; a clip's keyframes shown to the
 //                          prompt encoder too, as its release does. No
 //                          preset runs it
+//   pi_h3          bool    H3 FL2VA: pi-H3, Lakonik's pi-Flow 2- or
+//                          4-step distillation -- its adapter in the first
+//                          slot, the Turbo LoRA off, over the PRUNED DiT
+//                          (catalog `pi_h3.dits`: generate-video's
+//                          dit_dir) -- its grid read by vpipe off its
+//                          header, so the steps are its own; no preset
+//   pi_h3_steps    choice  "4" | "2": which distillation (needs pi_h3)
+//   pi_h3_vae      bool    the adapter decoded by the video VAE; off (the
+//                          default) its DWD one, the last step decoded to
+//                          frames by its pixel head, no VAE decoder (the
+//                          release's recommendation)
 //   taomate        bool    H3: TaoMate's streaming METHOD -- the base
 //                          model writes the soundtrack, its adapter (in
 //                          the first LoRA slot, the Turbo LoRA off) the
@@ -165,6 +176,11 @@ inline constexpr int kLoraSlots = 8;
 // (TuningContext::refiner): each refiner option's key after this.
 inline constexpr std::string_view kRegeneratePrefix = "regenerate_";
 
+// pi-H3's adapter chosen by settled values (or overrides): "4-dwd",
+// "2-dwd", "4" or "2" -- `pi_h3_steps` (4 by default) and `pi_h3_vae`
+// (off: DWD) -- the key of the catalog's `pi_h3.adapters`.
+std::string pi_h3_key(const Json& values);
+
 // What decides availability beyond the catalog: this install and Mac.
 struct TuningContext {
   bool turbo_installed = false;      // the catalog `turbo.lora` entry
@@ -172,6 +188,10 @@ struct TuningContext {
   std::string turbo_path;            //   and its file
   bool hyperflow_installed = false;  // `hyperflow.lora`
   bool pika_installed = false;       // `pika_flex.lora`
+  // pi-H3 (`pi_h3`): a pruned DiT it runs over (`dits`, the first here)
+  // and the adapters here, by their key ("4-dwd", "2-dwd", "4", "2").
+  bool pi_dit_installed = false;
+  std::set<std::string> pi_adapters;
   bool taomate_installed = false;    // `taomate.lora`
   bool vdn_installed = false;        // `vdn.branch`
   // The catalog models installed (or downloading) a declared option
@@ -309,6 +329,11 @@ std::string checkpoint_kind(const std::filesystem::path& path);
 // "keys_all": [each is in some tensor name], "metadata": {key: glob of
 // its value in the header's __metadata__, '*' any run}} -- every
 // condition it states must hold, and one that states none never does.
+// A DIAL file's own words (ComfyUI-Dials' metadata): {"name",
+// "family", "description"?, "negative"? / "positive"? (its two sides),
+// "notes"?, "neg_useful"? / "pos_useful"? (strengths found useful)}.
+Json dial_about(const std::filesystem::path& file);
+
 Json classify_checkpoint(const std::filesystem::path& path,
                          const Json& rules);
 

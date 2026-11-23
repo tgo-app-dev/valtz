@@ -80,6 +80,14 @@ struct TimelineRow: Equatable, Identifiable {
     /// still composition -- whose length is its own (a clip's is its
     /// marks').
     var stretchable = false
+    /// Its block's EDGES drag its marks (a clip, a sound, a composition
+    /// at one speed: Controller::trim_layer_edge) -- the left one its
+    /// mark-in and start together, the right one its mark-out -- as far
+    /// as its content goes: its start no earlier than `earliest`, its end
+    /// no later than `latest` (nil: as far as the timeline goes).
+    var trimmable = false
+    var earliest = 0
+    var latest: Int?
     /// The folder it is in (a layer), or it is (a header); folded shut.
     var folder: String?
     var folded = false
@@ -181,6 +189,15 @@ extension AppModel {
             timelineCutting = false
             return true
         }
+        // Backspace (or Delete): the selected layer taken off, asked first
+        // -- Return confirms, Escape cancels. Not while markup has objects
+        // selected (theirs, to delete).
+        if e.keyCode == 51 || e.keyCode == 117 {
+            guard !layerNoneSelected, markup.selection.isEmpty,
+                  canRemoveLayer(activeLayer) else { return false }
+            if !e.isARepeat { askRemoveSelectedLayer() }
+            return true
+        }
         // By the letter, else -- a layout of other letters -- by its key
         // on a US keyboard.
         let ch = (e.charactersIgnoringModifiers ?? "").lowercased()
@@ -189,6 +206,37 @@ extension AppModel {
         guard latin ? ch == "s" : e.keyCode == 1 else { return false }
         if !e.isARepeat { timelineCutting.toggle() }
         return true
+    }
+
+    /// The selected layer taken off the timeline, asked first: Remove the
+    /// default (Return), Cancel Escape's.
+    func askRemoveSelectedLayer() {
+        let id = activeLayer
+        guard let layer = stageStack?.layerStack.first(where: { $0.id == id })
+        else { return }
+        let alert = NSAlert()
+        alert.messageText = String(localized: "Remove “\(layer.title)”?")
+        alert.informativeText = String(localized: "The layer is taken off the timeline. Undo brings it back.")
+        alert.addButton(withTitle: String(localized: "Remove"))
+        alert.addButton(withTitle: String(localized: "Cancel"))
+        let answer: (NSApplication.ModalResponse) -> Void = { [weak self] r in
+            guard let self, r == .alertFirstButtonReturn else { return }
+            self.removeLayer(id)
+        }
+        // (a snapshot run: answered as told)
+        if let a = ProcessInfo.processInfo.environment[
+            "VALTZ_SNAPSHOT_REMOVE_ANSWER"] {
+            FileHandle.standardError.write(Data(
+                "snapshot: remove-layer ask=\(alert.messageText) answer=\(a)\n".utf8))
+            answer(a == "remove" ? .alertFirstButtonReturn
+                                 : .alertSecondButtonReturn)
+            return
+        }
+        if let w = editorWindow {
+            alert.beginSheetModal(for: w, completionHandler: answer)
+        } else {
+            answer(alert.runModal())
+        }
     }
 
     /// Its switch is offered beside the prompt.
@@ -379,6 +427,20 @@ extension AppModel {
             r.cuttable = !a.isPaged && Self.cuttable(src)
             r.stretchable = a.kind != "audio"
                 && [.picture, .markup, .still].contains(r.kind)
+            // A timed source at one speed: its edges drag its marks, as
+            // far as its content holds -- a frame of the timeline is
+            // `speed / fps` of its seconds.
+            if !a.isPaged, let sp = spans[l.id], sp.timed,
+               let lo = sp.contentIn, let hi = sp.contentOut,
+               let speed = sp.speed, speed > 0,
+               [.clip, .sound, .composition].contains(r.kind) {
+                let step = speed / fps
+                r.trimmable = true
+                r.earliest = max(0, r.start
+                    - Int(((sp.from - lo) / step + 1e-6).rounded(.down)))
+                r.latest = r.start
+                    + Int(((hi - sp.from) / step + 1e-6).rounded(.down))
+            }
             r.folder = l.folder
             latest = max(latest, r.end ?? r.start)
             m.rows.append(r)
@@ -608,6 +670,10 @@ extension AppModel {
 
     /// The player at frame `n` of the timeline -- a still's page.
     func timelineSeek(_ n: Int) {
+        // A temporary preview -- an asset viewed, a task's preview over
+        // the stage -- left as the timeline is moved: the composition it
+        // is back on the stage, there.
+        if temporaryPreviewOnStage { endTemporaryPreview() }
         if timelineAsset?.isPaged == true {
             goToPage(n)
         } else {
@@ -662,6 +728,21 @@ extension AppModel {
         flushPanels()
         let r = core.layerOp(project: projectId, asset: a.id, "stretch",
                              layer: id, extra: ["length": max(1, length)])
+        guard r.ok else {
+            flash(r.message, level: .error)
+            return
+        }
+        timelineLayersChanged(select: id)
+    }
+
+    /// A timed block's edge dragged (core trim_layer_edge): the left edge
+    /// to `to`, its mark-in and start with it; the right edge's end at
+    /// `to`, its mark-out. Then the Trim panel reads its marks again.
+    func trimTimelineLayerEdge(_ id: String, left: Bool, to: Int) {
+        guard let core, let projectId, let a = timelineAsset else { return }
+        flushPanels()
+        let r = core.layerOp(project: projectId, asset: a.id, "edge",
+                             layer: id, extra: ["left": left, "to": to])
         guard r.ok else {
             flash(r.message, level: .error)
             return
@@ -784,6 +865,14 @@ extension AppModel {
         timelineZoom = min(16_384, max(Self.timelineZoomOut, z))
     }
 
+    /// The rows in view set (the top edge dragged): whole rows, held to
+    /// the range, at once -- the drag is the motion.
+    func setTimelineRows(_ n: Int) {
+        let r = min(Self.timelineRowRange.upperBound,
+                    max(Self.timelineRowRange.lowerBound, n))
+        if r != timelineRows { timelineRows = r }
+    }
+
     /// One row more or fewer in view.
     func timelineRows(by d: Int) {
         let n = min(Self.timelineRowRange.upperBound,
@@ -808,7 +897,7 @@ struct TimelineCard: View {
     @State private var peaks: [String: AudioWaveform.TimedPeaks] = [:]
 
     static let transportHeight: CGFloat = 48
-    static let sideWidth: CGFloat = 30
+    static let sideWidth: CGFloat = 20
     static let radius: CGFloat = 20
 
     /// Its height with `rows` rows in view.
@@ -849,6 +938,15 @@ struct TimelineCard: View {
         .background(shape.fill(Color(nsColor: .textBackgroundColor)))
         .overlay(shape.strokeBorder(Color.primary.opacity(0.08),
                                     lineWidth: 0.5))
+        // Its TOP EDGE dragged: the rows in view, a whole row at a time,
+        // as the buttons on its right step them (up: more).
+        .overlay(alignment: .top) {
+            TimelineHeightHandle(
+                rows: model.timelineRows,
+                set: { model.setTimelineRows($0) })
+                .frame(height: 8)
+                .offset(y: -4)
+        }
         .shadow(color: .black.opacity(0.13), radius: 18, y: 8)
         .task(id: m.rows.compactMap(\.wave?.path)) {
             for r in m.rows {
@@ -874,6 +972,7 @@ struct TimelineCard: View {
             },
             slide: { model.slideTimelineLayer($0, to: $1) },
             stretch: { model.stretchTimelineLayer($0, length: $1) },
+            trimEdge: { model.trimTimelineLayerEdge($0, left: $1, to: $2) },
             moveKey: { model.moveTimelineKey($0, from: $1, to: $2) },
             cut: { model.cutTimelineLayer($0, at: $1) },
             zoom: { model.zoomTimeline(to: $0) },
@@ -966,18 +1065,25 @@ struct TimelineCard: View {
         .padding(.horizontal, 6)
     }
 
-    /// One row more, one fewer.
+    /// One row more, one fewer: narrow and tall -- each half the side's
+    /// height -- to be found at once.
     private var rowButtons: some View {
-        VStack(spacing: 2) {
-            TimelineTool(symbol: "chevron.up", on: false,
-                         help: "One more row") { model.timelineRows(by: 1) }
-                .disabled(model.timelineRows
-                          >= AppModel.timelineRowRange.upperBound)
-            TimelineTool(symbol: "chevron.down", on: false,
-                         help: "One row fewer") { model.timelineRows(by: -1) }
-                .disabled(model.timelineRows
-                          <= AppModel.timelineRowRange.lowerBound)
+        VStack(spacing: 3) {
+            RowStepButton(symbol: "chevron.up", help: "One more row",
+                          outward: .top) {
+                model.timelineRows(by: 1)
+            }
+            .disabled(model.timelineRows
+                      >= AppModel.timelineRowRange.upperBound)
+            RowStepButton(symbol: "chevron.down", help: "One row fewer",
+                          outward: .bottom) {
+                model.timelineRows(by: -1)
+            }
+            .disabled(model.timelineRows
+                      <= AppModel.timelineRowRange.lowerBound)
         }
+        .padding(.vertical, 4)
+        .padding(.horizontal, 3)
         .frame(maxHeight: .infinity)
     }
 
@@ -1171,6 +1277,96 @@ private struct TimelineTool: View {
     }
 }
 
+/// A row button of the timeline's side: as tall as its half of it.
+/// One of the timeline's row buttons. No shade at rest; hovered, a shade
+/// whole where the two buttons meet and fading out to its OUTER edge (the
+/// up button's top, the down button's bottom) -- so the card's large
+/// round corner, which clips the top one, cuts nothing that shows.
+private struct RowStepButton: View {
+    let symbol: String
+    let help: LocalizedStringKey
+    let outward: VerticalEdge
+    let action: () -> Void
+    @State private var hovering = false
+    @Environment(\.isEnabled) private var enabled
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: symbol)
+                .font(.system(size: 10, weight: .semibold))
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background {
+                    if hovering && enabled {
+                        LinearGradient(
+                            colors: [Color.primary.opacity(0),
+                                     Color.primary.opacity(0.14)],
+                            startPoint: outward == .top ? .top : .bottom,
+                            endPoint: outward == .top ? .bottom : .top)
+                    }
+                }
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(enabled ? Color.primary : Color.secondary)
+        .opacity(enabled ? 1 : 0.5)
+        .help(help)
+        .accessibilityLabel(Text(help))
+        .onHover { hovering = $0 }
+    }
+}
+
+/// The timeline's top edge as a handle: the up-and-down cursor over it, a
+/// drag changing the rows in view a whole row at a time (up: more). An
+/// AppKit view: it hears the pointer whatever SwiftUI's gestures do.
+struct TimelineHeightHandle: NSViewRepresentable {
+    let rows: Int
+    let set: (Int) -> Void
+
+    func makeNSView(context: Context) -> HandleView {
+        let v = HandleView()
+        v.rows = rows
+        v.set = set
+        return v
+    }
+
+    func updateNSView(_ v: HandleView, context: Context) {
+        v.rows = rows
+        v.set = set
+    }
+
+    final class HandleView: NSView {
+        var rows = 3
+        var set: (Int) -> Void = { _ in }
+        private var start: (y: CGFloat, rows: Int)?
+
+        override func resetCursorRects() {
+            addCursorRect(bounds, cursor: .resizeUpDown)
+        }
+
+        // Dragged at once, the window not yet key.
+        override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
+        override func mouseDown(with e: NSEvent) {
+            start = (e.locationInWindow.y, rows)
+            if ProcessInfo.processInfo.environment["VALTZ_SNAPSHOT"] != nil {
+                FileHandle.standardError.write(Data(
+                    "snapshot: timeline-height down rows=\(rows)\n".utf8))
+            }
+        }
+
+        override func mouseDragged(with e: NSEvent) {
+            guard let start else { return }
+            // Window points go up: a drag up grows the timeline.
+            let dy = e.locationInWindow.y - start.y
+            let n = start.rows
+                + Int((dy / TimelineNSView.rowHeight).rounded())
+            if n != rows { set(n) }
+        }
+
+        override func mouseUp(with e: NSEvent) { start = nil }
+    }
+}
+
 // MARK: - The view
 
 extension TimelineNSView: NSViewToolTipOwner {
@@ -1194,6 +1390,9 @@ struct TimelineActions {
     var slide: (String, Int) -> Void = { _, _ in }
     /// A still's block stretched: its length, in frames (pages).
     var stretch: (String, Int) -> Void = { _, _ in }
+    /// A timed block's edge dragged: the layer, the left edge or the
+    /// right, the frame it goes to (the right: the frame after its last).
+    var trimEdge: (String, Bool, Int) -> Void = { _, _, _ in }
     /// A key dragged: {layer, from, to}, frames from the layer's start.
     var moveKey: (String, Int, Int) -> Void = { _, _, _ in }
     var cut: (String, Int) -> Void = { _, _ in }
@@ -1309,6 +1508,10 @@ final class TimelineNSView: NSView {
         case slide(row: Int, downX: CGFloat, to: Int)
         /// A still's block's end dragged: it ends at `end`.
         case stretch(row: Int, end: Int)
+        /// A timed block's edge dragged (TimelineRow.trimmable): its
+        /// start -- mark-in with it -- at `to`, or its end at `to`.
+        case trimIn(row: Int, to: Int)
+        case trimOut(row: Int, to: Int)
         /// A key's dot dragged: the key at `from` going to `to`, within
         /// `range` -- between the keys either side, on its block.
         case key(row: Int, from: Int, to: Int, downX: CGFloat,
@@ -1501,6 +1704,8 @@ final class TimelineNSView: NSView {
             start = to
         }
         if case .stretch(let row, let to)? = drag, row == i { end = to }
+        if case .trimIn(let row, let to)? = drag, row == i { start = to }
+        if case .trimOut(let row, let to)? = drag, row == i { end = to }
         // The row's whole height, as a cell of Flash's timeline.
         let x0 = x(Double(start)), x1 = x(Double(end))
         return CGRect(x: x0, y: rowTop(i), width: max(2, x1 - x0),
@@ -1887,6 +2092,19 @@ final class TimelineNSView: NSView {
                                                 dy: selected ? 1 : 0.5))
         edge.lineWidth = selected ? 2 : 1
         edge.stroke()
+        // A timed block's edges drag its marks: a grip at each.
+        if r.trimmable, b.width > 24 {
+            let grip = NSBezierPath()
+            for gx in [b.minX + (selected ? 5 : 4.5),
+                       b.maxX - (selected ? 5 : 4.5)] {
+                grip.move(to: CGPoint(x: gx, y: b.minY + 5))
+                grip.line(to: CGPoint(x: gx, y: b.maxY - 9))
+            }
+            grip.lineWidth = 1
+            NSColor.white.withAlphaComponent(r.visible ? 0.45 : 0.2)
+                .setStroke()
+            grip.stroke()
+        }
         // A still's end stretches it: a grip there.
         if r.stretchable, b.width > 16 {
             let gx = b.maxX - (selected ? 5 : 4.5)
@@ -2524,6 +2742,20 @@ final class TimelineNSView: NSView {
         r.end ?? max(model.frames, r.start + 1)
     }
 
+    /// Over a timed block's left or right edge -- its first or last few
+    /// points, or just past it: where a press drags its marks. true the
+    /// left edge, false the right, nil neither.
+    private func atTrimEdge(_ i: Int, _ p: CGPoint) -> Bool? {
+        guard model.rows.indices.contains(i), model.rows[i].trimmable,
+              let b = block(i), p.y >= b.minY, p.y <= b.maxY else {
+            return nil
+        }
+        let reach = min(5, b.width / 3)
+        if p.x >= b.minX - 4, p.x <= b.minX + reach { return true }
+        if p.x >= b.maxX - reach, p.x <= b.maxX + 4 { return false }
+        return nil
+    }
+
     /// Over a still's block's right end -- its last few points, or just
     /// past it: where a press stretches it.
     private func atStretchEnd(_ i: Int, _ p: CGPoint) -> Bool {
@@ -2714,6 +2946,14 @@ final class TimelineNSView: NSView {
             needsDisplay = true
             return
         }
+        // A timed block's edge: dragged, its marks move.
+        if !model.cutting, let left = atTrimEdge(i, p) {
+            actions.select(r.id)
+            drag = left ? .trimIn(row: i, to: r.start)
+                        : .trimOut(row: i, to: end(of: r))
+            NSCursor.resizeLeftRight.set()
+            return
+        }
         // A still's block's end: dragged, it stretches the still.
         if !model.cutting, atStretchEnd(i, p) {
             actions.select(r.id)
@@ -2774,6 +3014,19 @@ final class TimelineNSView: NSView {
         case .slide(let i, let downX, _)?:
             drag = .slide(row: i, downX: downX,
                           to: slideStart(i, dx: p.x - downX))
+            needsDisplay = true
+        case .trimIn(let i, _)?:
+            // Snapped; held to its content and a frame before its end.
+            let r = model.rows[i]
+            let to = snapped(p.x, excluding: i)
+            drag = .trimIn(row: i, to: min(max(to, r.earliest),
+                                           end(of: r) - 1))
+            needsDisplay = true
+        case .trimOut(let i, _)?:
+            let r = model.rows[i]
+            var to = max(r.start + 1, snapped(p.x, excluding: i))
+            if let most = r.latest { to = min(to, most) }
+            drag = .trimOut(row: i, to: to)
             needsDisplay = true
         case .stretch(let i, _)?:
             // Snapping to an event within reach; a frame at least; a
@@ -2967,6 +3220,14 @@ final class TimelineNSView: NSView {
         if case .stretch(let i, let to)? = drag, i < model.rows.count,
            to != end(of: model.rows[i]) {
             actions.stretch(model.rows[i].id, to - model.rows[i].start)
+        }
+        if case .trimIn(let i, let to)? = drag, i < model.rows.count,
+           to != model.rows[i].start {
+            actions.trimEdge(model.rows[i].id, true, to)
+        }
+        if case .trimOut(let i, let to)? = drag, i < model.rows.count,
+           to != end(of: model.rows[i]) {
+            actions.trimEdge(model.rows[i].id, false, to)
         }
         if case .key(let i, let from, let to, _, _)? = drag,
            i < model.rows.count, to != from {
@@ -3279,7 +3540,7 @@ final class TimelineNSView: NSView {
         }
         if drag == nil, !model.cutting, let h = hover,
            let i = row(at: h.y, x: h.x), h.x >= Self.nameWidth,
-           atStretchEnd(i, h) {
+           atStretchEnd(i, h) || atTrimEdge(i, h) != nil {
             NSCursor.resizeLeftRight.set()
             return
         }

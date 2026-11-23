@@ -4435,6 +4435,180 @@ TEST(graph_builder, z_image_turbo_from_words)
 // strength -- a negative one too, the adapter subtracted: H3's config
 // stage, generate-image for pictures. A slot is its index, so one left
 // empty keeps its place.
+// A LoRA trained (DESIGN §8c): vpipe's training graph as its ready
+// one lays it out -- the dataset into the conditioner and the VAE, both
+// with the optimizer into train-lora -- its keys as settled, nothing
+// registered, its previews named for the run beside the adapter, and
+// its metrics and checkpoints to sinks.
+TEST(graph_builder, a_lora_is_trained_as_vpipes_graph)
+{
+  JobSpec j = job_for("qwen-image-2.1", kOpTrainLora);
+  j.params = {{"dataset", {{"dir", "/t/boxy/dataset"},
+                           {"trigger_word", "ohwx"},
+                           {"resolution", Json::array({512, 768})}}},
+              {"optimizer", {{"optimizer", "lion"}}},
+              {"train", {{"output_dir", "/t/boxy"}, {"name", "boxy"},
+                         {"steps", 30}, {"rank", 8}}},
+              {"run", "0000000000042"}};
+  auto g = vp::build_train_lora(j);
+  REQUIRE_OK(g);
+  CHECK(g->output == "/t/boxy/boxy.safetensors");
+  CHECK(g->command_stage == "train");
+  const Json* ds = find_stage(g->spec, "dataset");
+  const Json* tr = find_stage(g->spec, "train");
+  const Json* cond = find_stage(g->spec, "conditioner");
+  const Json* enc = find_stage(g->spec, "vae-encode");
+  REQUIRE(ds && tr && cond && enc);
+  CHECK(jget<std::string>(config_of(ds), "trigger_word", "") == "ohwx");
+  CHECK(src_of(cond, 0) == "dataset" && src_of(enc, 0) == "dataset");
+  CHECK(src_of(tr, 0) == "conditioner" && src_of(tr, 1) == "vae-encode" &&
+        src_of(tr, 2) == "dataset" && src_of(tr, 4) == "optimizer");
+  const Json tc = config_of(tr);
+  CHECK(jget(tc, "steps", 0) == 30 && jget(tc, "rank", 0) == 8);
+  CHECK(!jget(tc, "register", true));
+  CHECK(jget<std::string>(config_of(find_stage(g->spec, "optimizer")),
+                          "optimizer", "") == "lion");
+  CHECK(jget<std::string>(config_of(find_stage(g->spec, "save-preview")),
+                          "path", "") ==
+        "/t/boxy/previews/0000000000042-%04d.png");
+  CHECK(find_stage(g->spec, g->metrics_sink) != nullptr);
+  CHECK(find_stage(g->spec, g->checkpoint_sink) != nullptr);
+  // Its name and its folders it cannot do without.
+  j.params["train"].erase("name");
+  CHECK(!vp::build_train_lora(j).ok());
+}
+
+// MiniMax H3's training graphs (vpipe's minimax-h3-train-lora*): FL2VA's
+// clips with their soundtracks in and their previews out as MP4s, its
+// keyframe tasks shown to the conditioner; Ref2VA's references through
+// video-ref-encoder into train's 6 and 7; MiniMax-H3-Image's conditioner
+// on another model's text encoder, its edit pairs as Ref2VA's.
+TEST(graph_builder, minimax_h3_trains_on_clips_references_and_edits)
+{
+  JobSpec j = job_for("minimax-h3-fl2va", kOpTrainLora);
+  const Json base = {
+      {"dataset", {{"dir", "/t/fox/dataset"}, {"trigger_word", "ohwx"},
+                   {"media", "auto"}, {"frames", Json::array({39})},
+                   {"task_mix", {{"t2va", 1}, {"i2va", 1}}}}},
+      {"optimizer", {{"optimizer", "adamw8bit"}}},
+      {"train", {{"output_dir", "/t/fox"}, {"name", "fox"}}},
+      {"run", "0000000000007"}, {"shape", "h3"}, {"clips", true}};
+  j.params = base;
+  auto g = vp::build_train_lora(j);
+  REQUIRE_OK(g);
+  const Json* tr = find_stage(g->spec, "train");
+  const Json* cond = find_stage(g->spec, "conditioner");
+  const Json* aenc = find_stage(g->spec, "audio-vae-encode");
+  REQUIRE(tr && cond && aenc);
+  CHECK(src_of(aenc, 0) == "dataset");
+  CHECK(src_of(tr, 5) == "audio-vae-encode");
+  CHECK(src_of(cond, 3) == "dataset");     // the keyframes, shown
+  CHECK(find_stage(g->spec, "audio-vae-decode") != nullptr);
+  const Json* sp = find_stage(g->spec, "save-preview");
+  REQUIRE(sp);
+  CHECK(jget<std::string>(*sp, "type", "") == "save-video");
+  CHECK(jget<std::string>(config_of(sp), "output_url", "") ==
+        "/t/fox/previews/0000000000007-%04d.mp4");
+  // Stills alone: no soundtrack, previews as pictures, train's 5 unwired.
+  j.params["clips"] = false;
+  g = vp::build_train_lora(j);
+  REQUIRE_OK(g);
+  CHECK(find_stage(g->spec, "audio-vae-encode") == nullptr);
+  CHECK(jget<std::string>(*find_stage(g->spec, "save-preview"), "type",
+                          "") == "save-image");
+  CHECK(find_stage(g->spec, "train")->at("iports").size() == 5);
+
+  // Ref2VA: the references' rows.
+  j = job_for("minimax-h3-ref2va", kOpTrainLora);
+  j.params = base;
+  j.params["shape"] = "h3-ref2va";
+  j.params["reference_short_edge"] = 1024;
+  g = vp::build_train_lora(j);
+  REQUIRE_OK(g);
+  tr = find_stage(g->spec, "train");
+  const Json* vre = find_stage(g->spec, "video-ref-encoder");
+  REQUIRE(tr && vre);
+  CHECK(find_stage(g->spec, "conditioner") == nullptr);
+  CHECK(src_of(tr, 0) == "video-ref-encoder" &&
+        src_of(tr, 6) == "video-ref-encoder" &&
+        src_of(tr, 7) == "video-ref-encoder");
+  CHECK(jget(config_of(vre), "references_from_prompt", false));
+  CHECK(jget(config_of(vre), "frames", 0) == 39);
+  CHECK(jget(config_of(vre), "reference_image_short_edge", 0) == 1024);
+
+  // MiniMax-H3-Image: on another model's text encoder, or edits.
+  j = job_for("minimax-h3-image", kOpTrainLora);
+  j.params = base;
+  j.params["shape"] = "h3-image";
+  CHECK(!vp::build_train_lora(j).ok());   // no encoder named
+  j.model.encoder = "/m/MiniMax-H3/FL2VA";
+  g = vp::build_train_lora(j);
+  REQUIRE_OK(g);
+  CHECK(jget<std::string>(config_of(find_stage(g->spec, "conditioner")),
+                          "encoder_dir", "") == "/m/MiniMax-H3/FL2VA");
+  CHECK(find_stage(g->spec, "audio-vae-encode") == nullptr);
+  j.params["edit"] = true;
+  g = vp::build_train_lora(j);
+  REQUIRE_OK(g);
+  tr = find_stage(g->spec, "train");
+  vre = find_stage(g->spec, "video-ref-encoder");
+  REQUIRE(tr && vre);
+  CHECK(jget<std::string>(config_of(vre), "encoder_dir", "") ==
+        "/m/MiniMax-H3/FL2VA");
+  CHECK(src_of(tr, 5).empty() && src_of(tr, 6) == "video-ref-encoder");
+}
+
+// DIALS on H3's config stage: a constant row at its strength; a
+// schedule as vpipe's time curve -- the row at the largest strength, its
+// keys strength / that in normalized time -- a picture's constants alone,
+// a Dial off or at 0 left out.
+TEST(graph_builder, minimax_h3_dials_ride_the_config)
+{
+  JobSpec j = job_for("minimax-h3-fl2va", kOpGenerateVideo);
+  j.params = {{"prompt", "a kite"}, {"width", 832}, {"height", 480},
+              {"frames", 39}, {"steps", 6}, {"seed", 1},
+              {"tuning", {{"dials", Json::array({
+                  {{"path", "/d/aura.safetensors"}, {"on", true},
+                   {"strength", 1.25}},
+                  {{"path", "/d/drain.safetensors"}, {"on", true},
+                   {"strength", 1.0},
+                   {"points", Json::array({Json::array({0.0, 0.0}),
+                                           Json::array({0.5, -1.0}),
+                                           Json::array({1.0, 2.0})})}},
+                  {{"path", "/d/off.safetensors"}, {"on", false},
+                   {"strength", 1.0}},
+                  {{"path", "/d/zero.safetensors"}, {"on", true},
+                   {"strength", 0.0}},
+              })}}}};
+  auto g = vp::build_video(j, std::nullopt);
+  REQUIRE_OK(g);
+  const Json c = config_of(find_stage(g->spec, "minimax-h3-model-config"));
+  const Json rows = jget(c, "dials", Json::array());
+  REQUIRE(rows.size() == 2);
+  CHECK(rows[0]["dial"] == "/d/aura.safetensors");
+  CHECK(rows[0]["strength"].get<double>() == 1.25);
+  CHECK(!rows[0].contains("time"));
+  CHECK(rows[1]["strength"].get<double>() == 2.0);
+  const Json t = rows[1]["time"];
+  CHECK(t["type"] == "keys" && t["unit"] == "normalized" &&
+        t["interp"] == "linear");
+  REQUIRE(t["points"].size() == 3);
+  CHECK(t["points"][1][1].get<double>() == -0.5);
+  CHECK(t["points"][2][1].get<double>() == 1.0);
+
+  // A picture (MiniMax-H3-Image): the constant rows; a schedule its
+  // strength (the core settles a picture's to a constant).
+  JobSpec p = job_for("minimax-h3-image", kOpGenerateImage);
+  p.params = {{"prompt", "a kite"}, {"width", 1024}, {"height", 1024},
+              {"seed", 1}, {"tuning", j.params["tuning"]}};
+  auto pg = vp::build_text_to_image(p);
+  REQUIRE_OK(pg);
+  const Json pc = config_of(find_stage(pg->spec, "minimax-h3-model-config"));
+  for (const auto& r : jget(pc, "dials", Json::array())) {
+    CHECK(!r.contains("time"));
+  }
+}
+
 TEST(graph_builder, every_lora_slot)
 {
   JobSpec j = job_for("minimax-h3-fl2va", kOpGenerateVideo);

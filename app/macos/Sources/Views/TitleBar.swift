@@ -26,6 +26,7 @@ struct TitleBarContent: ToolbarContent {
             Button(action: model.toggleNav) {
                 Label("Navigation", systemImage: "line.3.horizontal")
             }
+            .background(TitleBarHitProbe())
             .help(model.navOpen ? "Hide navigation" : "Show navigation")
             .shortcutHint("⌃⌘N")
             .disabled(model.windowGivenOver)
@@ -33,11 +34,21 @@ struct TitleBarContent: ToolbarContent {
 
         // The name, drawn here rather than by the window (whose title is
         // kept for the Window menu), so simple mode's can be renamed.
-        ToolbarItem(placement: .navigation) {
-            WindowTitleField(model: model)
-                .disabled(model.windowGivenOver)
+        // The trainer is no project's: its own name and controls.
+        if model.screen == .trainer {
+            ToolbarItem(id: "valtz.trainer.title", placement: .navigation) {
+                TrainerTitleField(trainer: model.trainer)
+                    .background(TitleBarHitProbe())
+            }
+            .sharedBackgroundVisibility(.hidden)
+        } else {
+            ToolbarItem(placement: .navigation) {
+                WindowTitleField(model: model)
+                    .disabled(model.windowGivenOver)
+                    .background(TitleBarHitProbe())
+            }
+            .sharedBackgroundVisibility(.hidden)
         }
-        .sharedBackgroundVisibility(.hidden)
 
         // Nothing else pushes the controls right: the window's title is
         // ours (WindowTitleField), and the search field is in the item.
@@ -49,8 +60,21 @@ struct TitleBarContent: ToolbarContent {
         // They act on the editor: on the log there are none (an item
         // added and removed -- a hosted item does not redraw its content
         // for a change of screen).
+        if model.screen == .trainer {
+            ToolbarItem(id: "valtz.trainer.controls",
+                        placement: .primaryAction) {
+                TrainerTitleControls(trainer: model.trainer,
+                                     find: model.findRequest)
+                    .background(TitleBarHitProbe())
+            }
+            .sharedBackgroundVisibility(.hidden)
+        }
         if model.screen == .editor {
-            ToolbarItem(placement: .primaryAction) {
+            // Keyed by how many groups fit: the toolbar folds an item too
+            // wide for it into its own ">>" and never brings it back as it
+            // narrows -- a new item, laid out fresh, does.
+            ToolbarItem(id: "valtz.controls.\(model.titleBarFit.count)",
+                        placement: .primaryAction) {
                 TitleBarControls(model: model, scheme: scheme)
                     .disabled(model.windowGivenOver)
             }
@@ -112,15 +136,28 @@ struct WindowTitleField: View {
                     if !f && model.renamingTitle { model.renameSession(draft) }
                 }
             } else {
+                // As Preview's: hovered, a ⌄ after it; clicked, the
+                // file's panel under it -- its name, tags, where it is,
+                // locked (ProjectFilePanel).
                 HStack(spacing: 6) {
                     Text(verbatim: model.windowTitle)
                         .foregroundStyle(active == .inactive ? .secondary
                                                              : .primary)
+                    if model.document.locked {
+                        Image(systemName: "lock.fill")
+                            .font(.system(size: 11))
+                            .foregroundStyle(.secondary)
+                            .help("Locked")
+                    }
                     // Changes not saved yet (DESIGN §5b).
                     if model.document.dirty && !model.isAnonymous {
                         Text("Edited")
                             .foregroundStyle(.secondary)
                     }
+                    Image(systemName: "chevron.down")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                        .opacity(hovering || model.titlePanelOpen ? 1 : 0)
                 }
                     .font(font)
                     .lineLimit(1)
@@ -128,17 +165,29 @@ struct WindowTitleField: View {
                     .padding(.vertical, 3)
                     .background(RoundedRectangle(cornerRadius: 6)
                         .fill(Color.primary.opacity(
-                            hovering && renamable ? 0.07 : 0)))
+                            hovering || model.titlePanelOpen ? 0.07 : 0)))
                     .contentShape(Rectangle())
                     .onHover { hovering = $0 }
                     .onTapGesture {
-                        if renamable { model.renamingTitle = true }
+                        if !model.viewOnly { model.titlePanelOpen.toggle() }
                     }
-                    .help(renamable ? Text("Click to rename")
-                                    : Text(verbatim: ""))
+                    .appKitPopover(isPresented: $model.titlePanelOpen,
+                                   arrowEdge: .bottom) {
+                        ProjectFilePanel(model: model)
+                    }
+                    .help(Text("Name, tags, where it is, locked"))
             }
         }
         .animation(.smooth(duration: 0.15), value: hovering)
+        // At most what leaves the zoom group and a ">>" their room: a
+        // long name shortened, not the zoom folded.
+        .frame(maxWidth: max(120, model.titleBarWidth - 136 - 300),
+               alignment: .leading)
+        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: {
+            if abs($0 - model.titleFieldWidth) > 0.5 {
+                model.titleFieldWidth = $0
+            }
+        }
     }
 
     /// A click anywhere but the field -- the title bar around it, the
@@ -220,96 +269,314 @@ struct StartOverButton: View {
     }
 }
 
-/// The groups right of the title, each its own glass capsule.
+/// The groups right of the title, each its own glass capsule -- as many
+/// as the window has room for. The toolbar folded the whole item into its
+/// ">>" when it did not fit, and its menu held only Start Over; now the
+/// groups fold themselves, right to left (search, inspector and share,
+/// markup, light or dark, compare, start over), into a ">>" of ours whose
+/// panel holds each -- the ZOOM group always shown.
 struct TitleBarControls: View {
     @Bindable var model: AppModel
     let scheme: ColorScheme
+    @State private var shareAnchor = MenuAnchor()
+
+    typealias Fold = TitleBarFold
 
     var body: some View {
-        GlassEffectContainer(spacing: 10) {
+        let fit = model.titleBarFit
+        controls(Set(fit))
+            // (where a double-click is the controls', not the title bar's)
+            .background(TitleBarHitProbe())
+    }
+
+    private func controls(_ on: Set<Fold>) -> some View {
+        let folded = model.titleBarGroups.filter { !on.contains($0) }
+        return GlassEffectContainer(spacing: 10) {
             HStack(spacing: 10) {
-                // View only: nothing to start over or mark up (zoom, the
-                // compare, the ground, the inspector, share, search stay).
-                if model.isAnonymous && !model.viewOnly {
-                    StartOverButton(model: model)
+                ForEach(model.titleBarGroups.filter { on.contains($0) },
+                        id: \.self) { f in
+                    group(f)
+                        .onGeometryChange(for: CGFloat.self) {
+                            $0.size.width
+                        } action: {
+                            if abs((model.titleGroupWidths[f] ?? 0) - $0) > 0.5 {
+                                model.titleGroupWidths[f] = $0
+                            }
+                        }
                 }
-                editorGroups
+                if !folded.isEmpty {
+                    TitleBarButton(symbol: "chevron.right.2", title: "More",
+                                   help: "More controls",
+                                   on: model.titleMoreOpen) {
+                        model.titleMoreOpen.toggle()
+                    }
+                    .background(MenuAnchorView(anchor: shareAnchor))
+                    .titleBarCapsule()
+                    .appKitPopover(isPresented: $model.titleMoreOpen,
+                                   arrowEdge: .bottom) {
+                        TitleBarOverflow(model: model, scheme: scheme,
+                                         folded: folded,
+                                         anchor: shareAnchor,
+                                         close: { model.titleMoreOpen = false })
+                    }
+                }
             }
         }
-        // Its ideal size, always: the toolbar sizes the item from it.
         .fixedSize()
     }
 
-    /// What acts on the editor: zoom, the ground, markup, the inspector
-    /// and share, the search.
-    /// Each out of reach while the window is given over (a fleet job, a
-    /// closed project's tasks stopping): the groups are hosted apart, and
-    /// some kept their look when only the item was disabled.
     @ViewBuilder
-    private var editorGroups: some View {
-                ZoomGroup(model: model)
-                    .disabled(model.windowGivenOver)
-
-                TitleBarButton(
-                    symbol: "square.split.2x1", title: "Compare",
-                    help: model.compareOn
-                        ? "Hide the compare: A alone"
-                        : "Compare: the picture before beside this one, or one dropped on A or B",
-                    on: model.compareOn) {
-                    model.toggleCompare()
-                }
-                .disabled(!model.canToggleCompare)
-                .titleBarCapsule()
-
-                TitleBarButton(
-                    symbol: scheme == .light ? "lightbulb.max.fill" : "lightbulb",
-                    title: "Light or Dark",
-                    help: scheme == .light ? "Proof on a dark background"
-                                           : "Proof on a light background") {
-                    model.setAppearance(dark: scheme == .light,
-                                        animated: true)
-                }
-                .titleBarCapsule()
-
-                if !model.viewOnly {
-                    TitleBarButton(
-                        symbol: "pencil.tip.crop.circle", title: "Markup",
-                        help: model.markupOpen ? "Hide the markup toolbar"
-                                               : "Show the markup toolbar",
-                        on: model.markupOpen) {
-                        withAnimation(AppModel.motion) {
-                            model.markupOpen.toggle()
-                        }
-                    }
-                    .shortcutHint("⇧⌘A")
-                    // An agent at work: nothing drawn on the project.
-                    .disabled(model.agentHolds)
-                    .titleBarCapsule()
-                }
-
-                HStack(spacing: 2) {
-                    TitleBarButton(
-                        symbol: "info.circle", title: "Inspector",
-                        help: model.inspectorOpen ? "Hide the inspector (⌥⌘I)"
-                                                  : "Show the inspector (⌥⌘I)",
-                        on: model.inspectorOpen) {
-                        withAnimation(AppModel.motion) {
-                            model.inspectorOpen.toggle()
-                        }
-                    }
-                    .shortcutHint("⌥⌘I")
-                    // Its Save… (Export…): ⌘E.
-                    ShareButton(model: model)
-                        .shortcutHint("⌘E")
-                }
+    private func group(_ f: Fold) -> some View {
+        switch f {
+        case .startOver: StartOverButton(model: model)
+        case .zoom:
+            ZoomGroup(model: model)
                 .disabled(model.windowGivenOver)
-                .titleBarCapsule()
-
-                TitleBarSearchField(model: model)
-                    .shortcutHint("⌘F")
-                    .disabled(model.windowGivenOver)
+        case .compare:
+            TitleBarButton(
+                symbol: "square.split.2x1", title: "Compare",
+                help: model.compareOn
+                    ? "Hide the compare: A alone"
+                    : "Compare: the picture before beside this one, or one dropped on A or B",
+                on: model.compareOn) {
+                model.toggleCompare()
+            }
+            .disabled(!model.canToggleCompare)
+            .titleBarCapsule()
+        case .light:
+            TitleBarButton(
+                symbol: scheme == .light ? "lightbulb.max.fill" : "lightbulb",
+                title: "Light or Dark",
+                help: scheme == .light ? "Proof on a dark background"
+                                       : "Proof on a light background") {
+                model.setAppearance(dark: scheme == .light, animated: true)
+            }
+            .titleBarCapsule()
+        case .markup:
+            TitleBarButton(
+                symbol: "pencil.tip.crop.circle", title: "Markup",
+                help: model.markupOpen ? "Hide the markup toolbar"
+                                       : "Show the markup toolbar",
+                on: model.markupOpen) {
+                withAnimation(AppModel.motion) { model.markupOpen.toggle() }
+            }
+            .shortcutHint("⇧⌘A")
+            // An agent at work: nothing drawn on the project.
+            .disabled(model.agentHolds)
+            .titleBarCapsule()
+        case .inspector:
+            HStack(spacing: 2) {
+                TitleBarButton(
+                    symbol: "info.circle", title: "Inspector",
+                    help: model.inspectorOpen ? "Hide the inspector (⌥⌘I)"
+                                              : "Show the inspector (⌥⌘I)",
+                    on: model.inspectorOpen) {
+                    withAnimation(AppModel.motion) {
+                        model.inspectorOpen.toggle()
+                    }
+                }
+                .shortcutHint("⌥⌘I")
+                // Its Save… (Export…): ⌘E.
+                ShareButton(model: model)
+                    .shortcutHint("⌘E")
+            }
+            .disabled(model.windowGivenOver)
+            .titleBarCapsule()
+        case .search:
+            TitleBarSearchField(model: model)
+                .shortcutHint("⌘F")
+                .disabled(model.windowGivenOver)
+        }
     }
 }
+
+/// A group of the title bar's controls.
+enum TitleBarFold: Hashable, CaseIterable, Sendable {
+    case zoom, startOver, compare, light, markup, inspector, search
+}
+
+extension AppModel {
+    /// The title bar's groups this window holds now, left to right.
+    var titleBarGroups: [TitleBarFold] {
+        var g: [TitleBarFold] = []
+        if isAnonymous && !viewOnly { g.append(.startOver) }
+        g += [.zoom, .compare, .light]
+        if !viewOnly { g.append(.markup) }
+        g += [.inspector, .search]
+        return g
+    }
+
+    /// Those shown, in order: the zoom always; the rest while the room
+    /// right of the name holds them, folding from the right (search,
+    /// inspector and share, markup, light, compare, start over) -- a ">>"
+    /// then holding them. The room: the window, less the ☰ and its
+    /// buttons (136), the name, the spacer item (8), the bar's margin (4)
+    /// and a little to spare.
+    var titleBarFit: [TitleBarFold] {
+        let all = titleBarGroups
+        let spacing: CGFloat = 10
+        let more: CGFloat = 36
+        let room = titleBarWidth - 136 - titleFieldWidth - 26
+        let est: [TitleBarFold: CGFloat] = [
+            .zoom: 130, .startOver: 36, .compare: 36, .light: 36,
+            .markup: 36, .inspector: 66, .search: 220,
+        ]
+        func width(_ gs: [TitleBarFold]) -> CGFloat {
+            gs.reduce(0) { $0 + (titleGroupWidths[$1] ?? est[$1] ?? 36) }
+                + spacing * CGFloat(max(0, gs.count - 1))
+        }
+        if width(all) <= room { return all }
+        var keep = all
+        for f in [TitleBarFold.search, .inspector, .markup, .light, .compare,
+                  .startOver] where keep.contains(f) {
+            keep.removeAll { $0 == f }
+            if width(keep) + spacing + more <= room { break }
+        }
+        return keep
+    }
+}
+
+/// The ">>" panel: what folded out of the title bar, a row each -- the
+/// search a field of its own.
+struct TitleBarOverflow: View {
+    @Bindable var model: AppModel
+    let scheme: ColorScheme
+    let folded: [TitleBarFold]
+    let anchor: MenuAnchor
+    let close: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            if folded.contains(.search) {
+                HStack(spacing: 6) {
+                    Image(systemName: "magnifyingglass")
+                        .foregroundStyle(.secondary)
+                    TextField("Search", text: $model.searchText)
+                        .textFieldStyle(.roundedBorder)
+                }
+                .padding(.bottom, 6)
+            }
+            if folded.contains(.startOver) {
+                row("arrow.counterclockwise", "Start Over…",
+                    off: model.isBusy) {
+                    close()
+                    askStartOver()
+                }
+            }
+            if folded.contains(.compare) {
+                row("square.split.2x1",
+                    model.compareOn ? "Hide the Compare" : "Compare",
+                    off: !model.canToggleCompare) {
+                    model.toggleCompare()
+                }
+            }
+            if folded.contains(.light) {
+                row(scheme == .light ? "lightbulb.max.fill" : "lightbulb",
+                    scheme == .light ? "Proof on Dark" : "Proof on Light") {
+                    model.setAppearance(dark: scheme == .light, animated: true)
+                }
+            }
+            if folded.contains(.markup) {
+                row("pencil.tip.crop.circle",
+                    model.markupOpen ? "Hide Markup" : "Show Markup",
+                    off: model.agentHolds) {
+                    withAnimation(AppModel.motion) { model.markupOpen.toggle() }
+                }
+            }
+            if folded.contains(.inspector) {
+                row("info.circle",
+                    model.inspectorOpen ? "Hide the Inspector"
+                                        : "Show the Inspector",
+                    off: model.windowGivenOver) {
+                    withAnimation(AppModel.motion) {
+                        model.inspectorOpen.toggle()
+                    }
+                }
+                row("square.and.arrow.down", "Save…",
+                    off: !model.canExportStage || model.windowGivenOver) {
+                    close()
+                    ShareButton.save(model)
+                }
+                row("square.and.arrow.up", "Share…",
+                    off: !model.canExportStage || model.windowGivenOver) {
+                    close()
+                    ShareButton.showPicker(model, anchor)
+                }
+            }
+        }
+        .padding(10)
+        .frame(width: 240, alignment: .leading)
+        .controlSize(.small)
+    }
+
+    private func row(_ symbol: String, _ title: LocalizedStringKey,
+                     off: Bool = false,
+                     action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Label(title, systemImage: symbol)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.vertical, 4)
+                .padding(.horizontal, 6)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(off)
+    }
+
+    /// Start Over, asked first as its button asks when there is work.
+    private func askStartOver() {
+        guard model.sessionHasWork else {
+            model.startOver()
+            return
+        }
+        let a = NSAlert()
+        a.messageText = String(localized: "Start over?")
+        a.informativeText = String(localized: "The prompt, the result and the settings are cleared, and this session's images are deleted from disk. Save anything you want to keep first.")
+        a.addButton(withTitle: String(localized: "Start Over"))
+        a.addButton(withTitle: String(localized: "Cancel"))
+        if a.runModal() == .alertFirstButtonReturn { model.startOver() }
+    }
+}
+
+/// The width of the window a view is in, told as it changes.
+struct WindowWidthReader: NSViewRepresentable {
+    let changed: (CGFloat) -> Void
+
+    func makeNSView(context: Context) -> ReaderView {
+        let v = ReaderView()
+        v.changed = changed
+        return v
+    }
+
+    func updateNSView(_ v: ReaderView, context: Context) {
+        v.changed = changed
+    }
+
+    final class ReaderView: NSView {
+        var changed: (CGFloat) -> Void = { _ in }
+        private var watch: NSObjectProtocol?
+
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            if let watch { NotificationCenter.default.removeObserver(watch) }
+            watch = nil
+            guard let w = window else { return }
+            DispatchQueue.main.async { [weak self] in self?.tell() }
+            watch = NotificationCenter.default.addObserver(
+                forName: NSWindow.didResizeNotification, object: w,
+                queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.tell() }
+            }
+        }
+
+        private func tell() {
+            if let w = window { changed(w.frame.width) }
+        }
+
+        override func hitTest(_ point: NSPoint) -> NSView? { nil }
+    }
+}
+
 
 /// The search field, a glass capsule like the groups beside it. It is
 /// ours rather than `.searchable`'s: the system field brings its own
