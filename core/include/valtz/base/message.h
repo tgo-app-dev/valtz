@@ -279,7 +279,23 @@ inline constexpr Message kSplitNeuralEngineModel{
     "Not with the Neural Engine's share for {model}."};
 inline constexpr Message kSplitPiH3{
     "core.split_pi_h3",
-    "Made whole: pi-H3's adapter does not run on a split."};
+    "Made whole: this Mac's vpipe or the paired Mac's does not split "
+    "pi-H3 -- update both."};
+inline constexpr Message kSplitFlash{
+    "core.split_flash",
+    "Made whole: this Mac's vpipe or the paired Mac's does not split "
+    "HyperFlow H3 Flash -- update both."};
+inline constexpr Message kSplitTrain{
+    "core.split_train",
+    "Trained whole: this Mac's vpipe or the paired Mac's does not train "
+    "split -- update both."};
+inline constexpr Message kSplitTrainModel{
+    "core.split_train_model",
+    "Trained whole: {model} does not train split across Macs."};
+inline constexpr Message kTrainDataParallel{
+    "core.train_data_parallel",
+    "Trained on this Mac alone: this Mac's vpipe or the paired Mac's does "
+    "not share a training's steps between Macs -- update both."};
 inline constexpr Message kSplitVdnTaomate{
     "core.split_vdn_taomate",
     "Not with VDN or TaoMate's streaming (TaoMate as a LoRA only splits)."};
@@ -439,6 +455,9 @@ inline constexpr Message kWiredLimitRange{
 // The agent (DESIGN §9b).
 inline constexpr Message kAgentEmptyRequest{
     "core.agent_empty_request", "Say what the agent should do."};
+inline constexpr Message kAgentSkillRefused{
+    "core.agent_skill_refused",
+    "“{name}” is not a skill to load: {why}."};
 inline constexpr Message kAgentNoSession{
     "core.agent_no_session", "That agent session is not here any more."};
 inline constexpr Message kAgentStopped{
@@ -891,6 +910,29 @@ inline constexpr Message kLocationNoRoom{
 inline constexpr Message kModelsMoveFailed{
     "core.models_move_failed",
     "The models could not be moved to {path}: {why}"};
+inline constexpr Message kSlowModelsNone{
+    "core.slow_models_none",
+    "Set a slow models folder first: Settings › General › Storage."};
+inline constexpr Message kSlowModelsNotThere{
+    "core.slow_models_not_there",
+    "The slow models folder {path} is not there: connect its drive."};
+inline constexpr Message kSlowModelsHoldsModels{
+    "core.slow_models_holds_models",
+    "{path} still holds models: move them to the models folder first."};
+inline constexpr Message kModelNotMovable{
+    "core.model_not_movable",
+    "{model} is not in Valtz's own folders: a linked model, or one in "
+    "vpipe's folders, stays where it is."};
+inline constexpr Message kModelInFastAlready{
+    "core.model_in_fast_already", "{model} is in the models folder already."};
+inline constexpr Message kModelInSlowAlready{
+    "core.model_in_slow_already",
+    "{model} is in the slow models folder already."};
+inline constexpr Message kModelDownloading{
+    "core.model_downloading",
+    "{model} is downloading: wait for it to finish, or pause it first."};
+inline constexpr Message kModelMoveFailed{
+    "core.model_move_failed", "{model} could not be moved to {path}: {why}"};
 inline constexpr Message kTrimEdgeKeyedSpeed{
     "core.trim_edge_keyed_speed",
     "Its speed changes along it: set its marks in the Trim panel."};

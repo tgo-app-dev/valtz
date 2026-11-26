@@ -1,6 +1,8 @@
 #include "valtz-bridge.h"
 
+#include "valtz/agent/agent.h"
 #include "valtz/base/log.h"
+#include "valtz/base/message.h"
 #include "valtz/base/text.h"
 #include "valtz/controller/controller.h"
 
@@ -92,6 +94,17 @@ row_of(const Json& j, const char* key = "row")
     if (auto a = AssetId::parse(id)) {
       out.push_back(*a);
     }
+  }
+  return out;
+}
+
+// Skills loaded with an agent's words ("skill_files": paths).
+std::vector<std::filesystem::path>
+skill_files_of(const Json& j)
+{
+  std::vector<std::filesystem::path> out;
+  for (const auto& p : jget(j, "skill_files", std::vector<std::string>{})) {
+    out.emplace_back(p);
   }
   return out;
 }
@@ -460,6 +473,7 @@ Core::agent_start(const std::string& request_json)
     req.skills = jget<std::string>(*j, "skills", "full");
     req.stage = jget(*j, "stage", Json::object());
     req.render = jget(*j, "render", Json::object());
+    req.skill_files = skill_files_of(*j);
     auto id = _impl->ctl->agent_start(std::move(req));
     if (!id.ok()) {
       return err(id.error());
@@ -519,8 +533,30 @@ Core::agent_say(const std::string& request_json)
     auto st = _impl->ctl->agent_say(
         jget<std::string>(*j, "agent", ""), jget<std::string>(*j, "text", ""),
         jget(*j, "stage", Json::object()), row_of(*j),
-        j->is_object() && j->contains("render") ? (*j)["render"] : Json());
+        j->is_object() && j->contains("render") ? (*j)["render"] : Json(),
+        skill_files_of(*j));
     return st.ok() ? ok() : err(st.error());
+  });
+}
+
+std::string
+Core::agent_skill_info(const std::string& request_json)
+{
+  return guarded([&] {
+    auto j = parse(request_json);
+    if (!j.ok()) {
+      return err(j.error());
+    }
+    const std::filesystem::path p = jget<std::string>(*j, "path", "");
+    auto k = agent::read_skill(p);
+    if (!k.ok()) {
+      return err(make_error(k.error().code, msg::kAgentSkillRefused,
+                            {{"name", p.filename().string()},
+                             {"why", k.error().message}}));
+    }
+    return ok({{"name", k->name},
+               {"description", k->description},
+               {"files", k->files}});
   });
 }
 
@@ -860,6 +896,11 @@ Core::set_location(const std::string& request_json)
     if (!j.ok()) {
       return err(j.error());
     }
+    if (jget<std::string>(*j, "what", "") == "models_slow") {
+      Status st = _impl->ctl->set_slow_models(
+          jget<std::string>(*j, "path", ""));
+      return st.ok() ? ok({{"job", Json()}}) : err(st.error());
+    }
     auto r = _impl->ctl->set_location(
         jget<std::string>(*j, "what", ""),
         jget<std::string>(*j, "path", ""),
@@ -868,6 +909,15 @@ Core::set_location(const std::string& request_json)
       return err(r.error());
     }
     return ok({{"job", r->is_nil() ? Json() : Json(r->str())}});
+  });
+}
+
+std::string
+Core::move_model(const std::string& model_id, const std::string& to)
+{
+  return guarded([&] {
+    auto r = _impl->ctl->move_model(model_id, to);
+    return r.ok() ? ok({{"job", r->str()}}) : err(r.error());
   });
 }
 
@@ -3195,10 +3245,12 @@ Core::detect_intent(const std::string& request_json)
 
 std::string
 Core::download_model(const std::string& model_id,
-                     const std::string& hf_token, const std::string& source)
+                     const std::string& hf_token, const std::string& source,
+                     const std::string& storage)
 {
   return guarded([&] {
-    auto r = _impl->ctl->download_model(model_id, hf_token, source);
+    auto r = _impl->ctl->download_model(model_id, hf_token, source,
+                                        storage);
     return r.ok() ? ok({{"job", r->str()}}) : err(r.error());
   });
 }
@@ -3214,6 +3266,15 @@ Core::set_download_source(const std::string& name)
 {
   return guarded([&] {
     Status st = _impl->ctl->set_download_source(name);
+    return st.ok() ? ok() : err(st.error());
+  });
+}
+
+std::string
+Core::set_model_version(const std::string& line, const std::string& version)
+{
+  return guarded([&] {
+    Status st = _impl->ctl->set_model_version(line, version);
     return st.ok() ? ok() : err(st.error());
   });
 }

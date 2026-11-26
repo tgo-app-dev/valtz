@@ -13,7 +13,10 @@ extension AppModel {
     func startAgent() {
         guard let core, let projectId else { return }
         let words = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !words.isEmpty else { return }
+        // Skills staged go with the words -- or alone.
+        let skills = activeModality.isAgentic
+            ? agentSkillFiles.map(\.url.path) : []
+        guard !words.isEmpty || !skills.isEmpty else { return }
         if let a = agent, a.project == projectId, !a.ended {
             // What the panels still have to write, written before it holds
             // the project again (a session done is the person's).
@@ -24,7 +27,8 @@ extension AppModel {
             let r = core.agentSay(
                 a.agent, words, stage: agentStage, row: rowAssetIds,
                 render: activeModality == .procedural
-                    && a.skills == "procedural" ? proceduralRender : nil)
+                    && a.skills == "procedural" ? proceduralRender : nil,
+                skillFiles: skills)
             guard r.ok else { flash(r.message, level: .error); return }
             clearAgentPrompt()
             reloadAgent()
@@ -53,6 +57,7 @@ extension AppModel {
         }
         if let c = activeComposition { req["composition"] = c.id }
         req["stage"] = agentStage
+        if !skills.isEmpty { req["skill_files"] = skills }
         let r = core.agentStart(req)
         guard r.ok, let id = r["agent"] as? String else {
             flash(r.message, level: .error)
@@ -69,6 +74,52 @@ extension AppModel {
         }
         clearAgentPrompt()
         reloadAgent()
+    }
+
+    /// The row as the prompt box shows it: its media -- and, in the
+    /// Agent's targets, the skills staged with them.
+    var promptRowEmpty: Bool {
+        promptAttachments.isEmpty
+            && (agentSkillFiles.isEmpty || !activeModality.isAgentic)
+    }
+
+    /// Files dropped on the agent's chat or box that are SKILLS (a
+    /// folder with a SKILL.md, or a Markdown file naming one: the core's
+    /// read_skill) staged to load with the next words -- each once, by
+    /// name. The rest handed back, for the row as before. Outside the
+    /// Agent's targets, all handed back.
+    func stageSkills(_ urls: [URL]) -> [URL] {
+        guard activeModality.isAgentic, let core else { return urls }
+        var rest: [URL] = []
+        var took = 0
+        for url in urls {
+            var dir: ObjCBool = false
+            let exists = FileManager.default.fileExists(atPath: url.path,
+                                                        isDirectory: &dir)
+            let md = ["md", "markdown"].contains(
+                url.pathExtension.lowercased())
+            guard exists, dir.boolValue || md else {
+                rest.append(url)
+                continue
+            }
+            let r = core.agentSkillInfo(url.path)
+            guard r.ok, let name = r["name"] as? String else {
+                // A folder or a Markdown file that is no skill: as before
+                // (a folder's media, a text).
+                rest.append(url)
+                continue
+            }
+            took += 1
+            if agentSkillFiles.contains(where: { $0.name == name }) {
+                continue
+            }
+            let skill = StagedSkill(
+                url: url, name: name,
+                description: r["description"] as? String ?? "")
+            withAnimation(Self.motion) { agentSkillFiles.append(skill) }
+        }
+        if took > 0 { promptChanged() }
+        return rest
     }
 
     /// Where the person is as they speak -- "this page", "the current
@@ -107,7 +158,10 @@ extension AppModel {
         promptMentions = []
         setPrompt("")
         let sent = Set(promptAttachments.map(\.id))
-        withAnimation(Self.motion) { promptAttachments = [] }
+        withAnimation(Self.motion) {
+            promptAttachments = []
+            agentSkillFiles = []
+        }
         for id in sent { referenceThumbs[id] = nil }
         promptChanged()
     }
@@ -551,4 +605,13 @@ extension AppModel {
         default: "circle"
         }
     }
+}
+
+/// A SKILL staged in the agent's row (AppModel.agentSkillFiles): its
+/// file or folder, and its name and description as the core read them.
+struct StagedSkill: Identifiable, Hashable, Sendable {
+    let id = UUID()
+    let url: URL
+    let name: String
+    let description: String
 }

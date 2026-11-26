@@ -232,8 +232,8 @@ extension TuningHost {
                 l.on = true
             }
             t.loras.insert(l, at: 0)
-            for k in ["hyperflow", "pika_flex", "pi_h3", "taomate",
-                      "taomate_lora"]
+            for k in ["hyperflow", "pika_flex", "pi_h3", "hyperflow_flash",
+                      "taomate", "taomate_lora"]
                 where t.flags[k] == true {
                 t.flags[k] = false
             }

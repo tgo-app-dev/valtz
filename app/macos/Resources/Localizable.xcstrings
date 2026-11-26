@@ -471,6 +471,26 @@
         }
       }
     },
+    "%@ is in slow storage now." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "%@ 现在位于慢速存储中。"
+          }
+        }
+      }
+    },
+    "%@ is in the models folder now." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "%@ 现在位于模型文件夹中。"
+          }
+        }
+      }
+    },
     "%@ is in use: on the stage, in the prompt, or a part of another asset." : {
       "localizations" : {
         "zh-Hans" : {
@@ -1241,12 +1261,32 @@
         }
       }
     },
+    "%@ · Downloaded" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "%@ · 已下载"
+          }
+        }
+      }
+    },
     "%@ · Downloading" : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "%@ · 下载中"
+          }
+        }
+      }
+    },
+    "%@ · Not Downloaded" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "%@ · 未下载"
           }
         }
       }
@@ -1769,6 +1809,22 @@
         }
       }
     },
+    "%lld of “%@” left out: the row is full for this model." : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "%1$lld of “%2$@” left out: the row is full for this model."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "“%2$@”中有 %1$lld 项未放入：此模型的参考行已满。"
+          }
+        }
+      }
+    },
     "%lld points" : {
       "localizations" : {
         "zh-Hans" : {
@@ -2227,12 +2283,32 @@
         }
       }
     },
+    "6 Steps" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "6 步"
+          }
+        }
+      }
+    },
     "768P: 768 pixels on the short side, 1376 × 768 at 16:9" : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "768P：短边 768 像素，16:9 时为 1376 × 768"
+          }
+        }
+      }
+    },
+    "8 Steps" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "8 步"
           }
         }
       }
@@ -2691,6 +2767,16 @@
         }
       }
     },
+    "A newer version: choose it in the pop-up, then download it" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "有更新的版本：在弹出菜单中选择它，然后下载"
+          }
+        }
+      }
+    },
     "A permission changed in System Settings takes effect when Valtz is opened again for screen and system audio recording; the others at once." : {
       "localizations" : {
         "zh-Hans" : {
@@ -2788,6 +2874,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "每行、每个 token 一个尺度，先旋转：最快"
+          }
+        }
+      }
+    },
+    "A second models folder, on an external drive say, for models used now and then: downloaded there, or moved there and back in Capabilities" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "第二个模型文件夹（例如在外置磁盘上），存放偶尔使用的模型：可直接下载到那里，或在“功能”中来回移动"
           }
         }
       }
@@ -4990,6 +5086,16 @@
         }
       }
     },
+    "Automatic (Newest Downloaded)" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "自动（已下载的最新版本）"
+          }
+        }
+      }
+    },
     "Automatic: about 100 steps a picture for a small set (600 to 3,000), two epochs for a large one" : {
       "localizations" : {
         "zh-Hans" : {
@@ -6054,6 +6160,16 @@
         }
       }
     },
+    "Choose a folder for slow model storage — on an external drive, say — for the models used now and then." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "为慢速模型存储选择一个文件夹（例如在外置磁盘上），存放偶尔使用的模型。"
+          }
+        }
+      }
+    },
     "Choose a lyrics file" : {
       "localizations" : {
         "zh-Hans" : {
@@ -6160,6 +6276,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "选择要将“%@”移到的位置。"
+          }
+        }
+      }
+    },
+    "Choose…" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "选取…"
           }
         }
       }
@@ -8318,6 +8444,16 @@
         }
       }
     },
+    "Deleting…" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "正在删除…"
+          }
+        }
+      }
+    },
     "Denoising" : {
       "localizations" : {
         "zh-Hans" : {
@@ -8791,6 +8927,16 @@
         }
       }
     },
+    "Don't load this skill" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "不加载此技能"
+          }
+        }
+      }
+    },
     "Done" : {
       "localizations" : {
         "zh-Hans" : {
@@ -8941,6 +9087,16 @@
         }
       }
     },
+    "Download from %@ into the slow models folder: for a model used now and then -- it loads more slowly from there" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "从 %@ 下载到慢速模型文件夹：适合偶尔使用的模型——从那里载入较慢"
+          }
+        }
+      }
+    },
     "Download from %@, where its makers publish it -- not a model hub: Valtz fetches their file, checks it is the one it knows and keeps the weights in the models folder it manages" : {
       "localizations" : {
         "zh-Hans" : {
@@ -8978,6 +9134,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "请在“模型”中下载助手模型"
+          }
+        }
+      }
+    },
+    "Download to Slow Storage" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "下载到慢速存储"
           }
         }
       }
@@ -10472,6 +10638,36 @@
         }
       }
     },
+    "External Drive" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "外置磁盘"
+          }
+        }
+      }
+    },
+    "External drive" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "外置磁盘"
+          }
+        }
+      }
+    },
+    "External · %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "外置 · %@"
+          }
+        }
+      }
+    },
     "Eyedropper" : {
       "localizations" : {
         "zh-Hans" : {
@@ -10860,6 +11056,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "闪光灯"
+          }
+        }
+      }
+    },
+    "Flash steps" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Flash 步数"
           }
         }
       }
@@ -12950,6 +13156,26 @@
         }
       }
     },
+    "HyperFlow H3 Flash" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "HyperFlow H3 Flash"
+          }
+        }
+      }
+    },
+    "HyperFlow H3 Flash runs in its place" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "由 HyperFlow H3 Flash 代替它运行"
+          }
+        }
+      }
+    },
     "HyperFlow runs in its place" : {
       "localizations" : {
         "zh-Hans" : {
@@ -13850,6 +14076,16 @@
         }
       }
     },
+    "Its three grids: six (the release's default), four for speed, eight for quality." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "它的三种步数网格：六步（发布版默认），四步更快，八步质量更好。"
+          }
+        }
+      }
+    },
     "Its transcript is not in Assets any more." : {
       "localizations" : {
         "zh-Hans" : {
@@ -14346,12 +14582,12 @@
         }
       }
     },
-    "Lakonik's pi-H3: pi-Flow v2 distillations of MiniMax H3 FL2VA into four or two steps, for a clip from words, a first frame, a last frame or both, with its soundtrack. Each is an adapter trained on Comfy-Org's PRUNED FL2VA DiT, which runs in place of FL2VA's own (21 GB at int8; its text encoder and VAEs are FL2VA's). Its steps, its grid and its shifts are its own; it takes a LoRA slot in place of the Turbo LoRA, and HyperFlow, Pika H3 Flex, TaoMate, VDN and MotionCache are off with it. Not on a clip split with a paired Mac. No Favor preset turns it on." : {
+    "Lakonik's pi-H3: pi-Flow v2 distillations of MiniMax H3 FL2VA into four or two steps, for a clip from words, a first frame, a last frame or both, with its soundtrack. Each is an adapter trained on Comfy-Org's PRUNED FL2VA DiT, which runs in place of FL2VA's own (21 GB at int8; its text encoder and VAEs are FL2VA's). Its steps, its grid and its shifts are its own; it takes a LoRA slot in place of the Turbo LoRA, and HyperFlow, Pika H3 Flex, TaoMate, VDN and MotionCache are off with it. Split with a paired Mac where both Macs' vpipe does it. No Favor preset turns it on." : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "needs_review",
-            "value" : "Lakonik 的 pi-H3：将 MiniMax H3 FL2VA 蒸馏为四步或两步的 pi-Flow v2，可从文字、首帧、尾帧或首尾帧生成带声音的片段。每个都是在 Comfy-Org 的剪枝版 FL2VA DiT 上训练的适配器，该 DiT 代替 FL2VA 自带的运行（int8 为 21 GB；文本编码器和 VAE 来自 FL2VA）。步数、网格和偏移都是它自己的；它占用 Turbo LoRA 的 LoRA 槽位，HyperFlow、Pika H3 Flex、TaoMate、VDN 和 MotionCache 随之关闭。不能用于与配对 Mac 拆分的片段。没有任何 Favor 预设会开启它。"
+            "value" : "Lakonik 的 pi-H3：将 MiniMax H3 FL2VA 蒸馏为四步或两步的 pi-Flow v2，可从文字、首帧、尾帧或首尾帧生成带声音的片段。每个都是在 Comfy-Org 的剪枝版 FL2VA DiT 上训练的适配器，该 DiT 代替 FL2VA 自带的运行（int8 为 21 GB；文本编码器和 VAE 来自 FL2VA）。步数、网格和偏移都是它自己的；它占用 Turbo LoRA 的 LoRA 槽位，HyperFlow、Pika H3 Flex、TaoMate、VDN 和 MotionCache 随之关闭。两台 Mac 的 vpipe 都支持时，与配对的 Mac 拆分。没有任何 Favor 预设会开启它。"
           }
         }
       }
@@ -15127,6 +15363,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "LoRA 与检查点"
+          }
+        }
+      }
+    },
+    "Loaded with these words" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "随这段话加载"
           }
         }
       }
@@ -16508,12 +16754,32 @@
         }
       }
     },
+    "Move to Slow Storage: its files into the slow models folder, out of the models folder -- it loads more slowly from there" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "移到慢速存储：将其文件从模型文件夹移入慢速模型文件夹——从那里载入较慢"
+          }
+        }
+      }
+    },
     "Move to Top" : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "移到最顶层"
+          }
+        }
+      }
+    },
+    "Move to the Models Folder: its files back from slow storage, to load at the models folder's speed" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "移到模型文件夹：将其文件从慢速存储移回，以模型文件夹的速度载入"
           }
         }
       }
@@ -23836,6 +24102,27 @@
         }
       }
     },
+    "Shows the clip on the stage as it forms: its TAE, a small decoder, draws each step's frames, and past 768P the draft is decoded for the stage before its refine. Off, none of that runs -- a little less time and memory -- and the stage shows the progress alone until the clip lands." : {
+      "extractionState" : "stale",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "在舞台上显示生成中的片段：其 TAE（一个小型解码器）绘制每一步的帧；超过 768P 时，草稿会在精修前解码供舞台显示。关闭后这些都不运行——稍省时间和内存——舞台只显示进度，直到片段完成。"
+          }
+        }
+      }
+    },
+    "Shows the picture or clip on the stage as it forms: its TAE, a small decoder, draws each step's result, and past 768P a clip's draft is decoded for the stage before its refine. Off, none of that runs -- a little less time and memory -- and the stage shows the progress alone until the result lands." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "在舞台上显示生成中的图片或片段：其 TAE（一个小型解码器）绘制每一步的结果；超过 768P 时，片段的草稿会在精修前解码供舞台显示。关闭后这些都不运行——稍省时间和内存——舞台只显示进度，直到结果完成。"
+          }
+        }
+      }
+    },
     "Shuffle tags" : {
       "localizations" : {
         "zh-Hans" : {
@@ -23896,6 +24183,16 @@
         }
       }
     },
+    "Six, four for speed, eight for quality" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "六步；四步更快，八步更好"
+          }
+        }
+      }
+    },
     "Size" : {
       "localizations" : {
         "zh-Hans" : {
@@ -23947,6 +24244,42 @@
         }
       }
     },
+    "Skill %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "技能 %@"
+          }
+        }
+      }
+    },
+    "Skill: %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "技能：%@"
+          }
+        }
+      }
+    },
+    "Skill: %@ — %@" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Skill: %1$@ — %2$@"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "技能：%1$@ — %2$@"
+          }
+        }
+      }
+    },
     "Skip" : {
       "localizations" : {
         "zh-Hans" : {
@@ -23967,12 +24300,32 @@
         }
       }
     },
+    "Slow Model Storage" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "慢速模型存储"
+          }
+        }
+      }
+    },
     "Slow Motion" : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "慢动作"
+          }
+        }
+      }
+    },
+    "Slow Storage" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "慢速存储"
           }
         }
       }
@@ -24887,6 +25240,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "停止移动：已复制的内容将被删除，文件夹保持原样"
+          }
+        }
+      }
+    },
+    "Stop the move: what was copied goes, the model where it was" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "停止移动：已复制的文件将删除，模型留在原处"
           }
         }
       }
@@ -25916,6 +26279,17 @@
         }
       }
     },
+    "The clip as it forms, each step" : {
+      "extractionState" : "stale",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "每一步生成中的片段"
+          }
+        }
+      }
+    },
     "The clip is trimmed" : {
       "localizations" : {
         "zh-Hans" : {
@@ -26737,6 +27111,16 @@
         }
       }
     },
+    "The result as it forms, each step" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "每一步生成中的结果"
+          }
+        }
+      }
+    },
     "The row over the prompt: each reference is read alongside the clip" : {
       "localizations" : {
         "zh-Hans" : {
@@ -26753,6 +27137,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "相同的种子绘制出相同的画面；换一个种子，就是另一版"
+          }
+        }
+      }
+    },
+    "The slow models folder is not there: is its drive connected?" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "慢速模型文件夹不在：其磁盘是否已连接？"
           }
         }
       }
@@ -29043,6 +29437,26 @@
         }
       }
     },
+    "Version %@, chosen. Automatic runs the newest downloaded." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "版本 %@，已选择。“自动”运行已下载的最新版本。"
+          }
+        }
+      }
+    },
+    "Version %@, the newest downloaded. Choose another to run it." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "版本 %@，已下载的最新版本。选择其他版本即可运行它。"
+          }
+        }
+      }
+    },
     "Vertical guide" : {
       "localizations" : {
         "zh-Hans" : {
@@ -29109,6 +29523,26 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "视频提示词"
+          }
+        }
+      }
+    },
+    "Video Rebirth's HyperFlow H3 Flash: MiniMax H3 compressed to a 14B DiT -- three blocks left out, low-rank projections, int8 -- and distilled to 4, 6 or 8 steps, each step conditioned on where it lands. Its own DiT (a 16 GB download), the Turbo LoRA off; less than half the memory of the released model. Split with a paired Mac where both Macs' vpipe does it; past 768P made in one pass." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Video Rebirth 的 HyperFlow H3 Flash：将 MiniMax H3 压缩为 14B 的 DiT（去掉三个块、低秩投影、int8），并蒸馏为 4、6 或 8 步，每一步都以它的终点为条件。它有自己的 DiT（16 GB 下载），Turbo LoRA 关闭；内存不到发布版模型的一半。两台 Mac 的 vpipe 都支持时，与配对的 Mac 拆分；超过 768P 时一次生成。"
+          }
+        }
+      }
+    },
+    "Video Rebirth's compressed few-step DiT" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Video Rebirth 的压缩少步 DiT"
           }
         }
       }
@@ -29576,12 +30010,12 @@
         }
       }
     },
-    "What Valtz keeps on the internal SSD: models, projects and the cache, each sized." : {
+    "What Valtz keeps on the internal SSD, and on any external drive its folders are on: models, projects and the cache, each sized." : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "needs_review",
-            "value" : "Valtz 在内置 SSD 上存放的内容：模型、项目和缓存，各自的大小。"
+            "value" : "Valtz 在内置 SSD 以及其文件夹所在的外置磁盘上存放的内容：模型、项目和缓存，各自的大小。"
           }
         }
       }
@@ -29972,6 +30406,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "中间调所在的位置：偏向阴影，或偏向高光。连按两次以复位。"
+          }
+        }
+      }
+    },
+    "Where the models used now and then are kept: an external drive, say. Remove it once it holds none (move them back in Capabilities)" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "存放偶尔使用的模型的位置，例如外置磁盘。其中没有模型后才能移除（可在“功能”中将模型移回）"
           }
         }
       }
@@ -31086,6 +31530,23 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "另一个聊天已在此项目上拥有 Valtz 工具：同一时间只有一个智能体可以更改它。请在这里用“查看与添加”或不带工具聊天。"
+          }
+        }
+      }
+    },
+    "core.agent_skill_refused" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "“{name}” is not a skill to load: {why}."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "“{name}”不是可加载的技能：{why}。"
           }
         }
       }
@@ -33300,6 +33761,74 @@
         }
       }
     },
+    "core.model_downloading" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "{model} is downloading: wait for it to finish, or pause it first."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "{model} 正在下载：请等待完成，或先暂停。"
+          }
+        }
+      }
+    },
+    "core.model_in_fast_already" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "{model} is in the models folder already."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "{model} 已在模型文件夹中。"
+          }
+        }
+      }
+    },
+    "core.model_in_slow_already" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "{model} is in the slow models folder already."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "{model} 已在慢速模型文件夹中。"
+          }
+        }
+      }
+    },
+    "core.model_move_failed" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "{model} could not be moved to {path}: {why}"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "无法将 {model} 移动到 {path}：{why}"
+          }
+        }
+      }
+    },
     "core.model_not_installed" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -33313,6 +33842,23 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "{model} 尚未安装。请在“模型”中下载。"
+          }
+        }
+      }
+    },
+    "core.model_not_movable" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "{model} is not in Valtz's own folders: a linked model, or one in vpipe's folders, stays where it is."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "{model} 不在 Valtz 自己的文件夹中：链接的模型或 vpipe 文件夹中的模型留在原处。"
           }
         }
       }
@@ -34456,6 +35002,57 @@
         }
       }
     },
+    "core.slow_models_holds_models" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "{path} still holds models: move them to the models folder first."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "{path} 中仍有模型：请先将它们移到模型文件夹。"
+          }
+        }
+      }
+    },
+    "core.slow_models_none" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Set a slow models folder first: Settings › General › Storage."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "请先设置慢速模型文件夹：设置 › 通用 › 存储。"
+          }
+        }
+      }
+    },
+    "core.slow_models_not_there" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "The slow models folder {path} is not there: connect its drive."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "慢速模型文件夹 {path} 不在：请连接其磁盘。"
+          }
+        }
+      }
+    },
     "core.song_needs_lyrics" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -34571,6 +35168,23 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "暂不支持引导经过清理的“延续至片段末尾”。"
+          }
+        }
+      }
+    },
+    "core.split_flash" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Made whole: this Mac's vpipe or the paired Mac's does not split HyperFlow H3 Flash -- update both."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "整体生成：本机或配对 Mac 的 vpipe 不支持拆分 HyperFlow H3 Flash——请都更新。"
           }
         }
       }
@@ -34802,13 +35416,13 @@
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Made whole: pi-H3's adapter does not run on a split."
+            "value" : "Made whole: this Mac's vpipe or the paired Mac's does not split pi-H3 -- update both."
           }
         },
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "needs_review",
-            "value" : "整体生成：pi-H3 的适配器不能在拆分中运行。"
+            "value" : "整体生成：本机或配对 Mac 的 vpipe 不支持拆分 pi-H3——请都更新。"
           }
         }
       }
@@ -34826,6 +35440,40 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "仅当两台 Mac 的引擎都支持拆分时，才可使用仅作为 LoRA 的 TaoMate。"
+          }
+        }
+      }
+    },
+    "core.split_train" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Trained whole: this Mac's vpipe or the paired Mac's does not train split -- update both."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "整体训练：本机或配对 Mac 的 vpipe 不支持拆分训练——请都更新。"
+          }
+        }
+      }
+    },
+    "core.split_train_model" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Trained whole: {model} does not train split across Macs."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "整体训练：{model} 不支持跨 Mac 拆分训练。"
           }
         }
       }
@@ -34945,6 +35593,23 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "{model} 没有给出描述：请重试，或自己写。"
+          }
+        }
+      }
+    },
+    "core.train_data_parallel" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Trained on this Mac alone: this Mac's vpipe or the paired Mac's does not share a training's steps between Macs -- update both."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "仅在本机训练：本机或配对 Mac 的 vpipe 不支持在两台 Mac 间分担训练步骤——请都更新。"
           }
         }
       }
@@ -36424,6 +37089,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "“%@”仍有工作正在进行"
+          }
+        }
+      }
+    },
+    "“%@” holds no pictures, clips or sounds." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "“%@”中没有图片、视频或声音。"
           }
         }
       }

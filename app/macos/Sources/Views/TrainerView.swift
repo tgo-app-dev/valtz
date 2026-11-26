@@ -525,18 +525,18 @@ enum TrainerThumbs {
     /// A picture made small off the main thread (ImageIO's thumbnail).
     static func image(_ url: URL, _ px: Int) async -> NSImage? {
         let cg = await Task.detached(priority: .utility) {
-            Self.cg(url, px)
+            await Self.cg(url, px)
         }.value
         return cg.map { NSImage(cgImage: $0, size: .zero) }
     }
 
-    nonisolated static func cg(_ url: URL, _ px: Int) -> CGImage? {
+    nonisolated static func cg(_ url: URL, _ px: Int) async -> CGImage? {
         if TrainerModel.clipTypes.contains(url.pathExtension.lowercased()) {
             // A clip: its first frame, upright.
             let gen = AVAssetImageGenerator(asset: AVURLAsset(url: url))
             gen.appliesPreferredTrackTransform = true
             gen.maximumSize = CGSize(width: px, height: px)
-            return try? gen.copyCGImage(at: .zero, actualTime: nil)
+            return try? await gen.image(at: .zero).image
         }
         guard let src = CGImageSourceCreateWithURL(url as CFURL, nil) else {
             return nil

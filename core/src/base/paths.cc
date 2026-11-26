@@ -46,6 +46,7 @@ AppPaths::standard(const fs::path& support_override)
     p.cache = l.cache;
   }
   p.models_kept = l.models_kept;
+  p.models_slow = l.models_slow;
   return p;
 }
 
@@ -85,6 +86,7 @@ read_locations(const fs::path& support)
   l.models = path_of(j, "models");
   l.cache = path_of(j, "cache");
   l.models_kept = paths_of(j, "models_kept");
+  l.models_slow = path_of(j, "models_slow");
   return l;
 }
 
@@ -111,6 +113,7 @@ write_locations(const fs::path& support, const Locations& l)
   put("models", l.models);
   put("cache", l.cache);
   put_all("models_kept", l.models_kept);
+  put("models_slow", l.models_slow);
   const fs::path file = support / "locations.json";
   const fs::path tmp = file.string() + ".tmp";
   std::error_code ec;

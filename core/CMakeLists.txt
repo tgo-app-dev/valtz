@@ -62,6 +62,7 @@ set(VALTZ_CORE_SOURCES
   src/models/tuning.cc
   src/assist/assistant.cc
   src/assist/drama3.cc
+  src/assist/magi2.cc
   src/assist/micro.cc
   src/assist/moss-image.cc
   src/assist/rewrite-prompts.cc
@@ -205,6 +206,15 @@ valtz_embed("${VALTZ_MOSS_IMAGE_SKILL}/SKILL.md" kMossImageSkill
   moss-image-skill.cc)
 valtz_embed("${VALTZ_MOSS_IMAGE_SKILL}/references/layout.md"
   kMossImageLayoutGuide moss-image-layout-guide.cc)
+# MAGI-2-preview's prompt enhancement, as its makers publish it
+# (Apache-2.0, 3rd-party/magi2): its templates for a clip from words and
+# one opening on a picture, sent as their enhancer sends them, the reply
+# rendered by Valtz (assist/magi2.h) as their pe_markdown.py renders it.
+set(VALTZ_MAGI2_PE "${PROJECT_SOURCE_DIR}/3rd-party/magi2/prompt_enhancement")
+valtz_embed("${VALTZ_MAGI2_PE}/prompts/t2v.md" kMagi2T2vGuide
+  magi2-t2v-guide.cc)
+valtz_embed("${VALTZ_MAGI2_PE}/prompts/i2v.md" kMagi2I2vGuide
+  magi2-i2v-guide.cc)
 
 add_library(valtz_core STATIC ${VALTZ_CORE_SOURCES}
   $<TARGET_OBJECTS:valtz_lmdb>)

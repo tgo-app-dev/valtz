@@ -25,6 +25,7 @@
 //   valtzctl intent <text> [--image name]...
 //   valtzctl download <model-id> [--from <source>|fleet:<member>[@8bit]]
 //   valtzctl sources [<name>]       where downloads come from
+//   valtzctl versions [<id> [<version>|auto]]   a model's versions
 //   valtzctl wired [auto|<GB>]      the wired memory limit
 //   valtzctl ext [list] | enable <id> | disable <id>
 //   valtzctl ext pack <manifest.json> <package.valtzext> | show <pkg>
@@ -729,7 +730,9 @@ usage()
       "  sources [<name>]   where downloads come from -- vpipe's sources,\n"
       "          the one chosen (Settings > Capabilities' Download From);\n"
       "          a name chooses it for later downloads, the app's too\n"
-      "  wired [auto|<GB>]  the WIRED memory local models may hold -- the\n"
+      "  versions [<id> [<version>|auto]]   a model's VERSIONS (the Turbo\n"
+      "          LoRAs'): the one that runs; one chosen, or auto (the\n"
+      "          newest here) -- Settings > Capabilities' version pop-up\n"      "  wired [auto|<GB>]  the WIRED memory local models may hold -- the\n"
       "          helper, the agent, picture, clip and sound models\n"
       "          (Settings > General > Memory): Automatic, the limit in\n"
       "          force, what is wired now; GB sets one (8, 12.5), auto\n"
@@ -2215,6 +2218,10 @@ agent_command(Controller& c, std::vector<std::string> args)
       // Its Valtz tools: full (edits), chat (looks and adds), procedural
       // (writes programs and draws them), none.
       req.skills = next();
+    } else if (a == "--skill") {
+      // A SKILL loaded with the request (a folder with a SKILL.md, or
+      // one; repeatable): its text the model's, its name the transcript's.
+      req.skill_files.emplace_back(next());
     } else if (a == "--size") {
       // A procedural session's size, its length: render_program's own --
       // SET, as the app's card is: the model's own taken only where the
@@ -2929,9 +2936,22 @@ main(int argc, char** argv)
       std::strftime(buf, sizeof buf, "%Y-%m-%d", &tm);
       return std::string(buf);
     };
-    std::printf("volume   %s of %s free\n",
-                gb(r["volume"]["free"]).c_str(),
-                gb(r["volume"]["capacity"]).c_str());
+    // Each drive Valtz keeps something on, as Settings > Storage draws a
+    // bar for each: the internal one, then any external one a folder of
+    // Valtz's is on (a network share none).
+    for (const auto& v : jget(r, "volumes", Json::array())) {
+      const bool in = jget(v, "internal", true);
+      std::string what = in ? "internal" : "EXTERNAL";
+      if (!in && !jget<std::string>(v, "protocol", "").empty()) {
+        what += " (" + jget<std::string>(v, "protocol", "") + ")";
+      }
+      std::printf("volume   %s of %s free  %s %s: models %s, projects "
+                  "%s, cache %s\n",
+                  gb(v["free"]).c_str(), gb(v["capacity"]).c_str(),
+                  what.c_str(), jget<std::string>(v, "name", "").c_str(),
+                  gb(v["models"]).c_str(), gb(v["projects"]).c_str(),
+                  gb(v["cache"]).c_str());
+    }
     std::printf("models   %s  %s\n", gb(r["models"]["bytes"]).c_str(),
                 r["models"]["root"].get<std::string>().c_str());
     for (const auto& m : r["models"]["items"]) {
@@ -3408,6 +3428,13 @@ main(int argc, char** argv)
                                 Json::array())) {
         line("  kept", k);
       }
+      if (const Json sl = jget(l, "models_slow", Json());
+          sl.is_object()) {
+        line("slow", sl);
+        std::printf("          %llu MB of models\n",
+                    static_cast<unsigned long long>(
+                        jget<std::uint64_t>(sl, "bytes", 0) >> 20));
+      }
       const Json cache = jget(l, "cache", Json::object());
       line("cache", cache);
       std::printf("          %llu MB in use at %s\n",
@@ -3415,8 +3442,11 @@ main(int argc, char** argv)
                       jget<std::uint64_t>(cache, "bytes", 0) >> 20),
                   jget<std::string>(cache, "in_use", "").c_str());
       if (const Json m = jget(l, "moving", Json()); m.is_object()) {
-        std::printf("moving    %s to %s\n",
+        std::printf("moving    %s%s to %s\n",
                     jget<std::string>(m, "what", "").c_str(),
+                    jget<std::string>(m, "model", "").empty()
+                        ? ""
+                        : (" " + jget<std::string>(m, "model", "")).c_str(),
                     jget<std::string>(m, "to", "").c_str());
       }
     };
@@ -3425,6 +3455,22 @@ main(int argc, char** argv)
       return 0;
     }
     const std::string what = args[0];
+    // The SLOW models folder: `locations slow <dir>`, `--none` to let it
+    // go (refused while it holds models).
+    if (what == "slow") {
+      if (args.size() < 2) {
+        std::fprintf(stderr, "usage: valtzctl locations slow <dir>|--none\n");
+        return 2;
+      }
+      Status st = c.set_slow_models(args[1] == "--none" ? fs::path()
+                                                        : fs::path(args[1]));
+      if (!st.ok()) {
+        std::fprintf(stderr, "%s\n", st.error().message.c_str());
+        return 1;
+      }
+      print();
+      return 0;
+    }
     std::string how = "move";
     fs::path dir;
     bool to_default = false;
@@ -3457,6 +3503,24 @@ main(int argc, char** argv)
       rc = follow(c, *r);
     }
     print();
+    return rc;
+  }
+  // A model moved between the models folder and the slow one.
+  if (cmd == "move-model") {
+    if (args.size() < 2 || (args[1] != "fast" && args[1] != "slow")) {
+      std::fprintf(stderr, "usage: valtzctl move-model <id> fast|slow\n");
+      return 2;
+    }
+    auto r = c.move_model(args[0], args[1]);
+    if (!r.ok()) {
+      return fail(r.error());
+    }
+    const int rc = follow(c, *r);
+    if (const auto* e = c.catalog().find(args[0])) {
+      const auto i = c.model_store().info(*e);
+      std::printf("%s: %s at %s\n", e->id.c_str(), models::to_str(i.state),
+                  i.dir.string().c_str());
+    }
     return rc;
   }
   if (cmd == "models") {
@@ -6958,6 +7022,8 @@ main(int argc, char** argv)
     // [--loraplus 16] [--audio-weight X]  (MiniMax H3's clips: a sample's
     // references its .refs, a file a line)
     // [--save-after s] [--preview-after s] [--stop-after s]
+    // [--parallel auto|data|tensor|none]  (with --fleet and a paired Mac:
+    // each Mac its share of every step's samples, or of the DiT)
     if (args.empty()) {
       return usage();
     }
@@ -7037,6 +7103,8 @@ main(int argc, char** argv)
         preview_after = num();
       } else if (a == "--stop-after" && v) {
         stop_after = num();
+      } else if (a == "--parallel" && v) {
+        req["parallel"] = args[++i];
       } else {
         req["items"].push_back(a);
       }
@@ -7203,6 +7271,46 @@ main(int argc, char** argv)
     }
     return 0;
   }
+  if (cmd == "versions") {
+    // Settings › Capabilities' version pop-up: a line's versions (the
+    // lightx2v Turbo LoRAs), the one that runs -- and one chosen
+    // (`auto`: the newest here).
+    if (args.empty()) {
+      for (const auto& e : c.catalog().models()) {
+        if (!e.versions.empty()) {
+          const Json v = c.model_versions(e.id);
+          std::printf("%-32s %s%s\n", e.id.c_str(),
+                      jget<std::string>(v, "in_use", "").c_str(),
+                      jget<std::string>(v, "chosen", "").empty()
+                          ? "  (auto)" : "");
+        }
+      }
+      return 0;
+    }
+    if (args.size() > 1) {
+      if (Status st = c.set_model_version(
+              args[0], args[1] == "auto" ? std::string() : args[1]);
+          !st.ok()) {
+        return fail(st.error());
+      }
+    }
+    const Json v = c.model_versions(args[0]);
+    if (v.is_null()) {
+      std::fprintf(stderr, "%s has no versions\n", args[0].c_str());
+      return 1;
+    }
+    const auto in_use = jget<std::string>(v, "in_use", "");
+    const auto chosen = jget<std::string>(v, "chosen", "");
+    for (const auto& x : jget(v, "versions", Json::array())) {
+      const auto id = jget<std::string>(x, "model", "");
+      std::printf("%s %-6s %-40s %s\n", id == in_use ? "*" : " ",
+                  jget<std::string>(x, "version", "").c_str(), id.c_str(),
+                  jget<std::string>(x, "state", "").c_str());
+    }
+    std::printf("chosen: %s\n", chosen.empty() ? "auto (the newest here)"
+                                               : chosen.c_str());
+    return 0;
+  }
   if (cmd == "wired") {
     // Settings › General › Memory: the wired limit -- set, or Automatic.
     if (!args.empty()) {
@@ -7324,8 +7432,13 @@ main(int argc, char** argv)
     double pause_after = -1;
     double cancel_after = -1;
     std::string from;  // a download source, "" the one chosen
+    std::string storage;  // "slow": into the slow models folder
     for (std::size_t i = 0; i + 1 < args.size();) {
-      if (args[i] == "--from") {
+      if (args[i] == "--to") {
+        storage = args[i + 1];
+        args.erase(args.begin() + static_cast<std::ptrdiff_t>(i),
+                   args.begin() + static_cast<std::ptrdiff_t>(i) + 2);
+      } else if (args[i] == "--from") {
         from = args[i + 1];
         args.erase(args.begin() + static_cast<std::ptrdiff_t>(i),
                    args.begin() + static_cast<std::ptrdiff_t>(i) + 2);
@@ -7341,7 +7454,11 @@ main(int argc, char** argv)
     if (args.empty()) {
       return usage();
     }
-    const std::string id = args[0];
+    // A line of versions (the Turbo LoRAs): the version that runs.
+    std::string id = args[0];
+    if (const auto* e = c.catalog().find(id); e && !e->versions.empty()) {
+      id = c.version_in_use(*e)->id;
+    }
     // What is on disk of it now.
     const auto left = [&c, &id] {
       const auto* e = c.catalog().find(id);
@@ -7363,7 +7480,7 @@ main(int argc, char** argv)
       left();
       return 0;
     }
-    auto j = c.download_model(id, token, from);
+    auto j = c.download_model(id, token, from, storage);
     std::fill(token.begin(), token.end(), '\0');
     if (!j.ok()) {
       return fail(j.error());

@@ -266,7 +266,7 @@ enum SettingsPage: String, CaseIterable, Identifiable, Hashable {
         case .fleet:
             String(localized: "The Valtz Macs of this network as one: a job this Mac cannot run, or not now, goes to a member that can, and this Mac takes theirs when it is free.")
         case .storage:
-            String(localized: "What Valtz keeps on the internal SSD: models, projects and the cache, each sized.")
+            String(localized: "What Valtz keeps on the internal SSD, and on any external drive its folders are on: models, projects and the cache, each sized.")
         case .permissions:
             String(localized: "What Valtz may ask macOS to use — the camera, the microphone, the Mac's sound, your folders — whether it is allowed now, and where Valtz needs it.")
         case .experimental:

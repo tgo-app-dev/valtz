@@ -284,6 +284,13 @@ set(VALTZ_MOSS_IMAGE_LICENSE
 set_source_files_properties(${VALTZ_MOSS_IMAGE_LICENSE} PROPERTIES
   MACOSX_PACKAGE_LOCATION Resources/Licenses/MOSS-Image)
 list(APPEND VALTZ_APP_RESOURCES ${VALTZ_MOSS_IMAGE_LICENSE})
+# MAGI-2-preview's prompt enhancement (Apache-2.0, 3rd-party/magi2).
+set(VALTZ_MAGI2_LICENSE
+  "${PROJECT_SOURCE_DIR}/3rd-party/magi2/LICENSE"
+  "${PROJECT_SOURCE_DIR}/3rd-party/magi2/NOTICE")
+set_source_files_properties(${VALTZ_MAGI2_LICENSE} PROPERTIES
+  MACOSX_PACKAGE_LOCATION Resources/Licenses/MAGI-2-preview)
+list(APPEND VALTZ_APP_RESOURCES ${VALTZ_MAGI2_LICENSE})
 # Fish Audio's Drama 3 guide (CC BY 4.0, 3rd-party/fish-audio-drama3).
 set(VALTZ_DRAMA3_LICENSE
   "${PROJECT_SOURCE_DIR}/3rd-party/fish-audio-drama3/LICENSE"

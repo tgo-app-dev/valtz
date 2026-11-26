@@ -99,6 +99,12 @@ enum DroppedMedia {
         strings(pb).compactMap { AppModel.draggedAsset($0) }
     }
 
+    /// A FOLDER of Assets in the drag ("valtz-folder:<id>"): the row
+    /// and the prompt's words take its media.
+    static func folders(_ pb: NSPasteboard) -> [String] {
+        strings(pb).compactMap { AppModel.draggedFolder($0) }
+    }
+
     static func isStage(_ pb: NSPasteboard) -> Bool {
         strings(pb).contains(AppModel.stagePrefix)
     }
@@ -145,6 +151,7 @@ enum DroppedMedia {
             }
             if let s = item.string(forType: .string),
                AppModel.draggedAsset(s) == nil, s != AppModel.stagePrefix,
+               AppModel.draggedFolder(s) == nil,
                !s.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 out.append(.text(s))
             }

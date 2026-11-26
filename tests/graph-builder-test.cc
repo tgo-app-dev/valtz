@@ -3246,6 +3246,49 @@ TEST(graph_builder, a_split_dits_rank_names_its_transport)
   }
 }
 
+// MAGI-2-preview split over Thunderbolt (DESIGN §11c, vpipe
+// tensor-parallel-magi2/1): the catalog's widths -- its 24 query heads,
+// each MoE head's 256 experts, its own family -- and a rank as H3's: the
+// transport named on generate-video (its refine, inside it, on the same
+// channel), the conditioner and its negative on both; the member's rank
+// its denoise alone, the refined latent written.
+TEST(graph_builder, a_split_magi2_clip_has_its_two_ranks)
+{
+  JobSpec j = job_for("magi2-preview", kOpGenerateVideo);
+  const Json tp = jget(jget(j.model.engine, "vpipe", Json()),
+                       "tensor_parallel", Json());
+  CHECK(jget(tp, "heads", 0) == 24 && jget(tp, "ffn", 0) == 256);
+  CHECK(jget<std::string>(tp, "needs", "") == "magi2");
+  CHECK(!jget(tp, "adapters", true));
+  j.params = {{"prompt", "a fox in snow"}, {"width", 1920},
+              {"height", 1088}, {"frames", 125}, {"fps", 12.5},
+              {"steps", 100},
+              {"tensor_parallel",
+               {{"rank", 0}, {"ranks", 2}, {"heads", {0, 12}},
+                {"ffn", {0, 128}},
+                {"params", {{"role", "connect"}}}}}};
+  auto g = vp::build_video(j, std::nullopt);
+  REQUIRE_OK(g);
+  const Json* gen = find_stage(g->spec, "generate-video");
+  REQUIRE(gen);
+  const Json gtp = jget(config_of(gen), "tensor_parallel", Json());
+  CHECK(jget<std::string>(gtp, "transport", "") == "valtz-tp");
+  CHECK(jget(gtp, "heads", Json()) == Json({0, 12}));
+  CHECK(src_of(gen, 1) == "diffusion-conditioner");
+  CHECK(jget(config_of(find_stage(g->spec, "magi2-model-config")),
+             "refine_width", 0) == 1920);
+  CHECK(find_stage(g->spec, "vae-decode") != nullptr);
+  j.params["denoise_only"] = true;
+  j.params["tensor_parallel"]["rank"] = 1;
+  auto d = vp::build_video(j, std::nullopt);
+  REQUIRE_OK(d);
+  CHECK(find_stage(d->spec, "denoised") != nullptr);
+  CHECK(find_stage(d->spec, "diffusion-conditioner") != nullptr);
+  for (const char* gone : {"vae-decode", "save-video", "audio-vae-decode"}) {
+    CHECK(find_stage(d->spec, gone) == nullptr);
+  }
+}
+
 // A MiniMax H3 PICTURE split (DESIGN §11c): MiniMax-H3-Image's one
 // latent frame is the same forward, so a rank names the transport on
 // its generate-video as a clip's does; this Mac's rank decodes and
@@ -3586,6 +3629,69 @@ TEST(graph_builder, minimax_h3_clip_ends_on_a_picture)
   auto one = vp::build_video(j, first);
   REQUIRE_OK(one);
   CHECK(src_of(find_stage(one->spec, "generate-video"), 6).empty());
+}
+
+// MAGI-2-preview as vpipe's magi2 graphs lay it: its conditioner's
+// negative on generate-video's port 1, the steps and flow shift on
+// magi2-model-config (over generate-video's), 12.5 fps; a picture shown
+// to the conditioner (port 3) and VAE-encoded onto port 5; past 544 on
+// the short side, the preview made at 512 and refined to the size asked
+// (floored to 16) at 25 fps.
+TEST(graph_builder, magi2_makes_a_clip_and_refines_it_past_540p)
+{
+  JobSpec j = job_for("magi2-preview", kOpGenerateVideo);
+  j.params = {{"prompt", "a fox trots through snow"}, {"width", 896},
+              {"height", 512}, {"frames", 125}, {"fps", 12.5},
+              {"steps", 100}, {"seed", 7},
+              {"tuning", {{"shift", 6.0}}}};
+  auto g = vp::build_video(j, std::nullopt);
+  REQUIRE_OK(g);
+  const Json* gen = find_stage(g->spec, "generate-video");
+  REQUIRE(gen);
+  CHECK(src_of(gen, 0) == "diffusion-conditioner");
+  CHECK(src_of(gen, 1) == "diffusion-conditioner");
+  CHECK((*gen)["iports"][1]["oport"] == 1);
+  CHECK(src_of(gen, 9) == "magi2-model-config");
+  CHECK(jget(config_of(gen), "fps", 0.0) == 12.5);
+  const Json* mc = find_stage(g->spec, "magi2-model-config");
+  REQUIRE(mc);
+  CHECK(jget(config_of(mc), "steps", 0) == 100);
+  CHECK(jget(config_of(mc), "shift", 0.0) == 6.0);
+  CHECK(jget(config_of(mc), "video_guidance", 0.0) == 5.0);
+  CHECK(!config_of(mc).contains("refine_width"));
+  const Json* save = find_stage(g->spec, "save-video");
+  REQUIRE(save);
+  CHECK(jget(config_of(save), "fps", 0.0) == 12.5);
+  CHECK(find_stage(g->spec, "audio-vae-decode"));
+  CHECK(!find_stage(g->spec, "preview-sink"));
+  // Nothing of it kept: the negative is made with the conditioning.
+  CHECK(g->encodings.empty());
+
+  // A picture: shown to the conditioner, its latent the first frame.
+  vp::RefImage first{"/tmp/still.png", {1536, 1024}, false, true};
+  auto i2v = vp::build_video(j, first);
+  REQUIRE_OK(i2v);
+  const Json* cond = find_stage(i2v->spec, "diffusion-conditioner");
+  REQUIRE(cond);
+  CHECK(src_of(cond, 3) == "first-fit");
+  CHECK(src_of(find_stage(i2v->spec, "generate-video"), 5) ==
+        "first-latent");
+
+  // 1920 x 1088 asked: a 512 preview of its shape, refined to it.
+  JobSpec hd = j;
+  hd.params["width"] = 1920;
+  hd.params["height"] = 1088;
+  auto r = vp::build_video(hd, std::nullopt);
+  REQUIRE_OK(r);
+  const Json* rgen = find_stage(r->spec, "generate-video");
+  CHECK(jget(config_of(rgen), "height", 0) == 512);
+  CHECK(jget(config_of(rgen), "width", 0) == 928);
+  const Json* rmc = find_stage(r->spec, "magi2-model-config");
+  CHECK(jget(config_of(rmc), "refine_width", 0) == 1920);
+  CHECK(jget(config_of(rmc), "refine_height", 0) == 1088);
+  CHECK(jget(config_of(find_stage(r->spec, "save-video")), "fps", 0.0) ==
+        25.0);
+  CHECK(r->width == 1920 && r->height == 1088);
 }
 
 // Past 768P a clip is DRAFTED at 768 on its short side and REGENERATED
@@ -4476,6 +4582,99 @@ TEST(graph_builder, a_lora_is_trained_as_vpipes_graph)
   // Its name and its folders it cannot do without.
   j.params["train"].erase("name");
   CHECK(!vp::build_train_lora(j).ok());
+}
+
+// A LoRA TRAINED SPLIT across the paired Macs (DESIGN §11c): rank 0 is
+// the whole graph, train-lora given its share and the transport; rank 1
+// a train-lora stage alone -- no dataset, no encoders, no previews'
+// decode -- its dataset rank 0's, its state where it is told.
+TEST(graph_builder, a_lora_trained_split_has_its_two_ranks)
+{
+  JobSpec j = job_for("minimax-h3-fl2va", kOpTrainLora);
+  const Json tp = {{"rank", 0}, {"ranks", 2},
+                   {"heads", Json::array({0, 40})},
+                   {"ffn", Json::array({0, 10240})},
+                   {"needs", "h3-train"},
+                   {"params", {{"role", "connect"}}}};
+  j.params = {{"dataset", {{"dir", "/t/fox/dataset"}}},
+              {"optimizer", {{"optimizer", "adamw"}}},
+              {"train", {{"output_dir", "/t/fox"}, {"name", "fox"}}},
+              {"shape", "h3"}, {"tensor_parallel", tp}};
+  auto g = vp::build_train_lora(j);
+  REQUIRE_OK(g);
+  const Json tc = config_of(find_stage(g->spec, "train"));
+  CHECK(jget(jget(tc, "tensor_parallel", Json()), "rank", -1) == 0);
+  CHECK(jget<std::string>(jget(tc, "tensor_parallel", Json()), "transport",
+                          "") == ex::kTpTransport);
+  // What the member checks it trains is Valtz's, never vpipe's.
+  CHECK(!jget(tc, "tensor_parallel", Json()).contains("needs"));
+  CHECK(find_stage(g->spec, "dataset") != nullptr);
+
+  JobSpec f = job_for("minimax-h3-fl2va", kOpTrainLora);
+  Json peer = tp;
+  peer["rank"] = 1;
+  f.params = {{"train_follower", true}, {"shape", "h3"},
+              {"train", {{"output_dir", "/s/ranks/fox"}, {"name", "fox"},
+                         {"resume", "auto"}}},
+              {"tensor_parallel", peer}};
+  g = vp::build_train_lora(f);
+  REQUIRE_OK(g);
+  const Json* tr = find_stage(g->spec, "train");
+  REQUIRE(tr);
+  CHECK(tr->at("iports").empty());
+  CHECK(find_stage(g->spec, "dataset") == nullptr);
+  CHECK(find_stage(g->spec, "conditioner") == nullptr);
+  CHECK(find_stage(g->spec, "vae-decode") == nullptr);
+  const Json fc = config_of(tr);
+  CHECK(jget<std::string>(fc, "hf_dir", "") == f.model.dir.string());
+  CHECK(jget<std::string>(fc, "output_dir", "") == "/s/ranks/fox");
+  CHECK(jget(jget(fc, "tensor_parallel", Json()), "rank", -1) == 1);
+  CHECK(find_stage(g->spec, g->metrics_sink) != nullptr);
+  // Its share it cannot do without.
+  f.params.erase("tensor_parallel");
+  CHECK(!vp::build_train_lora(f).ok());
+}
+
+// A LoRA trained DATA-PARALLEL (DESIGN §11c): the plan's tensor_parallel
+// with mode "data" reaches train-lora as vpipe's data_parallel -- the
+// ranks, each one's samples, the transport and its params -- no share
+// of the DiT; any family (Qwen-Image 2.1 here); the member's graph the
+// train-lora stage alone.
+TEST(graph_builder, a_lora_trained_data_parallel_has_its_two_ranks)
+{
+  JobSpec j = job_for("qwen-image-2.1", kOpTrainLora);
+  const Json plan = {{"rank", 0}, {"ranks", 2}, {"mode", "data"},
+                     {"samples", Json::array({1, 2})},
+                     {"params", {{"role", "connect"}}}};
+  j.params = {{"dataset", {{"dir", "/t/fox/dataset"}}},
+              {"optimizer", {{"optimizer", "adamw"}}},
+              {"train", {{"output_dir", "/t/fox"}, {"name", "fox"}}},
+              {"tensor_parallel", plan}};
+  auto g = vp::build_train_lora(j);
+  REQUIRE_OK(g);
+  const Json tc = config_of(find_stage(g->spec, "train"));
+  CHECK(!tc.contains("tensor_parallel"));
+  const Json dp = jget(tc, "data_parallel", Json());
+  CHECK(jget(dp, "rank", -1) == 0);
+  CHECK(jget(dp, "samples", Json()) == Json::array({1, 2}));
+  CHECK(jget<std::string>(dp, "transport", "") == ex::kTpTransport);
+  CHECK(jget<std::string>(jget(dp, "params", Json()), "role", "") ==
+        "connect");
+  CHECK(!dp.contains("heads") && !dp.contains("mode"));
+
+  JobSpec f = job_for("qwen-image-2.1", kOpTrainLora);
+  Json peer = plan;
+  peer["rank"] = 1;
+  f.params = {{"train_follower", true},
+              {"train", {{"output_dir", "/s/ranks/fox"}, {"name", "fox"},
+                         {"resume", "auto"}}},
+              {"tensor_parallel", peer}};
+  g = vp::build_train_lora(f);
+  REQUIRE_OK(g);
+  const Json fc = config_of(find_stage(g->spec, "train"));
+  CHECK(jget(jget(fc, "data_parallel", Json()), "rank", -1) == 1);
+  CHECK(!fc.contains("tensor_parallel"));
+  CHECK(find_stage(g->spec, "dataset") == nullptr);
 }
 
 // MiniMax H3's training graphs (vpipe's minimax-h3-train-lora*): FL2VA's

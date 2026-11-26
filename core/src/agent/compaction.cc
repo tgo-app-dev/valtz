@@ -207,6 +207,9 @@ compact(const std::vector<Message>& messages, std::size_t tail,
                      notes.steps_run) +
          notes.steps + "\n\n";
   }
+  for (const auto& k : notes.skills) {
+    t += k + "\n\n";
+  }
   t += "The document is as these steps left it: get_project and the view "
        "tools show it now. Carry on from here.";
   out.push_back({.role = "user", .content = std::move(t),

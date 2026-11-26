@@ -1,0 +1,21 @@
+MAGI-2-preview is developed by SandAI and published under the Apache
+License, Version 2.0 (LICENSE, beside this file, as published at
+https://github.com/SandAI-org/MAGI-2-preview). Copyright 2025-2026 SandAI.
+
+Valtz includes, unmodified, MAGI-2-preview's prompt enhancement
+(https://github.com/SandAI-org/MAGI-2-preview, commit
+f68a0f9bbccbea56e0177a9bd912abc3b18ffe61, inference/prompt_enhancement):
+
+  prompt_enhancement/prompts/t2v.md
+  prompt_enhancement/prompts/i2v.md
+  prompt_enhancement/enhancer.py
+  prompt_enhancement/pe_markdown.py
+  prompt_enhancement/pe_schemas.py
+
+t2v.md and i2v.md are used, as the instructions their makers publish, by
+Valtz's prompt enhancer when the target model is MAGI-2-preview: t2v.md
+for a clip from words, i2v.md for one opening on a picture, each sent as
+enhancer.py sends it -- one message, the request in its place. The
+Python files are not run: Valtz renders the reply to Markdown with code
+of its own that follows pe_markdown.py (the core's assist::magi2_prompt),
+and keeps them here as that code's reference.

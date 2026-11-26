@@ -146,7 +146,10 @@ public:
   // agent_say
   // ({"agent", "text", "stage"?,
   // "row"?: the assets attached to these words, "render"?: a procedural
-  // session's card as it is now});
+  // session's card as it is now}); both take "skill_files"?: [paths] --
+  // SKILLS loaded with the words (a folder with a SKILL.md, or one), the
+  // words then optional; agent_skill_info ({"path"} -> {"name",
+  // "description", "files"}, or the reason it is no skill).
   // agent_review ({"agent", "step", "decision": approve | skip |
   // approve_all, "args"?, "note"?}); agent_control ({"agent", "action":
   // pause | resume | stop | review | auto}); agent_state ({"agent"} ->
@@ -156,6 +159,7 @@ public:
   // Events: "agent.changed", "agent.text".
   std::string agent_start(const std::string& request_json);
   std::string agent_say(const std::string& request_json);
+  std::string agent_skill_info(const std::string& request_json);
   std::string agent_review(const std::string& request_json);
   std::string agent_control(const std::string& request_json);
   std::string agent_state(const std::string& request_json) const;
@@ -195,8 +199,13 @@ public:
   std::string locations_json() const;
   // One put elsewhere (Controller::set_location): {"what": "projects" |
   // "models" | "cache", "path", "how": "move" | "keep" | "drop"} ->
-  // {"ok", "job"}: a move's job, null when it is done already.
+  // {"ok", "job"}: a move's job, null when it is done already. "what":
+  // "models_slow" sets the SLOW models folder (Controller
+  // ::set_slow_models; "path" "" none) -> {"ok", "job": null}.
   std::string set_location(const std::string& request_json);
+  // A model moved between the models folder and the slow one
+  // (Controller::move_model): `to` "fast" | "slow" -> {"ok", "job"}.
+  std::string move_model(const std::string& model_id, const std::string& to);
 
   // Results: {"ok": true, ...} or {"ok": false, "code", "message"}.
   std::string default_project_path() const;
@@ -542,15 +551,21 @@ public:
   // person's Hugging Face access token for a GATED model (the capability
   // tree's member "gated"), "" none -- passed to the job in memory, never
   // kept (Controller::download_model). `source`: where from -- a name of
-  // download_sources_json's, "" the one chosen.
+  // download_sources_json's, "" the one chosen. `storage`: "slow" into
+  // the slow models folder, "" the models folder.
   std::string download_model(const std::string& model_id,
                              const std::string& hf_token,
-                             const std::string& source);
+                             const std::string& source,
+                             const std::string& storage);
   // Where downloads come from (Controller::download_sources) ->
   // {"ok", "sources": [{"name", "label", "default"}], "chosen"}; and the
   // one chosen from now on -> {"ok"}.
   std::string download_sources_json() const;
   std::string set_download_source(const std::string& name);
+  // A line of versions' (Controller::set_model_version): the version
+  // that runs from now on, "" Auto -> {"ok"}.
+  std::string set_model_version(const std::string& line,
+                                const std::string& version);
   // A model's download stopped (Controller::stop_download) -> {"ok"}:
   // PAUSED (`discard` false), what came down kept -- download_model
   // again goes on from there; CANCELLED, that deleted too (as the job

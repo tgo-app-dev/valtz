@@ -68,6 +68,14 @@
 //                          default) its DWD one, the last step decoded to
 //                          frames by its pixel head, no VAE decoder (the
 //                          release's recommendation)
+//   hyperflow_flash
+//                  bool    H3 FL2VA / Ref2VA: HyperFlow H3 Flash, Video
+//                          Rebirth's compressed few-step DiT (catalog
+//                          `hyperflow_flash.dit`: generate-video's
+//                          dit_dir) -- its own two-time grid, the Turbo
+//                          LoRA off, shifts 12 / 3; no preset
+//   hyperflow_flash_steps
+//                  choice  "6" | "4" | "8": its grid (needs it)
 //   taomate        bool    H3: TaoMate's streaming METHOD -- the base
 //                          model writes the soundtrack, its adapter (in
 //                          the first LoRA slot, the Turbo LoRA off) the
@@ -186,12 +194,14 @@ struct TuningContext {
   bool turbo_installed = false;      // the catalog `turbo.lora` entry
   std::string turbo_name;            //   its name, as listed
   std::string turbo_path;            //   and its file
+  Json        turbo_config = Json::object();  // its version's shifts
   bool hyperflow_installed = false;  // `hyperflow.lora`
   bool pika_installed = false;       // `pika_flex.lora`
   // pi-H3 (`pi_h3`): a pruned DiT it runs over (`dits`, the first here)
   // and the adapters here, by their key ("4-dwd", "2-dwd", "4", "2").
   bool pi_dit_installed = false;
   std::set<std::string> pi_adapters;
+  bool flash_installed = false;      // `hyperflow_flash.dit`
   bool taomate_installed = false;    // `taomate.lora`
   bool vdn_installed = false;        // `vdn.branch`
   // The catalog models installed (or downloading) a declared option
@@ -220,6 +230,10 @@ struct TuningContext {
     // As Settings > Capabilities lists it ("8-step Turbo LoRA, FL2VA
     // (lightx2v)"); "": its name.
     std::string label = {};
+    // The shifts its VERSION was distilled at (catalog `engine.vpipe.
+    // config` on the LoRA: lightx2v's Ref2VA 4-step v0.1 at 12, v1.0 at
+    // 6), laid over the preset's for it.
+    Json config = Json::object();
   };
   std::map<std::string, Lora> loras;
   // The model's REFINER past the size it was trained at, where it runs

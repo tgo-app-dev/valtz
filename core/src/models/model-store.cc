@@ -7,6 +7,7 @@
 #include <cstdlib>
 #include <format>
 #include <fstream>
+#include <set>
 
 namespace valtz::models {
 
@@ -214,7 +215,8 @@ ModelStore::scan_link_(const ModelEntry& e, const fs::path& target) const
 
 std::vector<fs::path>
 ModelStore::default_roots(const fs::path& primary,
-                          const std::vector<fs::path>& kept)
+                          const std::vector<fs::path>& kept,
+                          const fs::path& slow, std::size_t* owned)
 {
   std::vector<fs::path> out{primary};
   auto listed = [&out](const fs::path& p) {
@@ -226,6 +228,12 @@ ModelStore::default_roots(const fs::path& primary,
     if (!listed(k)) {
       out.push_back(k);
     }
+  }
+  if (!slow.empty() && !listed(slow)) {
+    out.push_back(slow);
+  }
+  if (owned) {
+    *owned = out.size();
   }
   const char* home = std::getenv("HOME");
   fs::path h = home ? fs::path(home) : fs::path("/tmp");
@@ -396,6 +404,12 @@ ModelStore::scan_(const ModelEntry& e) const
   return copy;
 }
 
+fs::path
+ModelStore::download_mark(const fs::path& root, const ModelEntry& e)
+{
+  return root / e.hf_path / (".valtz-downloading-" + e.id);
+}
+
 // The roots in order: the first whole copy, else the first partial one.
 InstallInfo
 ModelStore::scan_roots_(const ModelEntry& e,
@@ -425,7 +439,10 @@ ModelStore::scan_roots_(const ModelEntry& e,
       const bool whole = std::ranges::all_of(e.beside, [&](const auto& b) {
         return fs::is_regular_file(f.parent_path() / b, ec);
       });
-      if (fs::is_regular_file(f, ec) && whole) {
+      // A download of it under way here (download_mark): not whole yet.
+      const bool marked = !e.hf_path.empty() &&
+                          fs::exists(download_mark(root, e), ec);
+      if (fs::is_regular_file(f, ec) && whole && !marked) {
         info.state = InstallState::Installed;
         info.bytes = fs::file_size(f, ec);
         return info;
@@ -448,6 +465,10 @@ ModelStore::scan_roots_(const ModelEntry& e,
       continue;
     }
     info = scan_dir_(e, dir, info);
+    if (info.state == InstallState::Installed && !e.hf_path.empty() &&
+        fs::exists(download_mark(root, e), ec)) {
+      info.state = InstallState::Partial;
+    }
     if (info.state == InstallState::Installed) {
       return info;
     }
@@ -464,7 +485,6 @@ InstallInfo
 ModelStore::scan_dir_(const ModelEntry& e, const fs::path& dir,
                       InstallInfo info) const
 {
-  (void)e;
   std::error_code ec;
   info.dir = dir;
     bool weights = false;
@@ -492,6 +512,53 @@ ModelStore::scan_dir_(const ModelEntry& e, const fs::path& dir,
     info.state = partial   ? InstallState::Partial
                  : weights ? InstallState::Installed
                            : InstallState::Partial;
+  // Weights and no `.part` is not yet whole: a sharded download paused
+  // between shards leaves exactly that. Each shard a safetensors index
+  // names there -- else what came down of it, Partial. (A download of
+  // Valtz's own is told by its mark, download_mark, before any index has
+  // come down.)
+  if (info.state == InstallState::Installed &&
+      jget(e.check, "scan", false)) {
+    // Its catalog's files, where it says they tell a whole download
+    // (`check.scan`: MAGI-2-preview's last files -- its indexes, its
+    // codecs -- come down after most of its shards).
+    for (const auto& f : jget(e.check, "files", Json::array())) {
+      if (f.is_string() && !fs::exists(dir / f.get<std::string>(), ec)) {
+        info.state = InstallState::Partial;
+        return info;
+      }
+    }
+  }
+  if (info.state == InstallState::Installed) {
+    for (auto it = fs::recursive_directory_iterator(
+             dir, fs::directory_options::follow_directory_symlink |
+                      fs::directory_options::skip_permission_denied, ec);
+         it != fs::recursive_directory_iterator(); it.increment(ec)) {
+      if (ec) {
+        break;
+      }
+      const std::string name = it->path().filename().string();
+      if (!name.ends_with(".safetensors.index.json") ||
+          !it->is_regular_file(ec)) {
+        continue;
+      }
+      std::ifstream in(it->path());
+      const Json idx = Json::parse(in, nullptr, /*allow_exceptions=*/false);
+      const Json map = jget(idx, "weight_map", Json::object());
+      std::set<std::string> shards;
+      for (auto m = map.begin(); map.is_object() && m != map.end(); ++m) {
+        if (m->is_string()) {
+          shards.insert(m->get<std::string>());
+        }
+      }
+      for (const auto& sh : shards) {
+        if (!fs::exists(it->path().parent_path() / sh, ec)) {
+          info.state = InstallState::Partial;
+          return info;
+        }
+      }
+    }
+  }
   return info;
 }
 

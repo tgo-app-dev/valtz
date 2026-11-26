@@ -2651,6 +2651,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if let spec = env["VALTZ_SNAPSHOT_CLEAR_PROMPT"] {
                 let steps = spec == "1" ? ["clear"]
                     : spec.split(separator: ";").map(String.init)
+                // The box's own text view: the one last focused, else the
+                // editor window's.
+                let box: () -> PromptTextView? = {
+                    (m.promptTextView as? PromptTextView)
+                        ?? m.editorWindow?.contentView?
+                        .superview.flatMap {
+                            Self.find(PromptTextView.self, in: $0)
+                        }
+                }
                 for step in steps {
                     try? await Task.sleep(for: .milliseconds(600))
                     switch step {
@@ -2674,6 +2683,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         m.showTimeline(s.hasSuffix(":open"))
                     case let s where s.hasPrefix("set:"):
                         m.setPrompt(String(s.dropFirst(4)))
+                    // The "@" list's keys, as the text view hands them on
+                    // (down, up, return, tab, esc); the model field
+                    // ("model:<id>", "auto").
+                    case let s where s.hasPrefix("cmd:"):
+                        let sel: Selector? = switch s.dropFirst(4) {
+                        case "down": #selector(NSResponder.moveDown(_:))
+                        case "up": #selector(NSResponder.moveUp(_:))
+                        case "return":
+                            #selector(NSResponder.insertNewline(_:))
+                        case "tab": #selector(NSResponder.insertTab(_:))
+                        case "esc":
+                            #selector(NSResponder.cancelOperation(_:))
+                        default: nil
+                        }
+                        if let sel, let tv = box() {
+                            tv.doCommand(by: sel)
+                        }
+                    case let s where s.hasPrefix("model:"):
+                        m.modelChoice = String(s.dropFirst(6))
                     // The box's target: "target:agent" (its words by
                     // Settings' Prompt history).
                     case let s where s.hasPrefix("target:"):
@@ -2681,7 +2709,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                             m.setModality(t)
                         }
                     case let s where s.hasPrefix("type:"):
-                        if let tv = m.promptTextView {
+                        if let tv = box() {
                             tv.window?.makeFirstResponder(tv)
                             tv.setSelectedRange(NSRange(
                                 location: tv.string.utf16.count,
@@ -2715,6 +2743,39 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                             ? "suggestion"
                             : (w2?.firstResponder is NSTextView ? "text"
                                : "none")
+                    // The "@" list as shown: its labels, the lit one
+                    // starred; and the text as the core reads it, tags
+                    // as their text.
+                    let atList: String = {
+                        guard let tv = box(),
+                              let c = tv.delegate as? PromptEditor.Coordinator,
+                              c.atPicker?.isShown == true, let v = c.atView
+                        else { return "-" }
+                        return v.choices.enumerated().map {
+                            ($0.offset == v.lit ? "*" : "") + $0.element.short
+                                + ":" + $0.element.name
+                        }.joined(separator: ",")
+                    }()
+                    let chips: String = {
+                        guard let st = box()?.textStorage else {
+                            return "-"
+                        }
+                        var out: [String] = []
+                        st.enumerateAttribute(.attachment, in: NSRange(
+                            location: 0, length: st.length)) { v, _, _ in
+                            if let a = v as? RefTagAttachment {
+                                out.append(a.tag + "=" + (m.promptAttachments
+                                    .first { m.refNames()[$0.id].map {
+                                        $0.kind == a.kind && $0.index == a.index
+                                    } ?? false }
+                                    .flatMap { m.refNames()[$0.id]?.long }
+                                    ?? "unbound"))
+                            }
+                        }
+                        return out.joined(separator: ",")
+                    }()
+                    FileHandle.standardError.write(Data(
+                        "snapshot: at \(step) at=\(atList.replacingOccurrences(of: " ", with: "_")) marked=\(m.promptMarked.debugDescription) chips=\(chips.replacingOccurrences(of: " ", with: "_")) model=\(m.modelChoice)\n".utf8))
                     FileHandle.standardError.write(Data(
                         "snapshot: clear-prompt \(step) prompt=\(m.prompt.debugDescription) refs=\(m.promptAttachments.count) mentions=\(m.promptMentions.count) undo=\(m.undoMenuTitle.replacingOccurrences(of: " ", with: "_")) redo=\(m.redoMenuTitle.replacingOccurrences(of: " ", with: "_")) focus=\(focus) project=\(m.windowTitle.replacingOccurrences(of: " ", with: "_")):\(m.assets.count)\n".utf8))
                 }
@@ -2915,6 +2976,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     case "move" where p.count > 2:
                         let f = m.assetFolders.first { $0.name == p[2] }
                         m.moveAsset(arg, to: f?.id ?? "")
+                    // "movename:<asset name>:<folder name>": by its name.
+                    case "movename" where p.count > 2:
+                        let f = m.assetFolders.first { $0.name == p[2] }
+                        if let a = m.assets.first(where: { $0.name == arg }) {
+                            m.moveAsset(a.id, to: f?.id ?? "")
+                        }
+                    // The prompt's row emptied; a FOLDER dropped on it
+                    // ("rowfolder:<folder name>", through the row's own
+                    // drop), printing the row and what was said.
+                    case "clearrow":
+                        m.promptAttachments = []
+                    case "rowfolder":
+                        let f = m.assetFolders.first { $0.name == arg }
+                        let pb = NSPasteboard(name: .init(
+                            "valtz-snapshot-\(UUID().uuidString)"))
+                        pb.clearContents()
+                        pb.setString(AppModel.folderPrefix + (f?.id ?? ""),
+                                     forType: .string)
+                        print("snapshot: rowfolder-holds " + m.assets
+                            .filter { $0.folder == f?.id }
+                            .map { "\($0.name):\($0.kind):\($0.isHidden):\($0.op ?? "-")" }
+                            .joined(separator: ",")
+                            .replacingOccurrences(of: " ", with: "_"))
+                        let took = PromptRowDrop(model: m).take(pb)
+                        pb.releaseGlobally()
+                        try? await Task.sleep(for: .milliseconds(400))
+                        let row = m.promptAttachments.map {
+                            m.rowItemName($0) + ":" + $0.kind
+                        }.joined(separator: ",")
+                        print("snapshot: rowfolder \(arg) took=\(took) modality=\(m.activeModality.rawValue) edit=\(m.editModel) refs=\(m.videoReferenceModel) row=\(row.replacingOccurrences(of: " ", with: "_")) notice=\((m.banner ?? "-").replacingOccurrences(of: " ", with: "_"))")
                     // "rename:<id>:<name>"; "renaming:<id>" its field
                     // open, as the row's Rename opens it.
                     case "rename" where p.count > 2:
@@ -3336,7 +3427,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                                         to: (ends[1][0], ends[1][1]))
                     try? await Task.sleep(for: .milliseconds(500))
                     FileHandle.standardError.write(Data(
-                        "snapshot: drag \(d) panels=\(Self.panelSummary(m)) frame=\(m.videoFrame) rate=\(m.videoRate) timelineRows=\(m.timelineRows) timeline=\(m.timelineOpen)\n".utf8))
+                        "snapshot: drag \(d) panels=\(Self.panelSummary(m)) inspectorWidth=\(Int(m.inspectorShownWidth))/\(Int(m.inspectorWidth))@\(Int(m.rootWidth)) frame=\(m.videoFrame) rate=\(m.videoRate) timelineRows=\(m.timelineRows) timeline=\(m.timelineOpen)\n".utf8))
                 }
             }
             // The project as a document (DESIGN §5b), in turn: "undo",
@@ -4413,6 +4504,109 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                                                 to: (b.x, b.y), up: true)
                         }
                         wait = 1.5
+                    // The top edge's cursor, step by step, the REAL
+                    // pointer warped (no event: the window server's
+                    // tracking moves nothing): "edgecursor" -- onto the
+                    // handle and entered; 20 points above it and, as a
+                    // slow crossing upward ordered them, its exit then a
+                    // late cursorUpdate; then a move posted there (its
+                    // watch). Each printing `snapshot: timeline-edge
+                    // <step> over= cursor=updown|arrow|other watching=`.
+                    case "edgecursor":
+                        try? await Task.sleep(for: .seconds(1))
+                        if let h = TimelineHeightHandle.HandleView.shown,
+                           let w = h.window {
+                            let saved = CGEvent(source: nil)?.location
+                            let top = NSScreen.screens.first?.frame.maxY ?? 0
+                            let r = w.convertToScreen(
+                                h.convert(h.bounds, to: nil))
+                            func warp(_ up: CGFloat) -> NSPoint {
+                                CGWarpMouseCursorPosition(CGPoint(
+                                    x: r.midX, y: top - (r.midY + up)))
+                                return w.convertPoint(fromScreen: NSPoint(
+                                    x: r.midX, y: r.midY + up))
+                            }
+                            func ev(_ t: NSEvent.EventType,
+                                    _ at: NSPoint) -> NSEvent? {
+                                t == .mouseMoved
+                                    ? NSEvent.mouseEvent(
+                                        with: t, location: at,
+                                        modifierFlags: [], timestamp: 0,
+                                        windowNumber: w.windowNumber,
+                                        context: nil, eventNumber: 0,
+                                        clickCount: 0, pressure: 0)
+                                    : NSEvent.enterExitEvent(
+                                        with: t, location: at,
+                                        modifierFlags: [], timestamp: 0,
+                                        windowNumber: w.windowNumber,
+                                        context: nil, eventNumber: 0,
+                                        trackingNumber: 0, userData: nil)
+                            }
+                            func say(_ step: String) {
+                                let c = NSCursor.current
+                                let n = c == .resizeUpDown ? "updown"
+                                    : c == .arrow ? "arrow" : "other"
+                                FileHandle.standardError.write(Data(
+                                    "snapshot: timeline-edge \(step) over=\(h.pointerOver) cursor=\(n) watching=\(h.watching) mouse=\(NSEvent.mouseLocation)\n".utf8))
+                            }
+                            var chain = ""
+                            var sv: NSView? = h
+                            while let x = sv {
+                                chain += " \(type(of: x))@\(x.frame)"
+                                sv = x.superview
+                            }
+                            let areas = h.trackingAreas.map { "\($0.rect)" }
+                            let tl = TimelineNSView.shown
+                            FileHandle.standardError.write(Data(
+                                "snapshot: timeline-edge views bounds=\(h.bounds) visible=\(h.visibleRect) areas=\(areas) timeline=\(tl.map { "\($0.bounds)/\($0.visibleRect)" } ?? "-") chain=\(chain)\n".utf8))
+                            let on = warp(0)
+                            if let e = ev(.mouseEntered, on) {
+                                h.mouseEntered(with: e)
+                            }
+                            say("entered")
+                            let off = warp(20)
+                            if let e = ev(.mouseExited, off) {
+                                h.mouseExited(with: e)
+                                h.cursorUpdate(with: e)
+                            }
+                            say("exit+late-update")
+                            try? await Task.sleep(for: .milliseconds(100))
+                            say("next-turn")
+                            _ = warp(0)
+                            h.settle()
+                            say("back-on")
+                            let off2 = warp(20)
+                            if let e = ev(.mouseMoved, off2) {
+                                NSApp.postEvent(e, atStart: false)
+                            }
+                            try? await Task.sleep(for: .milliseconds(200))
+                            say("moved-off")
+                            // And its drag, through the window's own path:
+                            // pressed on it, 40 points up, let go.
+                            let rows0 = m.timelineRows
+                            let mid = w.convertPoint(fromScreen: NSPoint(
+                                x: r.midX, y: r.midY))
+                            for (t, dy) in [(NSEvent.EventType.leftMouseDown,
+                                             0.0),
+                                            (.leftMouseDragged, 20.0),
+                                            (.leftMouseDragged, 40.0),
+                                            (.leftMouseUp, 40.0)] {
+                                if let e = NSEvent.mouseEvent(
+                                    with: t,
+                                    location: NSPoint(x: mid.x,
+                                                      y: mid.y + dy),
+                                    modifierFlags: [], timestamp: 0,
+                                    windowNumber: w.windowNumber,
+                                    context: nil, eventNumber: 0,
+                                    clickCount: 1, pressure: 1) {
+                                    NSApp.postEvent(e, atStart: false)
+                                }
+                                try? await Task.sleep(for: .milliseconds(80))
+                            }
+                            FileHandle.standardError.write(Data(
+                                "snapshot: timeline-edge dragged rows=\(rows0)>\(m.timelineRows)\n".utf8))
+                            if let saved { CGWarpMouseCursorPosition(saved) }
+                        }
                     // A header dragged past the rows' edge and held
                     // there: "hdragpast=0:bottom:2" -- row 0's, 20
                     // points below the rows, 2 s, then let go.
@@ -6162,6 +6356,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         }
                         FileHandle.standardError.write(Data(
                             "snapshot: agent-\(kv[0]) took=\(took) row=\(m.promptAttachments.map(\.kind).joined(separator: ",")) assets=\(m.rowAssetIds.count) prompt=\(m.prompt.count) offered=\(DroppedMedia.pastes(pb))\n".utf8))
+                    // A SKILL dragged onto the chat as the Finder drags a
+                    // file or folder ("skill:<path>"): staged to load with
+                    // the next words -- or, no skill, as any file.
+                    case "skill":
+                        let pb = NSPasteboard(name: NSPasteboard.Name(
+                            "com.tgous.valtz.snapshot-skill"))
+                        pb.clearContents()
+                        pb.writeObjects([URL(fileURLWithPath: arg) as NSURL])
+                        let took = PromptRowDrop(model: m).take(pb)
+                        try? await Task.sleep(for: .milliseconds(300))
+                        let sent = (m.agent?.messages ?? []).compactMap {
+                            $0.skills?.joined(separator: "+")
+                        }
+                        FileHandle.standardError.write(Data(
+                            "snapshot: agent-skill took=\(took) staged=\(m.agentSkillFiles.map(\.name).joined(separator: ",").replacingOccurrences(of: " ", with: "_")) row=\(m.promptAttachments.count) canStart=\(m.canStart) sent=\(sent.joined(separator: ",").replacingOccurrences(of: " ", with: "_")) banner=\((m.banner ?? "-").replacingOccurrences(of: " ", with: "_"))\n".utf8))
                     // Its transcript opened from the status row.
                     case "transcript": m.openAgentTranscript()
                     // A new chat: the session put away.
@@ -6231,7 +6440,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     let ctx = m.agentContext
                     let said = (a?.messages ?? []).filter {
                         $0.role == "user" && $0.said != nil
-                    }.map { "\($0.said?.count ?? 0):\($0.attached?.count ?? 0)\($0.shown.map { "s\($0)" } ?? "")" }
+                    }.map { "\($0.said?.count ?? 0):\($0.attached?.count ?? 0)\($0.shown.map { "s\($0)" } ?? "")\(($0.skills ?? []).isEmpty ? "" : "k" + ($0.skills ?? []).joined(separator: "+").replacingOccurrences(of: " ", with: "_"))" }
                     FileHandle.standardError.write(Data(
                         "snapshot: agent-scroll \(Self.chatScrollSummary(m))\n".utf8))
                     FileHandle.standardError.write(Data(
@@ -6990,7 +7199,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 case "model": t.choose(arg)
                 case "meaning": t.triggerMeaning = arg
                 case "autocaption": t.autoCaption = arg != "off"
-                case "caption": t.captionMissing()
+                case "captionmissing": t.captionMissing()
                 case "answer": t.answerMeaning(arg)
                 case "add": t.add([URL(fileURLWithPath: arg)])
                 case "name": t.name = arg
@@ -7135,6 +7344,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // source=<chosen> sources=<the row's: name, or name:path there>
         // fleet=<the members to copy it from: name:cables:Gb/s>`;
         // "download:<id>@fleet:<member>" its Copy from <member>.
+        // "move:<id>:fast|slow" the row's drive button (the move a task:
+        // "wait:" waits for it), "slow:<id>" Download to Slow Storage --
+        // the line's `storage=fast|slow`.
         if settings, let spec = env["VALTZ_SNAPSHOT_MODELS"],
            let m = model {
             try? await Task.sleep(for: .milliseconds(1200))
@@ -7147,7 +7359,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             @MainActor
             func running() -> JobInfo? {
                 m.jobs.values.first {
-                    ($0.purpose == "compress" || $0.purpose == "download")
+                    ($0.purpose == "compress" || $0.purpose == "download"
+                     || $0.purpose == "relocate")
                         && ($0.state == "queued" || $0.state == "running")
                 }
             }
@@ -7222,6 +7435,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                                ?? "huggingface"))
                     } else {
                         m.download(model: at[0])
+                    }
+                case "slow":
+                    // `<id>`: the menu's Download to Slow Storage.
+                    last = arg
+                    if let mm = member(arg) {
+                        m.startDownload(mm, from: m.capabilityTree?
+                            .downloadSource ?? "huggingface",
+                            storage: "slow")
+                    }
+                case "move":
+                    // `<id>:fast|slow`: the row's drive button.
+                    last = idBits[0]
+                    if idBits.count == 2, let mm = member(idBits[0]) {
+                        m.moveModel(mm, to: idBits[1])
                     }
                 case "source":
                     // Download From, as its pop-up sets it.
@@ -7301,6 +7528,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 let cancelAsk = m.downloadCancelAsk != nil
                 var line = "snapshot: models \(step) row=\(row) "
                 line += "path=\(r?.path ?? "-") "
+                line += "storage=\(r?.storage ?? "-") "
                 line += "keepAsk=\(m.compressKeepAsk != nil) "
                 line += "bytes=\(bytes) ask=\(ask) "
                 line += "cancelAsk=\(cancelAsk) check=\(check) "

@@ -116,6 +116,18 @@ unmodified; the two texts are compiled into the core.
 and `NOTICE`, which also ship in the app
 (`Contents/Resources/Licenses/MOSS-Image`).
 
+## MAGI-2-preview prompt enhancement
+
+`3rd-party/magi2/prompt_enhancement/` -- SandAI's MAGI-2-preview prompt
+enhancement (<https://github.com/SandAI-org/MAGI-2-preview>, at a pinned
+commit): its two templates, compiled into the core, and the Python
+(enhancer.py, pe_markdown.py, pe_schemas.py) Valtz's own code follows,
+unmodified.
+
+**License: Apache License 2.0.** Texts: `3rd-party/magi2/LICENSE` and
+`NOTICE`, which also ship in the app
+(`Contents/Resources/Licenses/MAGI-2-preview`).
+
 ## Fish Audio's Drama 3 guide
 
 `3rd-party/fish-audio-drama3/drama-3.mdx` -- "Drama 3", Fish Audio's

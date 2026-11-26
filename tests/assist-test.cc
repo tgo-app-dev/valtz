@@ -5,6 +5,7 @@
 #include "valtz/assist/assistant.h"
 #include "valtz/assist/micro.h"
 #include "valtz/assist/drama3.h"
+#include "valtz/assist/magi2.h"
 #include "valtz/assist/moss-image.h"
 #include "valtz/assist/segments.h"
 #include "valtz/assist/transcript.h"
@@ -268,6 +269,112 @@ TEST(assist, flux3_klein_is_written_a_caption)
 // skill has a model write it, compiled as their scripts/compile_prompt.py
 // compiles it -- these expectations are that script's own tests, and its
 // output for the same draft, byte for byte.
+// MAGI-2-PREVIEW's templates (3rd-party/magi2): each filled as their
+// enhancer.py fills it, and the JSON reply rendered as their
+// pe_markdown.render_markdown renders it with enhancer.py's options --
+// the expected text below is that function's own output for this reply
+// (headings past six levels italic, scalars first, primitive lists on a
+// line, newlines and tabs escaped, empty values and the containers they
+// empty dropped, false and 0 kept, the reply's own key order).
+TEST(assist, magi2s_templates_are_filled_and_their_reply_rendered)
+{
+  const std::string t2v = assist::magi2_request(false, "a fox in snow");
+  const std::string i2v = assist::magi2_request(true, "she waves");
+  CHECK(t2v.find("a fox in snow") != std::string::npos);
+  CHECK(t2v.find("{user_input_text}") == std::string::npos);
+  CHECK(t2v.find("{variation_seed}") == std::string::npos);
+  CHECK(t2v.find("global_layer") != std::string::npos);
+  CHECK(i2v.find("she waves") != std::string::npos);
+  CHECK(i2v.find("shot_timeline") != std::string::npos);
+  CHECK(i2v.find("{user_input_text}") == std::string::npos);
+  CHECK(t2v.size() > 70000 && i2v.size() > 11000);
+
+  const std::string reply = std::string("Here it is:\n```json\n") +
+      R"JS({"global_layer": {"aesthetics": {"style": "photograph", "palette": ["teal", "amber"]}, "context": "A harbour at dawn.\nGulls overhead.", "duration": 10.0, "loop": false, "count": 0, "empty": "", "none": null, "gone": {"a": [], "b": {}}},
+ "dynamic_layer": [{"time": "0.0-5.0", "objects": [{"name": "boat", "motion": "drifts\tleft", "deep": {"l3": {"l4": {"l5": {"l6": {"l7": "seven"}}}}}}], "audio": ["gulls", "waves"]},
+                   {"time": "5.0-10.0", "objects": [], "mix": [1, "two", [3, 4], {"k": "v", "n": {"x": 1}}], "text_render": [["a", "b"]]}],
+ "trailing": "  spaced   "})JS" + "\n```\n";
+  auto md = assist::magi2_prompt(reply, false);
+  REQUIRE_OK(md);
+  CHECK(*md == R"MD(# global_layer
+
+context:A harbour at dawn.\nGulls overhead.
+duration:10.0
+loop:false
+count:0
+
+## aesthetics
+
+style:photograph
+
+palette:teal | amber
+
+# dynamic_layer
+
+## dynamic_layer1
+
+time:0.0-5.0
+
+audio:gulls | waves
+
+### objects
+
+#### objects1
+
+name:boat
+motion:drifts\tleft
+
+##### deep
+
+###### l3
+
+*l4*
+
+*l5*
+
+*l6*
+
+l7:seven
+
+## dynamic_layer2
+
+time:5.0-10.0
+
+### mix
+
+mix1:1
+mix2:two
+#### mix3
+
+item1:3
+item2:4
+#### mix4
+
+k:v
+
+##### n
+
+x:1
+
+### text_render
+
+#### text_render1
+
+item1:a
+item2:b
+
+trailing:  spaced
+)MD");
+  // Another schema's reply, or none, is refused; part of this one's is
+  // rendered as it is.
+  CHECK(!assist::magi2_prompt(reply, true).ok());
+  CHECK(!assist::magi2_prompt("No JSON at all.", false).ok());
+  auto part = assist::magi2_prompt(
+      R"({"global_layer": {"context": "A harbour."}})", false);
+  REQUIRE_OK(part);
+  CHECK(*part == "# global_layer\n\ncontext:A harbour.\n");
+}
+
 TEST(assist, a_moss_image_draft_compiles_as_its_script)
 {
   const Json draft = Json::parse(R"({

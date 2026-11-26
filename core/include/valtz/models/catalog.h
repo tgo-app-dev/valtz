@@ -179,6 +179,18 @@ struct ModelEntry {
   // that one's is this one's. The RefMod maker runs on Ref2VA's folder
   // (DESIGN §4s).
   std::string              files_of;
+  // VERSIONS of one thing published side by side (catalog `versions`,
+  // `version`, `version_of`): lightx2v's Turbo LoRAs come as v1.0 ...
+  // v1.3 of one 4-step adapter, each a file of the same repo. Every
+  // version is an entry of its own -- downloaded, checked, linked and
+  // deleted as any model -- and the LINE is the entry the others name
+  // (`version_of`), which presets and families name: its `versions` list
+  // them newest first, itself among them. Which one runs is the person's
+  // choice, else the newest here (Controller::version_in_use). A recipe
+  // records the version it ran, so it is made again with that file.
+  std::string              version;      // "v1.3"; "" no versions
+  std::string              version_of;   // a version's line; "" a line
+  std::vector<std::string> versions;     // a line's, newest first
   std::string              license;
   bool                     gated = false;
   std::string              notes;

@@ -178,6 +178,11 @@ final class PromptTextView: NSTextView {
 
     /// Assets dragged in from the list: staged, their ids back.
     var onAssetsDropped: (([String]) -> [UUID])?
+    /// A folder of Assets dropped: its media staged in the row.
+    var onFolderDropped: ((String) -> Void)?
+    /// Files dropped: the SKILLS among them taken (the agent's), the rest
+    /// handed back.
+    var onSkillsDropped: (([URL]) -> [URL])?
     /// The stage dragged in: what it shows, captured and staged.
     var onStageDropped: (() -> Void)?
     /// What a drag from outside makes a file of -- a browser's or Photos'
@@ -202,9 +207,15 @@ final class PromptTextView: NSTextView {
         pb.string(forType: .string).flatMap { AppModel.draggedAsset($0) }
     }
 
+    /// A folder a drag from the asset list carries.
+    @MainActor
+    static func draggedFolder(_ pb: NSPasteboard) -> String? {
+        pb.string(forType: .string).flatMap { AppModel.draggedFolder($0) }
+    }
+
     private func carriesMedia(_ pb: NSPasteboard) -> Bool {
         Self.draggedReference(pb) != nil || Self.draggedAsset(pb) != nil
-            || Self.draggedStage(pb) || !Self.fileURLs(pb).isEmpty
+            || Self.draggedFolder(pb) != nil || Self.draggedStage(pb) || !Self.fileURLs(pb).isEmpty
             || DroppedMedia.peek(pb, links: .media).made > 0
     }
 
@@ -261,7 +272,15 @@ final class PromptTextView: NSTextView {
             _ = onAssetsDropped?([asset])
             return true
         }
-        let urls = Self.fileURLs(pb)
+        if let folder = Self.draggedFolder(pb) {
+            onFolderDropped?(folder)
+            return true
+        }
+        var urls = Self.fileURLs(pb)
+        if !urls.isEmpty, let skills = onSkillsDropped {
+            urls = skills(urls)
+            if urls.isEmpty { return true }
+        }
         guard !urls.isEmpty else {
             // A link to a page is words; to a picture, a clip or a sound,
             // media, as a browser's picture, Photos' or an app's bytes.
@@ -561,14 +580,18 @@ final class PromptTextView: NSTextView {
         setSelectedRange(NSRange(location: at.location, length: 1))
     }
 
-    /// A positional tag's look: "Image 1" on a rounded tag in the accent,
-    /// joined to the thumbnail of what the row has there; in red, alone,
-    /// while the row has nothing there. Drawn as the appearance is when
-    /// it is drawn (the accent is near black, near white in the dark).
+    /// A positional tag's look: what the chosen model calls what is at
+    /// its place ("Picture 1", "Image 2" -- AppModel.refNames; `label`
+    /// nil, its place: "Image 3") on a rounded tag in the accent, joined
+    /// to the thumbnail of what the row has there; in red, alone, while
+    /// the row has nothing there. Drawn as the appearance is when it is
+    /// drawn (the accent is near black, near white in the dark).
     static func refTagChip(kind: String, index: Int, bound: Bool,
-                           thumb: CGImage?) -> NSImage {
+                           thumb: CGImage?, label: String? = nil)
+        -> NSImage {
         let h: CGFloat = 22
-        let label = RefTagAttachment.kindName(kind) + " " + String(index + 1)
+        let label = label
+            ?? RefTagAttachment.kindName(kind) + " " + String(index + 1)
         let font = NSFont.systemFont(ofSize: 11, weight: .semibold)
         let textW = ceil(NSAttributedString(string: label,
                                             attributes: [.font: font])
@@ -782,6 +805,160 @@ final class PromptScrollView: NSScrollView {
 /// and let go right of the words was lost. Behind the buttons, it hears
 /// only what nothing else takes; a mention lands at the end of the line
 /// beside it.
+/// A row item the "@" list offers (DESIGN §10c): what the chosen model
+/// calls it, short ("P1", "2"), its name, its thumbnail, its tag's place.
+struct RefChoice {
+    let id: UUID
+    let kind: String     // the tag's: "img" | "vid" | "aud"
+    let index: Int
+    let short: String
+    let name: String
+    let thumb: CGImage?
+    let itemKind: String // the row item's: "image" | "video" | ...
+
+    /// A name past 8 characters cut to 8, an ellipsis after.
+    static func cut(_ name: String) -> String {
+        name.count > 8 ? String(name.prefix(8)) + "…" : name
+    }
+}
+
+/// The "@" list: a row an item -- its thumbnail, its label as the model
+/// numbers it, its name -- one lit (↑ ↓, the pointer), a click taking it.
+/// It never takes the keyboard: typing stays in the prompt.
+final class RefPickerView: NSView {
+    var onPick: ((Int) -> Void)?
+    private(set) var choices: [RefChoice] = []
+    private(set) var lit = 0
+    static let rowHeight: CGFloat = 30
+    static let width: CGFloat = 200
+    static let pad: CGFloat = 5
+    static let maxRows = 8
+    /// Rows past the eighth: scrolled, the lit one in sight.
+    private var first = 0
+
+    override var isFlipped: Bool { true }
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
+    var fitting: NSSize {
+        NSSize(width: Self.width,
+               height: CGFloat(min(choices.count, Self.maxRows))
+                   * Self.rowHeight + Self.pad * 2)
+    }
+
+    func show(_ c: [RefChoice], lit: Int) {
+        choices = c
+        self.lit = min(max(0, lit), max(0, c.count - 1))
+        keepLitInSight()
+        setFrameSize(fitting)
+        needsDisplay = true
+    }
+
+    func move(_ by: Int) {
+        guard !choices.isEmpty else { return }
+        lit = (lit + by + choices.count) % choices.count
+        keepLitInSight()
+        needsDisplay = true
+    }
+
+    private func keepLitInSight() {
+        if lit < first { first = lit }
+        if lit >= first + Self.maxRows { first = lit - Self.maxRows + 1 }
+        first = max(0, min(first, max(0, choices.count - Self.maxRows)))
+    }
+
+    private func row(at p: NSPoint) -> Int? {
+        let i = Int((p.y - Self.pad) / Self.rowHeight) + first
+        return p.y >= Self.pad && choices.indices.contains(i) ? i : nil
+    }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        trackingAreas.forEach(removeTrackingArea)
+        addTrackingArea(NSTrackingArea(
+            rect: bounds, options: [.mouseMoved, .activeAlways, .inVisibleRect],
+            owner: self))
+    }
+
+    override func mouseMoved(with event: NSEvent) {
+        if let i = row(at: convert(event.locationInWindow, from: nil)),
+           i != lit {
+            lit = i
+            needsDisplay = true
+        }
+    }
+
+    override func scrollWheel(with event: NSEvent) {
+        let by = event.scrollingDeltaY < 0 ? 1 : event.scrollingDeltaY > 0
+            ? -1 : 0
+        guard by != 0, choices.count > Self.maxRows else { return }
+        first = max(0, min(first + by, choices.count - Self.maxRows))
+        needsDisplay = true
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        if let i = row(at: convert(event.locationInWindow, from: nil)) {
+            onPick?(i)
+        }
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        let bold = NSFont.systemFont(ofSize: 12, weight: .semibold)
+        let plain = NSFont.systemFont(ofSize: 12)
+        let last = min(choices.count, first + Self.maxRows)
+        for i in first..<last {
+            let c = choices[i]
+            let y = Self.pad + CGFloat(i - first) * Self.rowHeight
+            let r = NSRect(x: Self.pad, y: y,
+                           width: bounds.width - Self.pad * 2,
+                           height: Self.rowHeight)
+            let on = i == lit
+            if on {
+                NSColor.selectedContentBackgroundColor.setFill()
+                NSBezierPath(roundedRect: r, xRadius: 5, yRadius: 5).fill()
+            }
+            // Its thumbnail, or its kind's symbol.
+            let t = NSRect(x: r.minX + 4, y: r.minY + 3, width: 24,
+                           height: 24)
+            NSGraphicsContext.saveGraphicsState()
+            NSBezierPath(roundedRect: t, xRadius: 4, yRadius: 4).addClip()
+            if let cg = c.thumb {
+                let s = max(t.width / CGFloat(cg.width),
+                            t.height / CGFloat(cg.height))
+                let dw = CGFloat(cg.width) * s, dh = CGFloat(cg.height) * s
+                // Flipped view: the image drawn upright through NSImage.
+                NSImage(cgImage: cg, size: NSSize(width: dw, height: dh))
+                    .draw(in: NSRect(x: t.midX - dw / 2, y: t.midY - dh / 2,
+                                     width: dw, height: dh))
+            } else {
+                NSColor.quaternaryLabelColor.setFill()
+                t.fill()
+                let symbol = c.itemKind == "audio" ? "waveform"
+                    : c.itemKind == "video" ? "film"
+                    : c.itemKind == "refmod" ? "person.crop.square"
+                    : "photo"
+                if let img = NSImage(systemSymbolName: symbol,
+                                     accessibilityDescription: nil) {
+                    img.draw(in: t.insetBy(dx: 5, dy: 5))
+                }
+            }
+            NSGraphicsContext.restoreGraphicsState()
+            let ink: NSColor = on ? .alternateSelectedControlTextColor
+                : .labelColor
+            let dim: NSColor = on ? .alternateSelectedControlTextColor
+                : .secondaryLabelColor
+            let label = NSAttributedString(string: c.short, attributes: [
+                .font: bold, .foregroundColor: ink])
+            let ls = label.size()
+            label.draw(at: NSPoint(x: t.maxX + 8,
+                                   y: r.midY - ls.height / 2))
+            let name = NSAttributedString(string: c.name, attributes: [
+                .font: plain, .foregroundColor: dim])
+            name.draw(at: NSPoint(x: t.maxX + 8 + max(ls.width, 22) + 8,
+                                  y: r.midY - name.size().height / 2))
+        }
+    }
+}
+
 struct PromptMargin: NSViewRepresentable {
     let model: AppModel
 
@@ -935,6 +1112,16 @@ struct PromptEditor: NSViewRepresentable {
         weak var ruler: LineNumberRuler?
         /// Typing as words had it, before code took over.
         var wordsSpelling: Bool?
+        /// "@" REFERENCES (DESIGN §10c): the list open under an "@" typed
+        /// before the caret, the sequence it filters by, where an Escape
+        /// shut it (not opened again for that "@"), and an "@" sequence
+        /// a space was just typed after -- made a tag once the space is
+        /// in, an edit of its own that ⌘Z takes back.
+        var atPicker: NSPopover?
+        var atQuery: (range: NSRange, token: String)?
+        var atChoices: [RefChoice] = []
+        var atDismissed: Int?
+        var atSpace: (range: NSRange, token: String)?
 
         init(_ p: PromptEditor) { parent = p }
 
@@ -1013,6 +1200,30 @@ struct PromptEditor: NSViewRepresentable {
         /// composing takes its own Return: it never comes here.)
         func textView(_ textView: NSTextView,
                       doCommandBy selector: Selector) -> Bool {
+            // The "@" list open: ↑ ↓ move in it, Return or Tab take the
+            // one lit, Escape shuts it.
+            if atPicker?.isShown == true, let view = atView {
+                switch selector {
+                case #selector(NSResponder.moveDown(_:)):
+                    view.move(1)
+                    return true
+                case #selector(NSResponder.moveUp(_:)):
+                    view.move(-1)
+                    return true
+                case #selector(NSResponder.insertNewline(_:)),
+                     #selector(NSResponder.insertTab(_:)):
+                    if view.lit < atChoices.count {
+                        pickAt(atChoices[view.lit])
+                    }
+                    return true
+                case #selector(NSResponder.cancelOperation(_:)):
+                    atDismissed = atQuery?.range.location
+                    closeAt()
+                    return true
+                default:
+                    break
+                }
+            }
             // Code: Return keeps the line's indent, Tab puts in spaces.
             if code != nil, !parent.chat, textView.isEditable {
                 switch selector {
@@ -1051,6 +1262,15 @@ struct PromptEditor: NSViewRepresentable {
                 parent.model.editorEdited = true
             }
             sync()
+            if let typed = atSpace {
+                atSpace = nil
+                // After this change: its own undo step, so ⌘Z gives the
+                // "@" sequence back as typed (DESIGN §10c).
+                DispatchQueue.main.async { [weak self] in
+                    self?.translateAt(typed)
+                }
+            }
+            refreshAt()
         }
 
         func sync() {
@@ -1139,6 +1359,7 @@ struct PromptEditor: NSViewRepresentable {
                     measure()
                 }
             }
+            refreshAt()
             if let sel = tv.selectedTag {
                 if editingTagAt != sel.location { typedDigits = "" }
                 editingTagAt = sel.location
@@ -1165,6 +1386,16 @@ struct PromptEditor: NSViewRepresentable {
         func textView(_ textView: NSTextView,
                       shouldChangeTextIn range: NSRange,
                       replacementString s: String?) -> Bool {
+            // A space typed right after an "@" sequence naming a row item
+            // as the model numbers it: the sequence becomes its tag once
+            // the space is in (textDidChange). Only that sequence.
+            if s == " ", range.length == 0, let tv = self.textView,
+               !tv.hasMarkedText(), atEnabled,
+               let q = Self.atToken(tv.string as NSString, before:
+                                        range.location),
+               choice(exactly: q.token) != nil {
+                atSpace = q
+            }
             guard let tv = self.textView, let sel = tv.selectedTag,
                   range == NSRange(location: sel.location, length: 1),
                   let s else { return true }
@@ -1190,6 +1421,191 @@ struct PromptEditor: NSViewRepresentable {
             DispatchQueue.main.async { [weak self] in
                 self?.textView?.setTag(at: at, kind: kind, index: n - 1)
             }
+        }
+
+        // MARK: "@" references (DESIGN §10c)
+
+        /// Words, not code or the agent's chat, with something in the
+        /// row a tag can name.
+        var atEnabled: Bool {
+            code == nil && !parent.chat
+                && parent.model.promptAttachments.contains {
+                    AppModel.refKind($0.namedAs) != nil
+                }
+        }
+
+        /// The "@" sequence ending at `end`: "@", then up to eight
+        /// letters and digits, the "@" at the text's start or after a
+        /// space, a line, a mention or an opening bracket -- not inside a
+        /// word (an address).
+        static func atToken(_ ns: NSString, before end: Int)
+            -> (range: NSRange, token: String)? {
+            guard end <= ns.length else { return nil }
+            var i = end
+            while i > 0, end - i <= 8 {
+                let c = ns.character(at: i - 1)
+                guard c < 128, let u = UnicodeScalar(c),
+                      CharacterSet.alphanumerics.contains(u) else { break }
+                i -= 1
+            }
+            guard end - i <= 8, i > 0, ns.character(at: i - 1) == 0x40 else {
+                return nil
+            }
+            let at = i - 1
+            if at > 0 {
+                let p = ns.character(at: at - 1)
+                let opens: Set<unichar> = [0x28, 0x5B, 0x7B, 0x22, 0x27,
+                                           0x201C, 0x2018, 0xFFFC]
+                let blank = UnicodeScalar(p).map {
+                    CharacterSet.whitespacesAndNewlines.contains($0)
+                } ?? false
+                guard blank || opens.contains(p) else { return nil }
+            }
+            return (NSRange(location: at, length: end - at),
+                    ns.substring(with: NSRange(location: i,
+                                               length: end - i)))
+        }
+
+        /// The row's items a tag can name, as the chosen model calls
+        /// them, in the row's order.
+        func refChoices() -> [RefChoice] {
+            let model = parent.model
+            let names = model.refNames()
+            return model.promptAttachments.compactMap { att in
+                guard let n = names[att.id] else { return nil }
+                return RefChoice(id: att.id, kind: n.kind, index: n.index,
+                                 short: n.short,
+                                 name: RefChoice.cut(model.rowItemName(att)),
+                                 thumb: model.referenceThumbs[att.id],
+                                 itemKind: att.kind)
+            }
+        }
+
+        /// The item `token` names exactly, as the list shows it (case
+        /// aside).
+        func choice(exactly token: String) -> RefChoice? {
+            guard !token.isEmpty else { return nil }
+            return refChoices().first {
+                $0.short.caseInsensitiveCompare(token) == .orderedSame
+            }
+        }
+
+        /// The list follows the "@" before the caret: opened, filtered,
+        /// lit -- shut where there is none, nothing matches, or Escape
+        /// shut it for this one.
+        func refreshAt() {
+            guard let tv = textView, tv.window != nil, tv.isEditable,
+                  !tv.hasMarkedText(), atEnabled,
+                  tv.selectedRange().length == 0,
+                  let q = Self.atToken(tv.string as NSString,
+                                       before: tv.selectedRange().location)
+            else {
+                atDismissed = nil
+                closeAt()
+                return
+            }
+            if atDismissed == q.range.location { closeAt(); return }
+            atDismissed = nil
+            let all = refChoices()
+            let shown = q.token.isEmpty ? all : all.filter {
+                $0.short.lowercased().hasPrefix(q.token.lowercased())
+            }
+            guard !shown.isEmpty else { closeAt(); return }
+            atQuery = q
+            atChoices = shown
+            // Lit: the one named exactly, else the first.
+            let lit = shown.firstIndex {
+                $0.short.caseInsensitiveCompare(q.token) == .orderedSame
+            } ?? 0
+            let rect = tv.rect(ofCharacter: q.range.location)
+            if let pop = atPicker, pop.isShown, let view = atView {
+                view.show(shown, lit: lit)
+                pop.contentSize = view.fitting
+                pop.positioningRect = rect
+                return
+            }
+            let view = RefPickerView()
+            view.onPick = { [weak self] i in
+                guard let self, i < self.atChoices.count else { return }
+                self.pickAt(self.atChoices[i])
+            }
+            view.show(shown, lit: lit)
+            let c = NSViewController()
+            c.view = view
+            let pop = NSPopover()
+            pop.contentViewController = c
+            pop.contentSize = view.fitting
+            pop.behavior = .semitransient
+            pop.animates = false
+            pop.show(relativeTo: rect, of: tv, preferredEdge: .maxY)
+            atPicker = pop
+            // Typing stays in the text: it filters the list.
+            tv.window?.makeFirstResponder(tv)
+        }
+
+        var atView: RefPickerView? {
+            atPicker?.contentViewController?.view as? RefPickerView
+        }
+
+        func closeAt() {
+            atQuery = nil
+            atChoices = []
+            if atPicker?.isShown == true { atPicker?.close() }
+            atPicker = nil
+        }
+
+        /// One picked from the list: the "@" sequence made its tag and a
+        /// space -- an edit of its own (the typing before it apart), so
+        /// ⌘Z gives the sequence back.
+        func pickAt(_ c: RefChoice) {
+            guard let q = atQuery else { return }
+            replaceAt(q.range, with: c, space: true)
+        }
+
+        /// The "@" sequence a space was typed after, made its tag -- if
+        /// it is still there as typed, the space after it, and still
+        /// names an item.
+        func translateAt(_ typed: (range: NSRange, token: String)) {
+            guard let tv = textView else { return }
+            let ns = tv.string as NSString
+            let r = typed.range
+            guard NSMaxRange(r) < ns.length,
+                  ns.substring(with: r) == "@" + typed.token,
+                  ns.character(at: NSMaxRange(r)) == 0x20,
+                  let c = choice(exactly: typed.token) else { return }
+            replaceAt(r, with: c, space: false)
+        }
+
+        private func replaceAt(_ r: NSRange, with c: RefChoice,
+                               space: Bool) {
+            guard let tv = textView, let storage = tv.textStorage,
+                  NSMaxRange(r) <= storage.length else { return }
+            let caret = tv.selectedRange()
+            let piece = NSMutableAttributedString(
+                attributedString: tv.tagPiece(kind: c.kind, index: c.index))
+            if space {
+                piece.append(NSAttributedString(
+                    string: " ",
+                    attributes: tv.typingAttributes.filter {
+                        $0.key != .attachment
+                    }))
+            }
+            // The typing before it its own step, this one apart.
+            tv.breakUndoCoalescing()
+            guard tv.shouldChangeText(in: r, replacementString: piece.string)
+            else { return }
+            storage.replaceCharacters(in: r, with: piece)
+            tv.didChangeText()
+            tv.undoManager?.setActionName(
+                String(localized: "Insert Reference"))
+            let shift = r.length - piece.length
+            let at = space ? r.location + piece.length
+                : caret.location >= NSMaxRange(r)
+                    ? caret.location - shift : r.location + piece.length
+            tv.setSelectedRange(NSRange(
+                location: min(at, storage.length), length: 0))
+            tv.breakUndoCoalescing()
+            closeAt()
         }
 
         private func showTagEditor(_ tag: RefTagAttachment, at: Int) {
@@ -1359,6 +1775,8 @@ struct PromptEditor: NSViewRepresentable {
             return model.addReferences(urls)
         }
         tv.onAssetsDropped = { ids in model.addAssetReferences(ids) }
+        tv.onFolderDropped = { folder in model.addFolderReferences(folder) }
+        tv.onSkillsDropped = { urls in model.stageSkills(urls) }
         tv.onStageDropped = { model.addStageToPrompt() }
         tv.onMediaTaken = { model.stageDropped($0) }
         tv.mentionImage = { id in Self.mentionImage(id, model) }
@@ -1437,8 +1855,14 @@ struct PromptEditor: NSViewRepresentable {
         }
         // The row changed (order, the base, a thumbnail, one taken out):
         // the mentions follow it.
+        // What the chosen model calls each item is part of it: another
+        // model (or base, keyframe) numbers them otherwise, and the tags
+        // and mentions are drawn again with the new names.
+        let names = model.refNames()
         let row = model.promptAttachments.map {
             "\($0.id)\($0.kind)\($0.isBase)\(model.referenceThumbs[$0.id] != nil)"
+                + (names[$0.id].map { "\($0.short)|\($0.long)" } ?? "")
+                + (model.referenceNumber($0).map(String.init) ?? "")
         }.joined(separator: ",")
         if row != context.coordinator.drawnFrom {
             context.coordinator.drawnFrom = row
@@ -1446,6 +1870,7 @@ struct PromptEditor: NSViewRepresentable {
             // A tag's place filled in, emptied or another medium now: its
             // thumbnail drawn again (or none, in red).
             tv.refreshTags()
+            context.coordinator.refreshAt()
             if tv.refreshMentions(staged: staged) {
                 let coordinator = context.coordinator
                 DispatchQueue.main.async { coordinator.sync() }
@@ -1471,7 +1896,8 @@ struct PromptEditor: NSViewRepresentable {
         let item = model.rowItem(kind: kind, index: index)
         return PromptTextView.refTagChip(
             kind: kind, index: index, bound: item != nil,
-            thumb: item.flatMap { model.referenceThumbs[$0.id] })
+            thumb: item.flatMap { model.referenceThumbs[$0.id] },
+            label: item.flatMap { model.refNames()[$0.id]?.long })
     }
 
     /// A staged medium as its mention: its thumbnail, its number, the

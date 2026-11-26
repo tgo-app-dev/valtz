@@ -19,6 +19,13 @@
 // by every Valtz that starts -- the app and valtzctl alike. A models
 // folder left behind with its models in it (Keep, not Move) stays one
 // Valtz looks in and owns: `models_kept`.
+//
+// A SECOND, SLOW models folder may be set beside the models folder --
+// `models_slow`, on an external drive, say: Valtz's own as well, looked
+// in after the models folder and those kept, a download sent there when
+// asked, a model moved between the two (Controller::move_model). The
+// models folder is the FAST one: a model's weights stream from where they
+// are as it runs, so the slow one is for what is used now and then.
 
 #ifndef VALTZ_BASE_PATHS_H
 #define VALTZ_BASE_PATHS_H
@@ -42,6 +49,8 @@ struct AppPaths {
   // Models folders left where they were, their models still used, after
   // `models`.
   std::vector<std::filesystem::path> models_kept;
+  // The slow models folder; empty: none.
+  std::filesystem::path models_slow;
 
   // The standard layout under $HOME, the locations chosen laid over it.
   // `support_override` (tests, CI) relocates everything but `projects`.
@@ -64,6 +73,7 @@ struct Locations {
   std::filesystem::path              models;
   std::filesystem::path              cache;
   std::vector<std::filesystem::path> models_kept;
+  std::filesystem::path              models_slow;
 };
 
 Locations read_locations(const std::filesystem::path& support);

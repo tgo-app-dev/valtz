@@ -39,7 +39,8 @@ public:
   Status say(const std::string& id, const std::string& text,
              const Json& stage = Json::object(),
              const std::vector<AssetId>& attached = {},
-             const Json& render = Json());
+             const Json& render = Json(),
+             const std::vector<std::filesystem::path>& skill_files = {});
   Status review(const std::string& id, int step, const std::string& what,
                 const Json& args, const std::string& note);
   Status set_review(const std::string& id, bool review);
@@ -147,6 +148,10 @@ public:
     // The person's words, each time they spoke (the request first), and
     // the first of them said since the card last changed.
     std::vector<std::string>            person_words;
+    // The skills the person loaded, by name: the text given the model
+    // (agent::skill_text) -- put back whole in a compaction's notes when
+    // the message that brought one is compacted away.
+    std::map<std::string, std::string>  skill_texts;
     std::size_t                         render_words = 0;
     // Its PROGRAMS (render_program): the one a procedural session draws
     // again unless asked for a new one, and each one's drawing -- drawn
@@ -302,6 +307,12 @@ private:
   // id for the tools. Their own words and those ids kept apart (said,
   // attached) for the app and the transcript.
   // `tools`: told by id, for them; without tools, by name alone.
+  // Skills loaded with a person's message: each read, its text added to
+  // the message for the model, its name to `skills` for the app.
+  // Refused whole, naming the first that is no skill.
+  Status load_skills_(const std::vector<std::filesystem::path>& files,
+                      agent::Message& m,
+                      std::map<std::string, std::string>& texts);
   agent::Message person_message_(ProjectId pid, const std::string& words,
                                  const Json& stage,
                                  const std::vector<AssetId>& attached,

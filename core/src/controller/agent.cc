@@ -1092,6 +1092,31 @@ Controller::AgentHost::person_message_(ProjectId pid,
   return m;
 }
 
+Status
+Controller::AgentHost::load_skills_(
+    const std::vector<std::filesystem::path>& files, agent::Message& m,
+    std::map<std::string, std::string>& texts)
+{
+  for (const auto& f : files) {
+    auto k = agent::read_skill(f);
+    if (!k.ok()) {
+      return make_error(k.error().code, msg::kAgentSkillRefused,
+                        {{"name", f.filename().string()},
+                         {"why", k.error().message}});
+    }
+    if (std::ranges::find(m.skills, k->name) != m.skills.end()) {
+      continue;
+    }
+    std::string text = agent::skill_text(*k);
+    m.content += (m.content.empty() ? "" : "\n\n") + text;
+    m.skills.push_back(k->name);
+    texts[k->name] = std::move(text);
+    VALTZ_LOG_INFO("agent", "skill \"{}\" loaded ({} bytes, {} files "
+                   "beside it)", k->name, k->text.size(), k->files.size());
+  }
+  return ok_status();
+}
+
 void
 Controller::AgentHost::show_attached_(Session& s, agent::Message& m)
 {
@@ -1344,6 +1369,24 @@ Controller::AgentHost::transcript_text_(const Session& s) const
       return;
     }
     if (m.role == "user") {
+      // Skills loaded: named, never their text (a SKILL.md runs long).
+      if (!m.skills.empty()) {
+        heading("you", "You");
+        if (!one_line(m.said).empty()) {
+          t += m.said;
+          t += "\n";
+        }
+        std::string loaded;
+        for (const auto& n : m.skills) {
+          loaded += (loaded.empty() ? "" : ", ") + n;
+        }
+        t += "\n*Skill" + std::string(m.skills.size() == 1 ? "" : "s") +
+             " loaded: " + loaded + "*\n";
+        if (!m.attached.empty()) {
+          t += "\n*Attached: " + names(m.attached) + "*\n";
+        }
+        return;
+      }
       if (m.said.empty() && m.content.starts_with("[Valtz]")) {
         std::string note = one_line(m.content.substr(8));
         if (!m.images.empty()) {
@@ -1500,7 +1543,7 @@ Controller::AgentHost::write_transcript_(Session& s)
 Result<std::string>
 Controller::AgentHost::start(AgentRequest req)
 {
-  if (one_line(req.prompt).empty()) {
+  if (one_line(req.prompt).empty() && req.skill_files.empty()) {
     return make_error(Code::InvalidArgument, msg::kAgentEmptyRequest);
   }
   if (req.skills.empty()) {
@@ -1571,8 +1614,21 @@ Controller::AgentHost::start(AgentRequest req)
   // The request, the row's media its attachments: the system message
   // lists them already -- by id, for the tools; with none, here.
   const bool tools = s->skills != "none";
-  s->messages.push_back(person_message_(req.project, req.prompt, req.stage,
-                                        req.row, /*list=*/!tools, tools));
+  agent::Message first = person_message_(req.project, req.prompt, req.stage,
+                                         req.row, /*list=*/!tools, tools);
+  if (one_line(req.prompt).empty()) {
+    first.content.clear();
+  }
+  VALTZ_TRY(load_skills_(req.skill_files, first, s->skill_texts));
+  // Skills alone: the session named by them.
+  if (one_line(s->prompt).empty()) {
+    std::string names;
+    for (const auto& n : first.skills) {
+      names += (names.empty() ? "" : ", ") + n;
+    }
+    s->prompt = "Skill: " + names;
+  }
+  s->messages.push_back(std::move(first));
   {
     std::lock_guard lk(_mu);
     if (_stop) {
@@ -1741,11 +1797,16 @@ Controller::AgentHost::state_json_(const Session& s, bool messages) const
       }
       // The person's own words and what they attached; the pictures
       // shown with it, counted.
-      if (!m.said.empty()) {
+      // (Said even when empty beside skills: the app would read the
+      // words out of the content, the skills' text in it.)
+      if (!m.said.empty() || !m.skills.empty()) {
         x["said"] = m.said;
       }
       if (!m.attached.empty()) {
         x["attached"] = m.attached;
+      }
+      if (!m.skills.empty()) {
+        x["skills"] = m.skills;
       }
       if (!m.images.empty()) {
         x["shown"] = m.images.size();
@@ -2366,6 +2427,14 @@ person_words(const std::vector<agent::Message>& msgs, std::size_t from,
 {
   for (std::size_t i = from; i < to && i < msgs.size(); ++i) {
     const auto& m = msgs[i];
+    // A message that loaded skills: their words alone (the skills
+    // themselves are kept whole apart, CompactionNotes::skills).
+    if (m.role == "user" && !m.skills.empty()) {
+      if (!one_line(m.said).empty()) {
+        out.push_back(m.said);
+      }
+      continue;
+    }
     if (m.role == "user" && !agent::is_compaction(m) &&
         !m.content.starts_with("[Valtz]") && !one_line(m.content).empty()) {
       out.push_back(m.content);
@@ -2497,6 +2566,30 @@ Controller::AgentHost::compact_(Session& s,
   notes.said.clear();
   person_words(earlier, 0, earlier.size(), notes.said);
   person_words(msgs, head, tail, notes.said);
+  // The skills loaded in what goes -- now or in a compaction before --
+  // whole: they still apply.
+  {
+    std::lock_guard lk(s.mu);
+    std::vector<std::string> named;
+    auto note = [&](const agent::Message& m) {
+      for (const auto& n : m.skills) {
+        if (std::ranges::find(named, n) == named.end()) {
+          named.push_back(n);
+        }
+      }
+    };
+    for (const auto& m : earlier) {
+      note(m);
+    }
+    for (std::size_t i = head; i < tail && i < msgs.size(); ++i) {
+      note(msgs[i]);
+    }
+    for (const auto& n : named) {
+      if (auto it = s.skill_texts.find(n); it != s.skill_texts.end()) {
+        notes.skills.push_back(it->second);
+      }
+    }
+  }
   std::vector<agent::Message> next = agent::compact(msgs, tail, notes);
   next[head].stats = {{"compacted", static_cast<std::int64_t>(tail - head)},
                       {"tokens", used},
@@ -2534,17 +2627,27 @@ Status
 Controller::AgentHost::say(const std::string& id, const std::string& words,
                            const Json& stage,
                            const std::vector<AssetId>& attached,
-                           const Json& render)
+                           const Json& render,
+                           const std::vector<std::filesystem::path>& skills)
 {
   auto s = find_(id);
   if (!s) {
     return make_error(Code::NotFound, msg::kAgentNoSession);
   }
-  if (one_line(words).empty()) {
+  if (one_line(words).empty() && skills.empty()) {
     return make_error(Code::InvalidArgument, msg::kAgentEmptyRequest);
   }
   agent::Message m = person_message_(s->project, words, stage, attached,
                                      /*list=*/true, s->skills != "none");
+  if (one_line(words).empty()) {
+    m.content.clear();
+  }
+  std::map<std::string, std::string> texts;
+  VALTZ_TRY(load_skills_(skills, m, texts));
+  {
+    std::lock_guard lk(s->mu);
+    s->skill_texts.merge(texts);
+  }
   // Done and spoken to again: what the person changed since -- it held
   // nothing meanwhile -- makes what it last saw out of date.
   const std::uint64_t last = last_command_(s->project);
@@ -3031,9 +3134,10 @@ Status
 Controller::agent_say(const std::string& agent, const std::string& text,
                       const Json& stage,
                       const std::vector<AssetId>& attached,
-                      const Json& render)
+                      const Json& render,
+                      const std::vector<std::filesystem::path>& skill_files)
 {
-  return _agent->say(agent, text, stage, attached, render);
+  return _agent->say(agent, text, stage, attached, render, skill_files);
 }
 
 Status

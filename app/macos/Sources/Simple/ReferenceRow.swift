@@ -49,6 +49,20 @@ struct ReferenceRow: View {
                             }
                         }
                 }
+                // The agent's: skills to load with the next words.
+                if model.activeModality.isAgentic {
+                    ForEach(model.agentSkillFiles) { skill in
+                        SkillChip(name: skill.name,
+                                  help: skill.description) {
+                            withAnimation(AppModel.motion) {
+                                model.agentSkillFiles.removeAll {
+                                    $0.id == skill.id
+                                }
+                            }
+                        }
+                        .frame(height: Self.thumbHeight)
+                    }
+                }
             }
             .padding(.leading, 14)
             // Clear stands at the row's end.
@@ -105,6 +119,43 @@ struct ReferenceRow: View {
                              from: nil)
         if !host.isFlipped { p.y = host.bounds.height - p.y }
         return frame.contains(p)
+    }
+}
+
+/// A SKILL loaded or to load (DESIGN §9b): its name on a capsule -- never
+/// its text -- with a × while it is staged; in a chat bubble, none.
+struct SkillChip: View {
+    let name: String
+    var help: String = ""
+    var remove: (() -> Void)?
+
+    var body: some View {
+        HStack(spacing: 5) {
+            Image(systemName: "graduationcap")
+                .font(.system(size: 11, weight: .semibold))
+            Text(verbatim: name)
+                .font(.system(size: 12, weight: .medium))
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .frame(maxWidth: 180, alignment: .leading)
+            if let remove {
+                Button(action: remove) {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.borderless)
+                .help("Don't load this skill")
+            }
+        }
+        .padding(.horizontal, 9)
+        .padding(.vertical, 5)
+        .background(Capsule().fill(Color.accentColor.opacity(0.14)))
+        .overlay(Capsule().strokeBorder(Color.accentColor.opacity(0.35),
+                                        lineWidth: 0.5))
+        .help(help.isEmpty ? String(localized: "Skill: \(name)")
+                           : String(localized: "Skill: \(name) — \(help)"))
+        .accessibilityLabel(Text("Skill \(name)"))
     }
 }
 
@@ -462,6 +513,7 @@ struct PromptRowDrop: DropDelegate {
     func validateDrop(info: DropInfo) -> Bool {
         let pb = pasteboard
         return DroppedMedia.isStage(pb) || !DroppedMedia.rows(pb).isEmpty
+            || !DroppedMedia.folders(pb).isEmpty
             || DroppedMedia.peek(pb).media
     }
 
@@ -480,12 +532,25 @@ struct PromptRowDrop: DropDelegate {
 
     /// The drop's pasteboard taken (a dev hook hands one of its own).
     func take(_ pb: NSPasteboard) -> Bool {
+        // A folder of Assets: its media, by name, as the row takes them.
+        if let folder = DroppedMedia.folders(pb).first {
+            model.addFolderReferences(folder)
+            return true
+        }
         let ids = DroppedMedia.rows(pb)
         if !ids.isEmpty {
             model.addAssetReferences(ids)
             return true
         }
         let intake = DroppedMedia.take(pb)
+        // The agent's: a SKILL among the files is staged to load with the
+        // next words, never imported.
+        if model.activeModality.isAgentic, !intake.files.isEmpty {
+            intake.files = model.stageSkills(intake.files)
+            if intake.files.isEmpty && !intake.makes {
+                return true
+            }
+        }
         if DroppedMedia.isStage(pb)
             || (intake.files.count == 1
                 && model.isStageDrag(intake.files[0])) {

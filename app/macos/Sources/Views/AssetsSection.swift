@@ -11,6 +11,14 @@ extension AppModel {
     static let assetPrefix = "valtz-asset:"
     /// What a drag from the stage carries (beside its flattened file).
     static let stagePrefix = "valtz-stage"
+    /// What a drag of a FOLDER of the list carries: this, and its id.
+    static let folderPrefix = "valtz-folder:"
+
+    /// The folder a drag from the list carries.
+    static func draggedFolder(_ s: String) -> String? {
+        s.hasPrefix(folderPrefix) ? String(s.dropFirst(folderPrefix.count))
+                                  : nil
+    }
 
     /// The asset a drag from the list carries.
     static func draggedAsset(_ s: String) -> String? {
@@ -566,6 +574,122 @@ extension AppModel {
         }
     }
 
+    /// A FOLDER of the list into the prompt's row (DESIGN §10c): its
+    /// media -- pictures, clips, sounds, RefMods; its texts and anything
+    /// else left out -- by name as the Finder sorts them (asset-list
+    /// folders hold no folders: its contents are the whole of it), each
+    /// once, up to what the row may hold for what Start runs now
+    /// (`rowRoom`). Those left out are said. A subject's look, voice and
+    /// outfit kept in a folder go in with one drag.
+    @discardableResult
+    func addFolderReferences(_ folder: String) -> [UUID] {
+        let inRow = Set(promptAttachments.compactMap { assetId(of: $0) })
+        let media = assets
+            .filter {
+                $0.folder == folder && !$0.isHidden && $0.op != "project"
+                    && !$0.isProject
+                    && ["image", "video", "audio", "refmod"].contains($0.kind)
+            }
+            .sorted {
+                $0.name.localizedStandardCompare($1.name) == .orderedAscending
+            }
+        var room = rowRoom()
+        var take: [String] = []
+        var left = 0
+        for a in media {
+            let kind = a.kind == "refmod" ? a.namedAs : a.kind
+            // Already in it; or a kind this model reads none of (a sound
+            // for an edit): passed over, not "left out".
+            if inRow.contains(a.id) || !room.kinds.contains(kind) { continue }
+            if room.take(kind: kind) {
+                take.append(a.id)
+            } else {
+                left += 1
+            }
+        }
+        let name = assetFolders.first { $0.id == folder }?.name ?? ""
+        if media.isEmpty {
+            flash(String(localized: "“\(name)” holds no pictures, clips or sounds."),
+                  level: .warning)
+        } else if left > 0 {
+            flash(String(localized: "\(left) of “\(name)” left out: the row is full for this model."),
+                  level: .warning)
+        }
+        return addAssetReferences(take)
+    }
+
+    /// How many more media of each kind the prompt's row takes for what
+    /// Start runs now, as its model's catalog says (CatalogModel
+    /// `referenceLimits`, `maxReferences`): a clip from references its
+    /// pictures, clips, sounds and all of them; an edit its pictures (the
+    /// base among them); a clip opening -- or ending -- on pictures those;
+    /// speech its voices. What is in the row already counts. Nil: no
+    /// limit known.
+    struct RowRoom {
+        var kinds: Set<String>
+        var pictures: Int?
+        var clips: Int?
+        var sounds: Int?
+        var total: Int?
+
+        /// One of `kind` ("image", "video", "audio") taken, if there is
+        /// room for it.
+        mutating func take(kind: String) -> Bool {
+            guard kinds.contains(kind) else { return false }
+            func fits(_ n: Int?) -> Bool { n.map { $0 > 0 } ?? true }
+            switch kind {
+            case "image": guard fits(pictures) else { return false }
+            case "video": guard fits(clips) else { return false }
+            default: guard fits(sounds) else { return false }
+            }
+            guard fits(total) else { return false }
+            switch kind {
+            case "image": pictures = pictures.map { $0 - 1 }
+            case "video": clips = clips.map { $0 - 1 }
+            default: sounds = sounds.map { $0 - 1 }
+            }
+            total = total.map { $0 - 1 }
+            return true
+        }
+    }
+
+    func rowRoom() -> RowRoom {
+        let all: Set<String> = ["image", "video", "audio"]
+        var room: RowRoom
+        switch activeModality {
+        case .video where videoChoicePinned:
+            // A chosen clip model that reads no references: the pictures
+            // it opens -- and ends -- on.
+            let m = catalog.first { $0.id == runningModel }
+            room = RowRoom(kinds: ["image"],
+                           pictures: m?.lastFrame == true ? 2 : 1)
+        case .video:
+            let l = catalog.first { $0.id == videoReferenceModel }?
+                .referenceLimits
+            room = RowRoom(kinds: all, pictures: l?.pictures,
+                           clips: l?.clips, sounds: l?.sounds,
+                           total: l?.total)
+        case .image:
+            let n = catalog.first { $0.id == editModel }?.maxReferences
+            room = RowRoom(kinds: ["image"], pictures: n, total: n)
+        case .audio:
+            // Voices: a sound, or a clip's.
+            let n = runningModelInfo?.speakers
+            room = RowRoom(kinds: ["audio", "video"], total: n)
+        default:
+            room = RowRoom(kinds: all)
+        }
+        // What the row holds already.
+        for att in promptAttachments where att.isMedia {
+            let k = att.namedAs
+            room.pictures = room.pictures.map { k == "image" ? $0 - 1 : $0 }
+            room.clips = room.clips.map { k == "video" ? $0 - 1 : $0 }
+            room.sounds = room.sounds.map { k == "audio" ? $0 - 1 : $0 }
+            room.total = room.total.map { $0 - 1 }
+        }
+        return room
+    }
+
     /// Assets of the list into the prompt's row -- each once -- as they
     /// are (a look of their own goes with them). Their row ids, in order.
     @discardableResult
@@ -1054,6 +1178,11 @@ struct AssetsSection: View {
                                      targeted: Binding(
                     get: { dropFolder == f.id },
                     set: { dropFolder = $0 ? f.id : nil })))
+        // Dragged into the prompt's row: its media, by name, as many as
+        // the row takes (AppModel.addFolderReferences).
+        .onDrag {
+            NSItemProvider(object: (AppModel.folderPrefix + f.id) as NSString)
+        }
         .contextMenu {
             Button("Rename Folder") { renaming = f.id }
             Button("Delete Folder") { model.deleteFolder(f.id) }

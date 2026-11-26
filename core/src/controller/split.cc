@@ -11,6 +11,7 @@
 #include "valtz/base/log.h"
 
 #include <algorithm>
+#include <cctype>
 #include <chrono>
 #include <cmath>
 #include <cstdlib>
@@ -45,6 +46,9 @@ in_list(const Json& list, std::string_view what)
 // both load at once -- this Mac's rank starts as the member's does -- so
 // minutes, not the half hour of a split started by hand.
 constexpr int kSplitWaitMs = 5 * 60 * 1000;
+// ...a training's rank: while rank 0 encodes its dataset (the text
+// encoder over every caption, the VAE over every clip), its model loads.
+constexpr int kTrainWaitMs = 60 * 60 * 1000;
 
 // How old a cable probe a split takes as it is.
 constexpr double kFreshProbeSeconds = 10.0;
@@ -525,9 +529,19 @@ Controller::split_plan_(const project::Recipe& r, const engine::ModelRef& ref,
   if (ane && std::ranges::find(families, "h3-ane") == families.end()) {
     return no(msg::kSplitNeuralEngine);
   }
-  // pi-H3: vpipe binds its adapter's whole-tensor overwrites on a whole
-  // DiT alone, never a rank's share.
-  if (jget(t, "pi_h3", false)) {
+  // pi-H3: its adapter's whole-tensor overwrites cut to a rank's share,
+  // over the pruned DiT, where both Macs' vpipe does it ("h3-pi", vpipe's
+  // tensor-parallel-pi-h3/1; the member's checked below) -- an older one
+  // refuses it at bind.
+  // HyperFlow H3 Flash: its low-rank pairs cut to a rank's share, where
+  // both Macs' vpipe does it ("h3-flash", vpipe's tensor-parallel-flash/1;
+  // the member's checked below) -- an older one refuses the rank at load.
+  const bool flash = jget(t, "hyperflow_flash", false);
+  if (flash && std::ranges::find(families, "h3-flash") == families.end()) {
+    return no(msg::kSplitFlash);
+  }
+  const bool pi = jget(t, "pi_h3", false);
+  if (pi && std::ranges::find(families, "h3-pi") == families.end()) {
     return no(msg::kSplitPiH3);
   }
   const bool taomate_streams =
@@ -585,6 +599,12 @@ Controller::split_plan_(const project::Recipe& r, const engine::ModelRef& ref,
       !in_list(jget(self, "split_families", Json()), "h3-taomate-lora")) {
     return no(msg::kSplitTaomateLora);
   }
+  if (pi && !in_list(jget(self, "split_families", Json()), "h3-pi")) {
+    return no(msg::kSplitPiH3);
+  }
+  if (flash && !in_list(jget(self, "split_families", Json()), "h3-flash")) {
+    return no(msg::kSplitFlash);
+  }
   // Each Mac its share of the heads, by its GPU (or as set), the
   // feed-forward rows alike.
   const double frac =
@@ -599,15 +619,23 @@ Controller::split_plan_(const project::Recipe& r, const engine::ModelRef& ref,
   // regenerated past 768P, whose refine decodes): each its share of the
   // chunks, the member's part handed over the link -- this Mac makes the
   // clip, nothing sent back over the fleet's own network.
+  // pi-H3's DWD makes its frames from the DiT's features by its own pixel
+  // head, no VAE: there is no decode to share, one Mac's head makes them.
+  const bool pi_dwd = pi && !jget(t, "pi_h3_vae", false);
+  // MiniMax H3's video VAE alone splits its decode (vae-decode's
+  // tensor_parallel): a family of its own (MAGI-2's turbo decoder)
+  // decodes on one Mac.
   const bool split_decode = !picture && c.pair_decode == "auto" && !regen &&
+                            !pi_dwd && family_needs.empty() &&
                             _engine->splits_decode() &&
                             jget(self, "splits_decode", false);
   const bool peer_keeps = !picture && !split_decode &&
                           decodes_there(c.pair_decode, frac) &&
                           !jget(r.params, "keep_latents", false);
   std::vector<std::string> needs = {r.model};
+  // (`curve_model`: pi-H3 on Flash reads the pruned DiT's time curve.)
   for (const char* k : {"lora", "decoder", "encoder", "vad", "tagger",
-                        "dit_model"}) {
+                        "dit_model", "curve_model"}) {
     if (const auto id = jget<std::string>(r.params, k, ""); !id.empty()) {
       needs.push_back(id);
     }
@@ -663,16 +691,6 @@ Controller::split_plan_(const project::Recipe& r, const engine::ModelRef& ref,
       return no(msg::kSplitNoModelThere, {{"model", e ? e->name : id}});
     }
   }
-  // The cables as probed in the last few seconds (a member joining, the
-  // app's outlook), else probed now: a probe waits out every address
-  // pair no cable joins, most of a second a clip.
-  auto links = tb_links_(false, kFreshProbeSeconds)[c.pair_member];
-  if (links.empty()) {
-    links = tb_links_(true)[c.pair_member];
-  }
-  if (links.empty()) {
-    return no(msg::kSplitNoLink);
-  }
   // Whole groups of four heads where an int8 tier past Accurate runs (on
   // the draft or the refine): the out projection's share is then 512
   // columns a group, which every tier's rotation takes -- 11 heads' 1,408
@@ -681,9 +699,44 @@ Controller::split_plan_(const project::Recipe& r, const engine::ModelRef& ref,
     return jget(tj, "i8_gemm", false) &&
            jget<std::string>(tj, "i8_gemm_tier", "accurate") != "accurate";
   };
+  // pi-H3 over a pruned DiT in ComfyUI's int8 ConvRot: a rank cuts its
+  // codes on the Per Token tier alone (as stored, cut on the rotation's
+  // group edges), so both ranks run it there (catalog `pi_h3.split_tier`
+  // by the DiT) -- whatever Custom said, said in the log.
+  Json tuning_over = Json::object();
+  // HyperFlow H3 Flash's file is int8 ConvRot too, read on a rank as the
+  // pruned DiT's is (catalog `hyperflow_flash.split_tier`): either token
+  // tier asked is kept, else both ranks run the one named.
+  const std::string flash_tier =
+      flash ? jget<std::string>(jget(mvp, "hyperflow_flash", Json::object()),
+                                "split_tier", "")
+            : std::string();
+  if (!flash_tier.empty()) {
+    const auto asked = jget<std::string>(t, "i8_gemm_tier", "");
+    if (!(jget(t, "i8_gemm", false) &&
+          (asked == "token" || asked == "token_plain"))) {
+      tuning_over = {{"i8_gemm", true}, {"i8_gemm_tier", flash_tier}};
+      VALTZ_LOG_INFO("fleet", "HyperFlow H3 Flash splits on the int8 {} "
+                     "tier", flash_tier);
+    }
+  } else if (pi) {
+    const auto dm = jget<std::string>(r.params, "dit_model", "");
+    const Json st = jget(jget(mvp, "pi_h3", Json::object()), "split_tier",
+                         Json::object());
+    if (const auto tier = jget<std::string>(st, dm.c_str(), "");
+        !tier.empty() &&
+        !(jget(t, "i8_gemm", false) &&
+          jget<std::string>(t, "i8_gemm_tier", "") == tier)) {
+      tuning_over = {{"i8_gemm", true}, {"i8_gemm_tier", tier}};
+      VALTZ_LOG_INFO("fleet", "pi-H3 on {} splits on the int8 {} tier",
+                     dm, tier);
+    }
+  }
+  Json tt = t;
+  tt.update(tuning_over);
   // A family's own grain beside it: Krea 2's heads share a key and value
   // head four at a time (GQA: `head_group`), so a share is whole groups.
-  const int tier_grain = (tiered(t) || (regen && tiered(rt))) &&
+  const int tier_grain = (tiered(tt) || (regen && tiered(rt))) &&
                                  heads >= 8 && heads % 4 == 0
                              ? 4
                              : 1;
@@ -695,54 +748,16 @@ Controller::split_plan_(const project::Recipe& r, const engine::ModelRef& ref,
   const auto [h0, f0] = fleet::split_rows(
       heads, ffn, frac, std::lcm(tier_grain, head_group),
       jget(widths, "ffn_grain", 1));
-  // The member LISTENS on its end of each cable -- a port of its own,
-  // told back as its half begins -- and this Mac connects from its end:
-  // reaching out to the local network is the requester's (the app the
-  // person works in, let do so for the fleet), never a serving member's,
-  // which macOS may not have let (Local Network: "No route to host").
-  // A socket a ROUTE -- two cables in two Thunderbolt Bridges are one --
-  // and RDMA a CABLE, each weighed by its speed: a TB5 cable beside a
-  // 20 Gb/s one carries four fifths of every partial (an even share
-  // would wait on the slower one: half at a quarter of the speed).
-  Json there = Json::array(), ifs = Json::array();
-  Json rdma_here = Json::array(), rdma_there = Json::array();
-  Json weights = Json::array();
-  std::set<std::pair<std::string, std::string>> routes;
-  bool weighed = true;
-  for (const auto& l : links) {
-    if (routes.insert({l.local_interface, l.remote_address}).second) {
-      there.push_back(std::format("{}:0", l.remote_address));
-      ifs.push_back(l.local_interface);
-    }
-    if (l.rdma()) {
-      rdma_here.push_back(l.local_rdma);
-      rdma_there.push_back(l.remote_rdma);
-      weights.push_back(l.gbps);
-      weighed = weighed && l.gbps > 0;
-    }
-  }
   SplitPlan plan;
+  if (Status st = split_ranks_(c, name, heads, ffn, h0, f0, kSplitWaitMs,
+                               &plan);
+      !st.ok()) {
+    return st.error();
+  }
+  plan.tuning = tuning_over;
   plan.own_weights = own_loras;
   plan.peer_keeps = peer_keeps;
   plan.split_decode = split_decode;
-  plan.member = c.pair_member;
-  plan.name = name;
-  plan.links = static_cast<int>(links.size());
-  plan.rdma = c.pair_rdma && !rdma_here.empty();
-  plan.local = {{"rank", 0},
-                {"ranks", 2},
-                {"heads", {0, h0}},
-                {"ffn", {0, f0}},
-                {"params",
-                 {{"role", "connect"}, {"links", Json::array()},
-                  {"interfaces", ifs}, {"wait_ms", kSplitWaitMs}}}};
-  plan.peer = {{"rank", 1},
-               {"ranks", 2},
-               {"heads", {h0, heads}},
-               {"ffn", {f0, ffn}},
-               {"params",
-                {{"role", "listen"}, {"links", there},
-                 {"wait_ms", kSplitWaitMs}}}};
   // The decode's share: the heads' (each Mac's GPU's), as chunks.
   if (split_decode) {
     const double d = static_cast<double>(h0) / heads;
@@ -773,8 +788,6 @@ Controller::split_plan_(const project::Recipe& r, const engine::ModelRef& ref,
     }
   }
   if (plan.rdma) {
-    plan.local["params"]["rdma"] = rdma_here;
-    plan.peer["params"]["rdma"] = rdma_there;
     // Over RDMA a band's partial crosses in well under its compute:
     // fewer, taller bands, each GEMM and attention the fuller for it --
     // 2,304 rows at least (an 832 x 480 x 73 clip's four, against eight
@@ -787,12 +800,343 @@ Controller::split_plan_(const project::Recipe& r, const engine::ModelRef& ref,
       plan.local["min_band_rows"] = kSplitMinBandRows;
       plan.peer["min_band_rows"] = kSplitMinBandRows;
     }
-    if (weighed && weights.size() > 1) {
-      plan.local["params"]["rdma_weights"] = weights;
-      plan.peer["params"]["rdma_weights"] = weights;
-    }
   }
   return plan;
+}
+
+Status
+Controller::split_ranks_(const fleet::Config& c, const std::string& name,
+                         int heads, int ffn, int h0, int f0, int wait_ms,
+                         SplitPlan* plan)
+{
+  // The cables as probed in the last few seconds (a member joining, the
+  // app's outlook), else probed now: a probe waits out every address
+  // pair no cable joins, most of a second a clip.
+  auto links = tb_links_(false, kFreshProbeSeconds)[c.pair_member];
+  if (links.empty()) {
+    links = tb_links_(true)[c.pair_member];
+  }
+  if (links.empty()) {
+    return make_error(Code::Unsupported, msg::kSplitNoLink,
+                      {{"member", name}});
+  }
+  // The member LISTENS on its end of each cable -- a port of its own,
+  // told back as its half begins -- and this Mac connects from its end:
+  // reaching out to the local network is the requester's (the app the
+  // person works in, let do so for the fleet), never a serving member's,
+  // which macOS may not have let (Local Network: "No route to host").
+  // A socket a ROUTE -- two cables in two Thunderbolt Bridges are one --
+  // and RDMA a CABLE, each weighed by its speed: a TB5 cable beside a
+  // 20 Gb/s one carries four fifths of every partial (an even share
+  // would wait on the slower one: half at a quarter of the speed).
+  Json there = Json::array(), ifs = Json::array();
+  Json rdma_here = Json::array(), rdma_there = Json::array();
+  Json weights = Json::array();
+  std::set<std::pair<std::string, std::string>> routes;
+  bool weighed = true;
+  for (const auto& l : links) {
+    if (routes.insert({l.local_interface, l.remote_address}).second) {
+      there.push_back(std::format("{}:0", l.remote_address));
+      ifs.push_back(l.local_interface);
+    }
+    if (l.rdma()) {
+      rdma_here.push_back(l.local_rdma);
+      rdma_there.push_back(l.remote_rdma);
+      weights.push_back(l.gbps);
+      weighed = weighed && l.gbps > 0;
+    }
+  }
+  plan->member = c.pair_member;
+  plan->name = name;
+  plan->links = static_cast<int>(links.size());
+  plan->rdma = c.pair_rdma && !rdma_here.empty();
+  plan->local = {{"rank", 0},
+                 {"ranks", 2},
+                 {"heads", {0, h0}},
+                 {"ffn", {0, f0}},
+                 {"params",
+                  {{"role", "connect"}, {"links", Json::array()},
+                   {"interfaces", ifs}, {"wait_ms", wait_ms}}}};
+  plan->peer = {{"rank", 1},
+                {"ranks", 2},
+                {"heads", {h0, heads}},
+                {"ffn", {f0, ffn}},
+                {"params",
+                 {{"role", "listen"}, {"links", there},
+                  {"wait_ms", wait_ms}}}};
+  if (plan->rdma) {
+    plan->local["params"]["rdma"] = rdma_here;
+    plan->peer["params"]["rdma"] = rdma_there;
+    if (weighed && weights.size() > 1) {
+      plan->local["params"]["rdma_weights"] = weights;
+      plan->peer["params"]["rdma_weights"] = weights;
+    }
+  }
+  return ok_status();
+}
+
+// ---- a LoRA trained split ---------------------------------------------
+
+Result<Controller::SplitPlan>
+Controller::train_split_plan_(const models::ModelEntry& m,
+                              const std::string& shape, JobId job,
+                              const std::string& mode)
+{
+  auto quiet = [] {
+    return make_error(Code::NotFound, "not split");
+  };
+  if (!_fleet || mode == "none") {
+    return quiet();
+  }
+  if (const char* e = std::getenv("VALTZ_SPLIT");
+      e != nullptr && std::string_view(e) == "0") {
+    return quiet();
+  }
+  const fleet::Config c = _fleet->config();
+  if (!c.joined() || c.pair_member.empty()) {
+    return quiet();
+  }
+  const std::string name = c.pair_name.empty() ? c.pair_member : c.pair_name;
+  auto no = [&](const Message& msg, MessageArgs args = {}) {
+    args.emplace_back("member", name);
+    return make_error(Code::Unsupported, msg, std::move(args));
+  };
+  // TWO WAYS (DESIGN §11c): SPLIT -- each Mac its share of the DiT,
+  // MiniMax H3's video DiT alone (by its catalog widths) -- or DATA
+  // PARALLEL -- each Mac the whole model and its share of every step's
+  // samples, any family. Auto: data parallel where both Macs' vpipe
+  // trains so (no exchange inside a block: faster, measured 2026-11-24),
+  // else split.
+  const Json widths = jget(jget(m.engine, "vpipe", Json::object()),
+                           "tensor_parallel", Json());
+  const int heads = jget(widths, "heads", 0);
+  const int ffn = jget(widths, "ffn", 0);
+  // What a split needs of both Macs' vpipe: H3's video DiT "h3-train";
+  // the picture models -- MiniMax-H3-Image, Qwen-Image 2.1 (its catalog
+  // widths' `needs`) -- "image-train".
+  const bool video = shape == "h3" || shape == "h3-ref2va";
+  const bool image =
+      shape == "h3-image" ||
+      jget<std::string>(widths, "needs", "") == "qwen-image-21";
+  const char* split_family = video ? "h3-train" : "image-train";
+  const bool can_split = (video || image) && heads >= 2 && ffn >= 2;
+  if (!_engine || !_engine->splits_dit()) {
+    return no(msg::kSplitCannotHere);
+  }
+  const std::vector<std::string> families = _engine->split_families();
+  auto here = [&](const char* f) {
+    return std::ranges::find(families, f) != families.end();
+  };
+  if (busy_here_(job)) {
+    return no(msg::kSplitBusyHere);
+  }
+  Json self;
+  for (const auto& mm : _fleet->members()) {
+    if (jget<std::string>(mm, "id", "") == c.pair_member) {
+      self = jget(mm, "self", Json::object());
+    }
+  }
+  if (!self.is_object()) {
+    return no(msg::kSplitPairAway);
+  }
+  if (!jget(self, "accepting", false)) {
+    return no(msg::kFleetNotTaking);
+  }
+  if (jget(self, "busy", false) || jget(self, "serving", false)) {
+    return no(msg::kFleetBusy);
+  }
+  if (!jget(self, "splits", false)) {
+    return no(msg::kSplitCannotThere);
+  }
+  const Json there = jget(self, "split_families", Json());
+  const bool data_ok = here("train-dp") && in_list(there, "train-dp");
+  const bool split_ok = can_split && here(split_family) &&
+                        in_list(there, split_family);
+  bool data = false;
+  if (mode == "data") {
+    if (!data_ok) { return no(msg::kTrainDataParallel); }
+    data = true;
+  } else if (mode == "tensor") {
+    if (!can_split) { return no(msg::kSplitTrainModel, {{"model", m.name}}); }
+    if (!split_ok) { return no(msg::kSplitTrain); }
+  } else if (data_ok) {
+    data = true;
+  } else if (!split_ok) {
+    return can_split ? no(msg::kSplitTrain)
+                     : no(msg::kTrainDataParallel);
+  }
+  if (!in_list(jget(self, "installed", Json()), m.id)) {
+    return no(msg::kSplitNoModelThere, {{"model", m.name}});
+  }
+  // Each Mac its share by its GPU (or as set), as a clip's.
+  const double frac =
+      c.pair_share > 0
+          ? c.pair_share
+          : fleet::gpu_share(_hw.gpu_cores, _hw.gpu_matrix_cores,
+                             jget(self, "machine", Json::object()));
+  SplitPlan plan;
+  if (data) {
+    // Each step's samples: the slower Mac one batch, the faster as many
+    // as its speed is a multiple of the other's (at most four).
+    const double f = std::clamp(frac, 0.05, 0.95);
+    const int k_here =
+        f >= 0.5 ? std::clamp((int)std::lround(f / (1.0 - f)), 1, 4) : 1;
+    const int k_there =
+        f < 0.5 ? std::clamp((int)std::lround((1.0 - f) / f), 1, 4) : 1;
+    // The cables and the ports as a split's (the widths unused).
+    if (Status st = split_ranks_(c, name, 2, 2, 1, 1, kTrainWaitMs, &plan);
+        !st.ok()) {
+      return st.error();
+    }
+    for (Json* side : {&plan.local, &plan.peer}) {
+      side->erase("heads");
+      side->erase("ffn");
+      (*side)["mode"] = "data";
+      (*side)["samples"] = Json::array({k_here, k_there});
+      (*side)["needs"] = "train-dp";
+    }
+    return plan;
+  }
+  const auto [h0, f0] = fleet::split_rows(heads, ffn, frac, 1,
+                                          jget(widths, "ffn_grain", 1));
+  // A rank waits for rank 0's dataset while it ENCODES -- its text
+  // encoder over every caption, its VAE over every clip -- and for the
+  // other's load: longer than a clip's wait.
+  if (Status st = split_ranks_(c, name, heads, ffn, h0, f0, kTrainWaitMs,
+                               &plan);
+      !st.ok()) {
+    return st.error();
+  }
+  // What the member checks it trains (serve_train_rank_, the fleet's
+  // offer): never handed to vpipe.
+  plan.local["needs"] = split_family;
+  plan.peer["needs"] = split_family;
+  return plan;
+}
+
+Status
+Controller::serve_train_rank_(const fleet::Offer& o, const std::string& from,
+                              engine::JobSink sink)
+{
+  Json tp = jget(o.params, "tensor_parallel", Json());
+  const Json tpp = jget(tp, "params", Json::object());
+  const std::vector<std::string> families =
+      _engine ? _engine->split_families() : std::vector<std::string>{};
+  const auto* m = _catalog.find(o.model);
+  const std::string need = jget<std::string>(
+      tp, "needs",
+      jget<std::string>(tp, "mode", "") == "data" ? "train-dp" : "h3-train");
+  if (!_engine || !_engine->available() ||
+      !_engine->supports(engine::kOpTrainLora) || !_engine->splits_dit() ||
+      std::ranges::find(families, need) == families.end() ||
+      !tp.is_object() || jget(tp, "rank", 0) != 1 ||
+      jget<std::string>(tpp, "role", "") != "listen" ||
+      !jget(o.params, "train_follower", false) || m == nullptr) {
+    return make_error(Code::Unsupported, msg::kSplitCannotHere);
+  }
+  const auto info = _store->info(*m);
+  if (info.state != models::InstallState::Installed) {
+    return make_error(Code::NotFound, msg::kSplitCannotHere);
+  }
+  const Json tr = jget(o.params, "train", Json::object());
+  const std::string run = jget<std::string>(tr, "name", "");
+  if (run.empty()) {
+    return make_error(Code::InvalidArgument, msg::kSplitCannotHere);
+  }
+  // It listens on its end of each cable, on a port free there -- told
+  // back as it starts, for the sender to connect to.
+  std::vector<std::string> addresses;
+  for (const auto& l : jget(tpp, "links", Json::array())) {
+    const auto a = l.is_string() ? l.get<std::string>() : std::string();
+    addresses.push_back(a.substr(0, a.rfind(':')));
+  }
+  const int port = fleet::free_tcp_port(addresses);
+  if (port <= 0) {
+    return make_error(Code::Unsupported, msg::kSplitCannotHere);
+  }
+  Json links = Json::array();
+  for (const auto& a : addresses) {
+    links.push_back(std::format("{}:{}", a, port));
+  }
+  tp["params"]["links"] = links;
+  tp["params"]["key"] = fleet::split_key(_fleet->config().key, o.id.str());
+  // Its resume state kept under the run's name and the sender's: a run
+  // stopped there and resumed finds this rank's where it left it.
+  std::string tag;
+  for (char ch : from + "-" + run) {
+    tag.push_back(std::isalnum(static_cast<unsigned char>(ch)) != 0
+                      ? ch : '-');
+  }
+  const fs::path state = _paths.support / "fleet-files" / "train-ranks" /
+                         tag;
+  std::error_code ec;
+  fs::create_directories(state, ec);
+  engine::JobSpec spec;
+  spec.id = o.id;
+  spec.op = std::string(engine::kOpTrainLora);
+  spec.model.id = m->id;
+  spec.model.dir = info.path();
+  spec.output_dir = state;
+  spec.params = {{"train_follower", true},
+                 {"shape", jget<std::string>(o.params, "shape", "")},
+                 {"train", {{"output_dir", state.string()},
+                            {"name", run},
+                            {"resume", jget<std::string>(tr, "resume",
+                                                         "auto")}}},
+                 {"tensor_parallel", std::move(tp)}};
+  JobRecord rec;
+  rec.id = o.id;
+  rec.op = spec.op;
+  rec.purpose = "fleet";
+  rec.title = o.title;
+  rec.runner_name = from;
+  rec.created_ms = project::now_ms();
+  _jobs.add(rec);
+  const Json about = {{"from", from}, {"title", o.title}, {"op", rec.op},
+                      {"model", o.model}, {"split", true}};
+  Json queued = about;
+  queued["state"] = "queued";
+  post_("fleet.serving", o.id, queued);
+  VALTZ_LOG_INFO("train", "{}: rank 1 of {}'s training, its state in {}",
+                 run, from, state.string());
+  return _engine->submit(
+      std::move(spec),
+      [this, sink, about, links](const engine::JobEvent& ev) {
+        Json d = about;
+        if (ev.kind == engine::JobEventKind::Started) {
+          engine::JobEvent e = ev;
+          if (!e.data.is_object()) {
+            e.data = Json::object();
+          }
+          e.data["split_links"] = links;
+          _jobs.update(ev.job, [](JobRecord& r) {
+            r.state = JobState::Running;
+          });
+          d["state"] = "running";
+          post_("fleet.serving", ev.job, d);
+          sink(e);
+          return;
+        }
+        if (ev.kind == engine::JobEventKind::Progress) {
+          d["state"] = "running";
+          d["progress"] = ev.progress;
+          d["phase"] = ev.data;
+          post_("fleet.progress", ev.job, d);
+        }
+        if (ev.terminal()) {
+          finish_job_(ev.job,
+                      ev.kind == engine::JobEventKind::Finished
+                          ? JobState::Finished
+                      : ev.kind == engine::JobEventKind::Failed
+                          ? JobState::Failed
+                          : JobState::Cancelled,
+                      ev.text);
+          d["state"] = engine::to_str(ev.kind);
+          d["message"] = ev.text;
+          post_("fleet.serving", ev.job, d);
+        }
+        sink(ev);
+      });
 }
 
 // ---- a split clip's two ranks -----------------------------------------
@@ -822,6 +1166,10 @@ Controller::run_split_(SplitPlan plan, engine::JobSpec spec,
     }
   }
   offer.params["tensor_parallel"] = plan.peer;
+  if (!plan.tuning.empty()) {
+    offer.params["tuning"].update(plan.tuning);
+    spec.params["tuning"].update(plan.tuning);
+  }
   // Its half decodes nothing: the 2K refine's fast decoder is not asked
   // of it (nor need it have one). Or it MAKES THE CLIP: decoded, written
   // and sent back there, this Mac's rank denoising alone.
@@ -868,19 +1216,24 @@ Controller::run_split_(SplitPlan plan, engine::JobSpec spec,
                               {"split", plan.name},
                               {"links", plan.links},
                               {"rdma", plan.rdma}});
-  VALTZ_LOG_INFO("fleet", "{}: split with {} -- {} link(s), {}{}; heads "
-                 "[0, {}) here; decoded {}", title, plan.name, plan.links,
-                 plan.rdma ? "RDMA" : "TCP",
-                 plan.local.contains("min_band_rows")
-                     ? std::format(", bands of {}+ rows",
-                                   plan.local["min_band_rows"].get<int>())
-                     : std::string(),
-                 jget(plan.local, "heads", Json::array()).size() == 2
-                     ? plan.local["heads"][1].get<int>()
-                     : 0,
-                 plan.split_decode ? "on both"
-                 : plan.peer_keeps ? "there"
-                                   : "here");
+  if (jget<std::string>(plan.local, "mode", "") == "data") {
+    VALTZ_LOG_INFO("fleet", "{}: data parallel with {} -- {} link(s), {}",
+                   title, plan.name, plan.links, plan.rdma ? "RDMA" : "TCP");
+  } else {
+    VALTZ_LOG_INFO("fleet", "{}: split with {} -- {} link(s), {}{}; heads "
+                   "[0, {}) here; decoded {}", title, plan.name, plan.links,
+                   plan.rdma ? "RDMA" : "TCP",
+                   plan.local.contains("min_band_rows")
+                       ? std::format(", bands of {}+ rows",
+                                     plan.local["min_band_rows"].get<int>())
+                       : std::string(),
+                   jget(plan.local, "heads", Json::array()).size() == 2
+                       ? plan.local["heads"][1].get<int>()
+                       : 0,
+                   plan.split_decode ? "on both"
+                   : plan.peer_keeps ? "there"
+                                     : "here");
+  }
   // The member's half offered -- else, not sent, the clip made whole
   // here, why said.
   const auto send = [this, s, member = plan.member,

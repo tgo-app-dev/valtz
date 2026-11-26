@@ -64,6 +64,69 @@ on_copy_status(int what, int stage, copyfile_state_t s, const char*,
 
 }
 
+namespace {
+
+struct CopyState {
+  copyfile_state_t s;
+  CopyCtx ctx;
+  explicit CopyState(const std::function<bool(std::uint64_t)>& progress)
+      : s(copyfile_state_alloc())
+  {
+    ctx.progress = &progress;
+    copyfile_state_set(s, COPYFILE_STATE_STATUS_CB,
+                       reinterpret_cast<const void*>(&on_copy_status));
+    copyfile_state_set(s, COPYFILE_STATE_STATUS_CTX, &ctx);
+  }
+  ~CopyState() { copyfile_state_free(s); }
+  CopyState(const CopyState&) = delete;
+  CopyState& operator=(const CopyState&) = delete;
+};
+
+// One regular file into its place, through a hidden name renamed into
+// place when whole.
+Status
+copy_one(const fs::path& src, const fs::path& dst, std::uint64_t bytes,
+         CopyState& cs, const std::function<bool(std::uint64_t)>& progress,
+         std::vector<fs::path>* made)
+{
+  std::error_code ec, ec2;
+  // There already, whole: taken as it.
+  if (fs::is_regular_file(dst, ec2) && fs::file_size(dst, ec2) == bytes) {
+    cs.ctx.before += bytes;
+    return {};
+  }
+  fs::create_directories(dst.parent_path(), ec);
+  const fs::path tmp = dst.parent_path() /
+                       ("." + dst.filename().string() + ".valtz-moving");
+  if (copyfile(src.c_str(), tmp.c_str(), cs.s,
+               COPYFILE_DATA | COPYFILE_STAT) != 0) {
+    const int err = errno;
+    fs::remove(tmp, ec2);
+    if (cs.ctx.stopped || err == ECANCELED) {
+      return make_error(Code::Cancelled, "stopped");
+    }
+    return make_error(Code::Io, std::format("cannot copy {}: {}",
+                                            src.string(),
+                                            std::strerror(err)));
+  }
+  fs::rename(tmp, dst, ec);
+  if (ec) {
+    fs::remove(tmp, ec2);
+    return make_error(Code::Io, std::format("cannot write {}: {}",
+                                            dst.string(), ec.message()));
+  }
+  if (made) {
+    made->push_back(dst);
+  }
+  cs.ctx.before += bytes;
+  if (progress && !progress(cs.ctx.before)) {
+    return make_error(Code::Cancelled, "stopped");
+  }
+  return {};
+}
+
+}
+
 Status
 copy_tree(const fs::path& from, const fs::path& to,
           const std::function<bool(std::uint64_t)>& progress,
@@ -75,17 +138,7 @@ copy_tree(const fs::path& from, const fs::path& to,
     return make_error(Code::Io, std::format("cannot make {}: {}",
                                             to.string(), ec.message()));
   }
-  CopyCtx ctx;
-  ctx.progress = &progress;
-  copyfile_state_t state = copyfile_state_alloc();
-  copyfile_state_set(state, COPYFILE_STATE_STATUS_CB,
-                     reinterpret_cast<const void*>(&on_copy_status));
-  copyfile_state_set(state, COPYFILE_STATE_STATUS_CTX, &ctx);
-  struct Free {
-    copyfile_state_t s;
-    ~Free() { copyfile_state_free(s); }
-  } free_state{state};
-
+  CopyState cs(progress);
   for (auto it = fs::recursive_directory_iterator(from, ec);
        it != fs::recursive_directory_iterator(); it.increment(ec)) {
     if (ec) {
@@ -115,40 +168,27 @@ copy_tree(const fs::path& from, const fs::path& to,
     if (!it->is_regular_file(ec)) {
       continue;
     }
-    const std::uint64_t bytes = it->file_size(ec);
-    // There already, whole: taken as it.
-    std::error_code ec2;
-    if (fs::is_regular_file(dst, ec2) && fs::file_size(dst, ec2) == bytes) {
-      ctx.before += bytes;
-      continue;
+    VALTZ_TRY(copy_one(src, dst, it->file_size(ec), cs, progress, made));
+  }
+  return {};
+}
+
+Status
+copy_files(const fs::path& from, const fs::path& to,
+           const std::vector<fs::path>& rels,
+           const std::function<bool(std::uint64_t)>& progress,
+           std::vector<fs::path>* made)
+{
+  CopyState cs(progress);
+  std::error_code ec;
+  for (const auto& rel : rels) {
+    const fs::path src = from / rel;
+    if (!fs::is_regular_file(src, ec)) {
+      return make_error(Code::NotFound, std::format("{} is not there",
+                                                    src.string()));
     }
-    fs::create_directories(dst.parent_path(), ec);
-    const fs::path tmp = dst.parent_path() /
-                         ("." + dst.filename().string() + ".valtz-moving");
-    if (copyfile(src.c_str(), tmp.c_str(), state,
-                 COPYFILE_DATA | COPYFILE_STAT) != 0) {
-      const int err = errno;
-      fs::remove(tmp, ec2);
-      if (ctx.stopped || err == ECANCELED) {
-        return make_error(Code::Cancelled, "stopped");
-      }
-      return make_error(Code::Io, std::format("cannot copy {}: {}",
-                                              src.string(),
-                                              std::strerror(err)));
-    }
-    fs::rename(tmp, dst, ec);
-    if (ec) {
-      fs::remove(tmp, ec2);
-      return make_error(Code::Io, std::format("cannot write {}: {}",
-                                              dst.string(), ec.message()));
-    }
-    if (made) {
-      made->push_back(dst);
-    }
-    ctx.before += bytes;
-    if (progress && !progress(ctx.before)) {
-      return make_error(Code::Cancelled, "stopped");
-    }
+    VALTZ_TRY(copy_one(src, to / rel, fs::file_size(src, ec), cs,
+                       progress, made));
   }
   return {};
 }

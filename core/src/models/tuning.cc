@@ -155,6 +155,21 @@ taomate_preset(const Json& vp, const TuningContext& ctx,
          ctx.ram_gb >= jget(tm, "min_ram_gb", 0u);
 }
 
+// A preset's shifts for an adapter with its VERSION's laid over them:
+// the version is what was distilled at them.
+Json
+with_version_config(Json preset, const Json& version)
+{
+  if (!preset.is_object()) {
+    preset = Json::object();
+  }
+  for (auto it = version.begin(); version.is_object() && it != version.end();
+       ++it) {
+    preset[it.key()] = it.value();
+  }
+  return preset;
+}
+
 // The few-step adapter a preference runs with: its table's candidates in
 // order, the first installed taken (each with its own steps and shifts);
 // a model with no table for it, its `turbo` block's LoRA when installed.
@@ -182,7 +197,8 @@ pick_turbo(const ModelEntry& m, const TuningContext& ctx,
         t.name = it->second.name;
         t.path = it->second.path;
         t.steps = jget(cand, "steps", 0);
-        t.config = jget(cand, "config", Json::object());
+        t.config = with_version_config(jget(cand, "config", Json::object()),
+                                       it->second.config);
         t.missing = Json::array();
         return t;
       }
@@ -197,7 +213,8 @@ pick_turbo(const ModelEntry& m, const TuningContext& ctx,
     t.id = jget<std::string>(turbo, "lora", "");
     t.name = ctx.turbo_name;
     t.path = ctx.turbo_path;
-    t.config = jget(turbo, "config", Json::object());
+    t.config = with_version_config(jget(turbo, "config", Json::object()),
+                                   ctx.turbo_config);
   }
   return t;
 }
@@ -394,14 +411,14 @@ declared_offers(const Json& vp, const TuningContext& ctx,
 {
   static const std::set<std::string> kOwn = {
     "steps", "loras", "dits", "vaes", "hyperflow", "pika_flex", "pi_h3",
-    "pi_h3_steps", "pi_h3_vae",
+    "pi_h3_steps", "pi_h3_vae", "hyperflow_flash", "hyperflow_flash_steps",
     "taomate", "vdn", "vdn_range",
     "sol_attn", "sol_threshold",
     "sol_tau", "sage_attn", "sage_pv8", "sage_pv8_all_rows", "i8_gemm",
     "i8_gemm_tier", "vae_i8_gemm",
     "vae_i8_gemm_tier", "ane_ffn", "ane_qkv", "ane_int8", "ane_int8_tier",
     "motion_cache", "video_shift", "audio_shift", "shift", "turbo",
-    "fast_decoder", "refine_start"};
+    "fast_decoder", "refine_start", "preview"};
   for (const auto& d : jget(vp, "options", Json::array())) {
     const auto key = jget<std::string>(d, "key", "");
     const auto type = jget<std::string>(d, "type", "bool");
@@ -637,6 +654,52 @@ offers(const ModelEntry& m, const TuningContext& ctx,
     d.preset = false;
     d.needs = "pi_h3";
     out.push_back(std::move(d));
+  }
+  // HyperFlow H3 Flash: Video Rebirth's compressed few-step H3, a DiT of
+  // its own (blocks left out, low-rank projections, the two-time
+  // embedding built in) -- which the controller names as generate-video's
+  // dit_dir -- sampled on its own 4, 6 or 8-step grid, the graph's
+  // `steps` choosing; the base's encoder and VAEs. No LoRA slot of its
+  // own: the Turbo LoRA off (settle_loras), a flow-map or sampler adapter
+  // beside it refused, MotionCache, VDN (trained per block on all 50)
+  // and TaoMate's streaming not offered. Custom's alone. Its shifts are
+  // the release's 12 / 3.
+  if (const Json fl = jget(vp, "hyperflow_flash", Json()); fl.is_object()) {
+    const auto asked = [&](const char* k, const Json& d) {
+      return overrides.is_object() && overrides.contains(k)
+                 ? overrides[k] : d;
+    };
+    const Json st = asked("hyperflow_flash_steps", Json("6"));
+    const std::string steps =
+        st.is_string() ? st.get<std::string>()
+        : st.is_number() ? std::to_string(st.get<int>()) : "6";
+    Offer o{"hyperflow_flash", Kind::Bool};
+    o.available = ctx.flash_installed && !edit;
+    o.why = edit ? "not-for-model" : o.available ? "" : "not-installed";
+    o.preset = false;
+    // With pi-H3 (its adapter on Flash's blocks, on the stock curve):
+    // pi-H3's sampler and steps; Flash's grids unused.
+    const Json pi_asked = asked("pi_h3", Json(false));
+    const bool with_pi = pi_asked.is_boolean() && pi_asked.get<bool>();
+    if (!with_pi) {
+      o.fixes = {{"steps", steps == "4" ? 4 : steps == "8" ? 8 : 6}};
+    }
+    const Json fx = jget(fl, "fixes", Json::object());
+    for (auto it = fx.begin(); it != fx.end(); ++it) {
+      o.fixes[it.key()] = it.value();
+    }
+    o.excludes = Json::array({"hyperflow", "pika_flex", "taomate",
+                              "motion_cache", "vdn"});
+    const bool available = o.available;
+    const std::string why = o.why;
+    out.push_back(std::move(o));
+    Offer s{"hyperflow_flash_steps", Kind::Choice};
+    s.available = available;
+    s.why = why;
+    s.choices = Json::array({"6", "4", "8"});
+    s.preset = "6";
+    s.needs = "hyperflow_flash";
+    out.push_back(std::move(s));
   }
   // TaoMate-H3: a streaming METHOD with its own adapter, not a few-step
   // LoRA -- an alternative Custom offers, which no preset picks:
@@ -920,7 +983,10 @@ offers(const ModelEntry& m, const TuningContext& ctx,
     o.preset = false;
     out.push_back(std::move(o));
   }
-  if (!sound && !upscale) {
+  // A model that runs no weights of one's own (catalog `weights` false:
+  // MAGI-2, whose family binds no adapter or checkpoint) offers none.
+  const bool own_weights = jget(vp, "weights", true);
+  if (!sound && !upscale && own_weights) {
     // LoRAs, the few-step one among them: a preset's is the catalog's
     // Turbo LoRA (when installed), on; others are one's own. Up to two
     // on -- vpipe's slots, `lora` .. `lora8` (kLoraSlots).
@@ -985,7 +1051,10 @@ offers(const ModelEntry& m, const TuningContext& ctx,
                           ? lora_file(it->second.path)
                           : std::string()},
              {"steps", steps},
-             {"config", config.is_object() ? config : Json::object()}});
+             {"config", known ? with_version_config(config,
+                                                    it->second.config)
+                              : config.is_object() ? config
+                                                   : Json::object()}});
       };
       if (block.is_object()) {
         const Json st = jget(block, "steps", Json());
@@ -1040,7 +1109,7 @@ offers(const ModelEntry& m, const TuningContext& ctx,
   // Speech has neither: its codec is its own.
   const bool speech = jget(vp, "speech", Json()).is_object();
   for (const char* part : {"dits", "vaes"}) {
-    if (speech || upscale ||
+    if (speech || upscale || !own_weights ||
         (sound && std::string_view(part) == "dits")) {
       continue;
     }
@@ -1185,6 +1254,18 @@ offers(const ModelEntry& m, const TuningContext& ctx,
       }
       out.push_back(std::move(o));
     }
+  }
+  // The LIVE PREVIEW (its TAE's frames each step; a clip past 768P, its
+  // draft decoded for the stage too), last: on unless switched off --
+  // the request's `preview` false, as valtzctl's --no-preview. A model
+  // with a TAE (`preview_with`), or a clip model regenerated past its size
+  // (its draft shown). No preset turns it off.
+  if (((m.role == "video" || m.role == "image") &&
+       !m.preview_with.empty()) ||
+      (m.role == "video" && jget(vp, "regenerate", Json()).is_object())) {
+    Offer p{"preview", Kind::Bool};
+    p.preset = true;
+    out.push_back(std::move(p));
   }
   return out;
 }
@@ -1348,6 +1429,13 @@ settle_loras(const Offer& o, Json& values, const Json& overrides)
                        jget(values, "taomate", false);
   if (adapter) {
     --slots;
+    if (Json* l = find(turbo)) {
+      (*l)["on"] = false;
+    }
+  }
+  // HyperFlow H3 Flash is a DiT distilled to its own steps: a Turbo
+  // LoRA trained on the released one has no place on it.
+  if (jget(values, "hyperflow_flash", false)) {
     if (Json* l = find(turbo)) {
       (*l)["on"] = false;
     }

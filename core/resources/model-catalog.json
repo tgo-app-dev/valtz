@@ -77,7 +77,7 @@
                "p-h3-image"]
     },
     "video": {
-      "generate": ["minimax-h3-fl2va", "minimax-h3-ref2va"],
+      "generate": ["minimax-h3-fl2va", "minimax-h3-ref2va", "magi2-preview"],
       "edit": ["minimax-h3-ref2va"]
     },
     "audio": {
@@ -97,6 +97,8 @@
         {"model": "taeh3", "label": "TAE"},
         {"model": "minimax-h3-pika-flex", "label": "Pika H3 Flex adapter, FL2VA (6-step)"},
         {"model": "minimax-h3-ref2va-pika-flex", "label": "Pika H3 Flex adapter, Ref2VA (6-step)"},
+        {"model": "minimax-h3-fl2va-hyperflow-flash", "label": "HyperFlow H3 Flash, FL2VA (4-8 steps, 16 GB)"},
+        {"model": "minimax-h3-ref2va-hyperflow-flash", "label": "HyperFlow H3 Flash, Ref2VA (4-8 steps, 16 GB)"},
         {"model": "minimax-h3-fl2va-pruned-int8", "label": "pi-H3's pruned FL2VA DiT, int8 (Comfy-Org, 21 GB)"},
         {"model": "minimax-h3-fl2va-pruned-bf16", "label": "pi-H3's pruned FL2VA DiT, bf16 (Comfy-Org, 40 GB)"},
         {"model": "minimax-h3-pi-4step-dwd", "label": "pi-H3 adapter, 4-step DWD (no VAE decoder; recommended)"},
@@ -123,6 +125,13 @@
         {"model": "open-h3-regenerate-2k-ic", "label": "Open-H3-Regenerate-2K-IC refiner (NVIDIA): clips past 768P, the draft in context"},
         {"model": "open-h3-ic-sharp", "label": "LMS Sharp (for the IC refiner)"},
         {"model": "open-h3-fast-vae-v2", "label": "Fast decoder v2 (for the IC refiner, lossy)"}
+      ]
+    },
+    {
+      "id": "magi2", "name": "MAGI-2",
+      "features": ["video-gen"],
+      "members": [
+        {"model": "magi2-preview", "label": "MAGI-2-preview"}
       ]
     },
     {
@@ -1197,6 +1206,8 @@
             }
           },
           "hyperflow": {"lora": "minimax-h3-hyperflow", "steps": 8},
+          "hyperflow_flash": {"dit": "minimax-h3-fl2va-hyperflow-flash",
+                              "split_tier": "token", "fixes": {"video_shift": 12, "audio_shift": 3}},
           "pika_flex": {"lora": "minimax-h3-pika-flex", "steps": 6,
                         "fixes": {"video_shift": 12, "audio_shift": 3}},
           "pi_h3": {"dits": ["minimax-h3-fl2va-pruned-int8",
@@ -1205,6 +1216,7 @@
                                  "2-dwd": "minimax-h3-pi-2step-dwd",
                                  "4": "minimax-h3-pi-4step",
                                  "2": "minimax-h3-pi-2step"},
+                    "split_tier": {"minimax-h3-fl2va-pruned-int8": "token"},
                     "fixes": {"video_shift": 12, "audio_shift": 3}},
           "taomate": {"lora": "minimax-h3-turbo-3step", "steps": 3,
                       "fixes": {"video_shift": 12, "audio_shift": 3},
@@ -1315,6 +1327,8 @@
             "config": {"video_shift": 6.0}
           },
           "hyperflow": {"lora": "minimax-h3-hyperflow", "steps": 8},
+          "hyperflow_flash": {"dit": "minimax-h3-ref2va-hyperflow-flash",
+                              "split_tier": "token", "fixes": {"video_shift": 12, "audio_shift": 3}},
           "pika_flex": {"lora": "minimax-h3-ref2va-pika-flex", "steps": 6,
                         "fixes": {"video_shift": 12, "audio_shift": 3}},
           "regenerate": {"with": ["open-h3-regenerate-2k", "open-h3-regenerate-2k-ic"], "above": 768,
@@ -2269,6 +2283,9 @@
       "license": "minimax",
       "notes": "Pika Labs' six-step post-training of the Ref2VA partition (rank 128, FP32): up to twelve pictures, clips and sounds referenced. Sampled as its manifest.json states (its grid at shifts 12 / 3, each step re-noised; vpipe 24246ed1), six steps. Takes the adapter slot the Turbo LoRA would; refused beside HyperFlow. Favor's Custom: Pika H3 Flex."
     },
+    {"id": "magi2-preview", "name": "MAGI-2-preview", "family": "magi2", "role": "video", "hf_path": "sand-ai/MAGI-2-preview", "check": {"files": ["preview/model.safetensors.index.json", "refiner/model.safetensors.index.json", "text_encoder/config.json", "text_encoder/model.safetensors.index.json", "turbo_vae/checkpoint.ckpt", "stable-audio-open-1.0/model.safetensors", "vae/Wan2.2_VAE.pth"], "scan": true}, "capabilities": ["text-to-video", "image-to-video", "audio-output"], "disk_gb": 307, "disk_measured": false, "min_ram_gb": 64, "rank": 1, "license": "apache-2.0", "prompting": {"enhance": {"generate": "magi2-t2v", "first": "magi2-i2v"}}, "notes": "sand-ai's MAGI-2-preview: a 10-second clip with its soundtrack from words, or words and a picture, by a 114B mixture-of-experts DiT conditioned on Qwen3.5-27B -- 896 x 512 at 12.5 fps, 125 frames (what it was trained on). Asked past 544 on the short side (Large, 768P, or 1080p typed), the preview is made at 512 and refined by its 1080p refiner to the size asked, at 25 fps. Its 228 GB DiT streams its experts from the drive each step, so the drive is the cost: keep it on the fastest one. Slow: Fine's 100 steps take over an hour on an M5 Ultra (Fast 20, Med 50), a 1080p refine 10-17 minutes more there; 1080p wants 96 GB of memory or more. Apache-2.0.", "engine": {"vpipe": {"tensor_parallel": {"heads": 24, "ffn": 256, "needs": "magi2", "adapters": false}, "config_stage": "magi2-model-config", "weights": false, "config": {"video_guidance": 5.0, "audio_guidance": 7.0}, "config_steps": true, "config_shift": 7.0, "negative": "conditioner", "keyframes_to_encoder": true, "conditioner": {"unload_when_idle": "always"}, "generate": {"unload_when_idle": "always"}, "defaults": {"width": 896, "height": 512, "frames": 125, "fps": 12.5, "steps": 100}, "align": 32, "frame_grid": {"step": 4, "offset": 1}, "refine": {"above": 544, "preview": 512, "fps": 25.0, "align": 16}, "first_frame": true, "accel": ["sage_attn", "sage_pv8", "i8_gemm", "i8_gemm_tier"], "presets": {"speed": {"steps": 20, "sage_attn": true, "sage_pv8": true, "i8_gemm": true, "i8_gemm_tier": "token"}, "balanced": {"steps": 50, "sage_attn": true, "sage_pv8": true, "i8_gemm": true, "i8_gemm_tier": "token"}, "quality": {"steps": 100, "sage_attn": true, "sage_pv8": false, "i8_gemm": true, "i8_gemm_tier": "accurate"}}, "options": [{"key": "video_guidance", "type": "real", "min": 1.0, "max": 10.0, "step": 0.5, "default": 5.0, "stage": "config", "group": "steps", "label": "Video guidance", "note": "CFG of the picture against its negative prompt (5: its own); 1 runs one pass a step"}, {"key": "audio_guidance", "type": "real", "min": 1.0, "max": 10.0, "step": 0.5, "default": 7.0, "stage": "config", "group": "steps", "label": "Audio guidance", "note": "CFG of the soundtrack (7: its own)"}, {"key": "refine_steps", "type": "int", "min": 1, "max": 20, "step": 1, "default": 5, "stage": "config", "group": "schedule", "label": "Refine steps", "note": "The 1080p refine's steps, past 544 on the short side (5: its own)"}, {"key": "refine_guidance", "type": "real", "min": 1.0, "max": 6.0, "step": 0.5, "default": 2.0, "stage": "config", "group": "schedule", "label": "Refine guidance", "note": "The refine's CFG (2: its own); 1 runs one forward a step"}]}}},
+    {"id": "minimax-h3-fl2va-hyperflow-flash", "name": "MiniMax H3 FL2VA HyperFlow H3 Flash DiT, int8", "family": "minimax-h3", "role": "dit", "hf_path": "VideoRebirthAI/hyperflow-h3-flash", "file": "fl2va_int8_convrot_comfyui/minimax_h3_fl2va_hyperflow_flash_14b-int8_convrot.safetensors", "fetch_variant": "VideoRebirthAI/hyperflow-h3-flash-fl2va-int8-convrot", "check": {"tensors": ["endpoint_time_embedder.proj_in.weight"]}, "capabilities": [], "disk_gb": 16.0, "disk_measured": true, "min_ram_gb": 16, "rank": 0, "license": "minimax", "notes": "Video Rebirth's HyperFlow H3 Flash: MiniMax H3 FL2VA compressed (13.7B: blocks left out, low-rank projections, ComfyUI int8 ConvRot) and distilled to 4, 6 or 8 steps, its two-time embedding built in (vpipe: HyperFlow H3 Flash). Custom's HyperFlow H3 Flash runs it; its text encoder and VAEs are FL2VA's, which must be here too. MiniMax H3 Community License."},
+    {"id": "minimax-h3-ref2va-hyperflow-flash", "name": "MiniMax H3 Ref2VA HyperFlow H3 Flash DiT, int8", "family": "minimax-h3", "role": "dit", "hf_path": "VideoRebirthAI/hyperflow-h3-flash", "file": "ref2va_int8_convrot_comfyui/minimax_h3_ref2va_hyperflow_flash_14b-int8_convrot.safetensors", "fetch_variant": "VideoRebirthAI/hyperflow-h3-flash-ref2va-int8-convrot", "check": {"tensors": ["endpoint_time_embedder.proj_in.weight"]}, "capabilities": [], "disk_gb": 16.4, "disk_measured": true, "min_ram_gb": 16, "rank": 0, "license": "minimax", "notes": "Video Rebirth's HyperFlow H3 Flash for Ref2VA (13.9B, block 9 left out), 4, 6 or 8 steps. Custom's HyperFlow H3 Flash runs it; its encoder and VAEs are Ref2VA's. MiniMax H3 Community License."},
     {"id": "minimax-h3-fl2va-pruned-int8", "name": "MiniMax H3 FL2VA pruned DiT, int8 (pi-H3's base)", "family": "minimax-h3", "role": "dit", "hf_path": "Comfy-Org/MiniMax-H3", "file": "diffusion_models/minimax_h3_fl2va_pruned_int8_convrot.safetensors", "fetch_variant": "Comfy-Org/MiniMax-H3-FL2VA-pruned-int8-convrot", "check": {"tensors": ["adaln_t_table"]}, "capabilities": [], "disk_gb": 21.0, "disk_measured": true, "min_ram_gb": 16, "rank": 0, "license": "minimax", "notes": "Comfy-Org's PRUNED FL2VA DiT -- each block's AdaLN folded onto the time embedding's curve -- in ComfyUI's int8 ConvRot, the one ComfyUI-piFlow runs: what pi-H3's adapters are trained on and run over (vpipe 7b863a88). Its text encoder and VAEs are FL2VA's, which must be here too. MiniMax H3 Community License."},
     {"id": "minimax-h3-fl2va-pruned-bf16", "name": "MiniMax H3 FL2VA pruned DiT, bf16 (pi-H3's base)", "family": "minimax-h3", "role": "dit", "hf_path": "Comfy-Org/MiniMax-H3", "file": "diffusion_models/minimax_h3_fl2va_pruned_bf16.safetensors", "fetch_variant": "Comfy-Org/MiniMax-H3-FL2VA-pruned-bf16", "check": {"tensors": ["adaln_t_table"]}, "capabilities": [], "disk_gb": 40.2, "disk_measured": true, "min_ram_gb": 16, "rank": 0, "license": "minimax", "notes": "The pruned FL2VA DiT at bf16: pi-H3's base where the int8 copy is not here (the int8 one is taken first). MiniMax H3 Community License."},
     {"id": "minimax-h3-pi-4step-dwd", "name": "MiniMax H3 pi-H3 4-step DWD adapter", "family": "minimax-h3", "role": "lora", "hf_path": "Lakonik/pi-H3", "file": "pi_h3_4step_dwd_adapter/diffusion_pytorch_model.safetensors", "beside": ["config.json"], "fetch_variant": "Lakonik/pi-H3-4step-dwd", "check": {"tensors": ["lora", "dwd_"]}, "capabilities": [], "disk_gb": 3.8, "disk_measured": true, "min_ram_gb": 16, "rank": 0, "license": "minimax", "notes": "Lakonik's pi-Flow v2 4-step distillation of FL2VA (Hansheng Chen et al.): a rank-64 LoRA plus whole-tensor overwrites of the pruned DiT's AdaLN, output norm and heads, and blocks 46-49 -- with DWD's pixel head, the last step's features decoded straight to frames, no VAE decoder (the release's recommendation). Runs only on the pruned DiT; its grid (4 Euler steps at shifts 12 / 3) read by vpipe off its header and folder (vpipe 7b863a88). Favor's Custom: pi-H3. MiniMax H3 Community License."},
@@ -2452,10 +2469,55 @@
       "check": {"tensors": ["lora"]},
       "file": "minimax_h3_fl2v_turbo_4step_v1.2_768p_bf16.safetensors",
       "fetch_variant": "lightx2v/Minimax-h3-Turbo-4step-768p-v1.2",
+      "version": "v1.2",
+      "versions": ["minimax-h3-turbo-4step-v1.3", "minimax-h3-turbo-4step", "minimax-h3-turbo-4step-v1.1", "minimax-h3-turbo-4step-v1.0"],
+      "engine": {"vpipe": {"config": {"video_shift": 6.0}}},
       "capabilities": [],
       "disk_gb": 1.4, "disk_measured": false, "min_ram_gb": 16, "rank": 0,
       "license": "",
       "notes": "lightx2v's 4-step Turbo for FL2VA (v1.2, 768p), distilled at video shift 6."
+    },
+    {
+      "id": "minimax-h3-turbo-4step-v1.3", "name": "MiniMax H3 FL2VA 4-step LoRA v1.3",
+      "family": "minimax-h3", "role": "lora",
+      "hf_path": "lightx2v/Minimax-h3-Turbo",
+      "check": {"tensors": ["lora"]},
+      "file": "minimax_h3_fl2v_turbo_4step_v1.3_768p_bf16.safetensors",
+      "fetch_variant": "lightx2v/Minimax-h3-Turbo-4step-768p-v1.3",
+      "version": "v1.3", "version_of": "minimax-h3-turbo-4step",
+      "engine": {"vpipe": {"config": {"video_shift": 6.0}}},
+      "capabilities": [],
+      "disk_gb": 1.4, "disk_measured": false, "min_ram_gb": 16, "rank": 0,
+      "license": "",
+      "notes": "lightx2v's 4-step Turbo for FL2VA (v1.3, 768p), at video shift 6 as the 768p line."
+    },
+    {
+      "id": "minimax-h3-turbo-4step-v1.1", "name": "MiniMax H3 FL2VA 4-step LoRA v1.1",
+      "family": "minimax-h3", "role": "lora",
+      "hf_path": "lightx2v/Minimax-h3-Turbo",
+      "check": {"tensors": ["lora"]},
+      "file": "minimax_h3_fl2v_turbo_4step_v1.1_768p_bf16.safetensors",
+      "fetch_variant": "lightx2v/Minimax-h3-Turbo-4step-768p-v1.1",
+      "version": "v1.1", "version_of": "minimax-h3-turbo-4step",
+      "engine": {"vpipe": {"config": {"video_shift": 6.0}}},
+      "capabilities": [],
+      "disk_gb": 1.4, "disk_measured": false, "min_ram_gb": 16, "rank": 0,
+      "license": "",
+      "notes": "lightx2v's 4-step Turbo for FL2VA (v1.1, 768p), at video shift 6."
+    },
+    {
+      "id": "minimax-h3-turbo-4step-v1.0", "name": "MiniMax H3 FL2VA 4-step LoRA v1.0",
+      "family": "minimax-h3", "role": "lora",
+      "hf_path": "lightx2v/Minimax-h3-Turbo",
+      "check": {"tensors": ["lora"]},
+      "file": "minimax_h3_fl2v_turbo_4step_v1.0_768p_bf16.safetensors",
+      "fetch_variant": "lightx2v/Minimax-h3-Turbo-4step-768p-v1.0",
+      "version": "v1.0", "version_of": "minimax-h3-turbo-4step",
+      "engine": {"vpipe": {"config": {"video_shift": 6.0}}},
+      "capabilities": [],
+      "disk_gb": 1.4, "disk_measured": false, "min_ram_gb": 16, "rank": 0,
+      "license": "",
+      "notes": "lightx2v's 4-step Turbo for FL2VA (v1.0, 768p), distilled at video shift 6."
     },
     {
       "id": "minimax-h3-ref2va-turbo-4step",
@@ -2465,10 +2527,27 @@
       "check": {"tensors": ["lora"]},
       "file": "minimax_h3_ref2v_turbo_4step_v0.1_comfyui_bf16.safetensors",
       "fetch_variant": "lightx2v/Minimax-h3-Turbo-ref2va-4step",
+      "version": "v0.1",
+      "versions": ["minimax-h3-ref2va-turbo-4step-v1.0", "minimax-h3-ref2va-turbo-4step"],
+      "engine": {"vpipe": {"config": {"video_shift": 12.0}}},
       "capabilities": [],
       "disk_gb": 1.4, "disk_measured": false, "min_ram_gb": 16, "rank": 0,
       "license": "",
       "notes": "lightx2v's 4-step Turbo for the Ref2VA partition (v0.1, ComfyUI keys)."
+    },
+    {
+      "id": "minimax-h3-ref2va-turbo-4step-v1.0", "name": "MiniMax H3 Ref2VA 4-step LoRA v1.0",
+      "family": "minimax-h3", "role": "lora",
+      "hf_path": "lightx2v/Minimax-h3-Turbo",
+      "check": {"tensors": ["lora"]},
+      "file": "minimax_h3_ref2v_turbo_4step_v1.0_768p_bf16.safetensors",
+      "fetch_variant": "lightx2v/Minimax-h3-Turbo-ref2va-4step-768p-v1.0",
+      "version": "v1.0", "version_of": "minimax-h3-ref2va-turbo-4step",
+      "engine": {"vpipe": {"config": {"video_shift": 6.0}}},
+      "capabilities": [],
+      "disk_gb": 1.4, "disk_measured": false, "min_ram_gb": 16, "rank": 0,
+      "license": "",
+      "notes": "lightx2v's 4-step Turbo for the Ref2VA partition (v1.0, 768p), at video shift 6 as the 768p line (v0.1 ran at 12)."
     },
     {
       "id": "minimax-h3-turbo-8step", "name": "MiniMax H3 FL2VA 8-step LoRA",
@@ -2477,10 +2556,41 @@
       "check": {"tensors": ["lora"]},
       "file": "minimax_h3_fl2v_turbo_8step_v1.0_768p_bf16.safetensors",
       "fetch_variant": "lightx2v/Minimax-h3-Turbo-8step-768p-split",
+      "version": "v1.0",
+      "versions": ["minimax-h3-turbo-8step-v1.2", "minimax-h3-turbo-8step-v1.1", "minimax-h3-turbo-8step"],
+      "engine": {"vpipe": {"config": {"video_shift": 6.0}}},
       "capabilities": [],
       "disk_gb": 1.4, "disk_measured": false, "min_ram_gb": 16, "rank": 0,
       "license": "",
       "notes": "lightx2v's 8-step Turbo for FL2VA (v1.0, 768p, video shift 6)."
+    },
+    {
+      "id": "minimax-h3-turbo-8step-v1.2", "name": "MiniMax H3 FL2VA 8-step LoRA v1.2",
+      "family": "minimax-h3", "role": "lora",
+      "hf_path": "lightx2v/Minimax-h3-Turbo",
+      "check": {"tensors": ["lora"]},
+      "file": "minimax_h3_fl2v_turbo_8step_v1.2_768p_bf16.safetensors",
+      "fetch_variant": "lightx2v/Minimax-h3-Turbo-8step-768p-v1.2",
+      "version": "v1.2", "version_of": "minimax-h3-turbo-8step",
+      "engine": {"vpipe": {"config": {"video_shift": 6.0}}},
+      "capabilities": [],
+      "disk_gb": 1.5, "disk_measured": false, "min_ram_gb": 16, "rank": 0,
+      "license": "",
+      "notes": "lightx2v's 8-step Turbo for FL2VA (v1.2, 768p, video shift 6): it adapts the final AdaLN too, each module at its own alpha."
+    },
+    {
+      "id": "minimax-h3-turbo-8step-v1.1", "name": "MiniMax H3 FL2VA 8-step LoRA v1.1",
+      "family": "minimax-h3", "role": "lora",
+      "hf_path": "lightx2v/Minimax-h3-Turbo",
+      "check": {"tensors": ["lora"]},
+      "file": "minimax_h3_fl2v_turbo_8step_v1.1_768p_bf16.safetensors",
+      "fetch_variant": "lightx2v/Minimax-h3-Turbo-8step-768p-v1.1",
+      "version": "v1.1", "version_of": "minimax-h3-turbo-8step",
+      "engine": {"vpipe": {"config": {"video_shift": 6.0}}},
+      "capabilities": [],
+      "disk_gb": 1.4, "disk_measured": false, "min_ram_gb": 16, "rank": 0,
+      "license": "",
+      "notes": "lightx2v's 8-step Turbo for FL2VA (v1.1, 768p, video shift 6)."
     },
     {
       "id": "minimax-h3-ref2va-turbo-8step",
@@ -2490,10 +2600,27 @@
       "check": {"tensors": ["lora"]},
       "file": "minimax_h3_ref2v_turbo_8step_v1.0_768p_bf16.safetensors",
       "fetch_variant": "lightx2v/Minimax-h3-Turbo-ref2va-8step-768p",
+      "version": "v1.0",
+      "versions": ["minimax-h3-ref2va-turbo-8step-v1.1", "minimax-h3-ref2va-turbo-8step"],
+      "engine": {"vpipe": {"config": {"video_shift": 6.0}}},
       "capabilities": [],
       "disk_gb": 1.4, "disk_measured": false, "min_ram_gb": 16, "rank": 0,
       "license": "",
       "notes": "lightx2v's 8-step Turbo for the Ref2VA partition (v1.0, 768p)."
+    },
+    {
+      "id": "minimax-h3-ref2va-turbo-8step-v1.1", "name": "MiniMax H3 Ref2VA 8-step LoRA v1.1",
+      "family": "minimax-h3", "role": "lora",
+      "hf_path": "lightx2v/Minimax-h3-Turbo",
+      "check": {"tensors": ["lora"]},
+      "file": "minimax_h3_ref2v_turbo_8step_v1.1_768p_bf16.safetensors",
+      "fetch_variant": "lightx2v/Minimax-h3-Turbo-ref2va-8step-768p-v1.1",
+      "version": "v1.1", "version_of": "minimax-h3-ref2va-turbo-8step",
+      "engine": {"vpipe": {"config": {"video_shift": 6.0}}},
+      "capabilities": [],
+      "disk_gb": 1.4, "disk_measured": false, "min_ram_gb": 16, "rank": 0,
+      "license": "",
+      "notes": "lightx2v's 8-step Turbo for the Ref2VA partition (v1.1, 768p, video shift 6)."
     },
     {
       "id": "qwen-image-21-turbo", "name": "Qwen-Image 2.1 Turbo LoRA",

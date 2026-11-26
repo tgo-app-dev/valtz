@@ -481,6 +481,9 @@ private struct MemberRow: View {
             .help(m.notes.isEmpty ? m.hfPath : m.notes)
             .settingsMark(m.label, m.name, scope: m.model)
             roleTag
+            if let vs = m.versions {
+                versionMenu(vs)
+            }
             Spacer(minLength: 8)
             Text(verbatim: size)
                 .font(.callout.monospacedDigit())
@@ -532,6 +535,62 @@ private struct MemberRow: View {
             actions
         }
         .padding(.vertical, 2)
+    }
+
+    /// A line of versions' pop-up: Automatic (the newest here), or one
+    /// by name -- each marked downloaded or not. Chosen, the row is that
+    /// version: its Download, link and delete are that file's.
+    private func versionMenu(_ vs: CapabilityTree.Versions) -> some View {
+        let shown = member.version ?? ""
+        return HStack(spacing: 4) {
+            Menu {
+                Button {
+                    model.setModelVersion(line: vs.line, version: "")
+                } label: {
+                    if vs.chosen.isEmpty {
+                        Label("Automatic (Newest Downloaded)",
+                              systemImage: "checkmark")
+                    } else {
+                        Text("Automatic (Newest Downloaded)")
+                    }
+                }
+                Divider()
+                ForEach(vs.versions) { v in
+                    Button {
+                        model.setModelVersion(line: vs.line, version: v.model)
+                    } label: {
+                        let words = v.state == "installed"
+                            ? String(localized: "\(v.version) · Downloaded")
+                            : String(localized: "\(v.version) · Not Downloaded")
+                        if vs.chosen == v.model {
+                            Label(words, systemImage: "checkmark")
+                        } else {
+                            Text(verbatim: words)
+                        }
+                    }
+                }
+            } label: {
+                Text(verbatim: shown)
+                    .font(.caption.monospacedDigit())
+            }
+            .menuStyle(.borderlessButton)
+            .fixedSize()
+            .help(vs.chosen.isEmpty
+                  ? String(localized: "Version \(shown), the newest downloaded. Choose another to run it.")
+                  : String(localized: "Version \(shown), chosen. Automatic runs the newest downloaded."))
+            if let n = vs.newer {
+                Text("\(n.version) available")
+                    .lineLimit(1)
+                    .fixedSize()
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(Color.accentColor)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 1)
+                    .background(Color.accentColor.opacity(0.12),
+                                in: Capsule())
+                    .help("A newer version: choose it in the pop-up, then download it")
+            }
+        }
     }
 
     @ViewBuilder
@@ -586,7 +645,8 @@ private struct MemberRow: View {
 
     private var where_: String {
         switch member.source {
-        case "valtz": String(localized: "Valtz")
+        case "valtz": member.storage == "slow"
+            ? String(localized: "Slow Storage") : String(localized: "Valtz")
         case "vpipe": String(localized: "vpipe")
         case "link": String(localized: "Linked")
         default: ""
@@ -635,14 +695,17 @@ private struct MemberRow: View {
             ? String(localized: "Download from \(sourceTitle(from)) into the models folder Valtz manages")
             : String(localized: "Download into the models folder Valtz manages")
         let copies = m.fleet ?? []
-        if let host = m.host, !host.isEmpty, copies.isEmpty {
+        // A slow models folder set: a download can go there instead (a
+        // paused one goes on where it began).
+        let slow = !resume && model.capabilityTree?.slowStorage != nil
+        if let host = m.host, !host.isEmpty, copies.isEmpty, !slow {
             // Its makers' own file, not a hub's: no source to choose.
             Button(resume ? "Resume" : "Download") {
                 model.startDownload(m, from: from)
             }
             .disabled(!m.fits)
             .help(String(localized: "Download from \(host), where its makers publish it -- not a model hub: Valtz fetches their file, checks it is the one it knows and keeps the weights in the models folder it manages"))
-        } else if sources.count > 1 || !copies.isEmpty {
+        } else if sources.count > 1 || !copies.isEmpty || slow {
             Menu {
                 if let host = m.host, !host.isEmpty {
                     Button(resume ? "Resume from \(host)"
@@ -651,6 +714,17 @@ private struct MemberRow: View {
                     }
                 } else {
                     hubSources(m, resume: resume)
+                }
+                if slow {
+                    Divider()
+                    Button("Download to Slow Storage") {
+                        model.startDownload(m, from: from, storage: "slow")
+                    }
+                    .disabled(model.capabilityTree?.slowStorage?.there
+                              != true)
+                    .help(model.capabilityTree?.slowStorage?.there == true
+                          ? String(localized: "Download from \(sourceTitle(from)) into the slow models folder: for a model used now and then -- it loads more slowly from there")
+                          : String(localized: "The slow models folder is not there: is its drive connected?"))
                 }
                 if !copies.isEmpty {
                     Divider()
@@ -739,7 +813,7 @@ private struct MemberRow: View {
     private var fetching: JobInfo? {
         model.jobs.values.first {
             ($0.purpose == "download" || $0.purpose == "quantize"
-             || $0.purpose == "compress")
+             || $0.purpose == "compress" || $0.purpose == "relocate")
                 && $0.model == member.model
                 && ($0.state == "queued" || $0.state == "running")
         }
@@ -762,7 +836,9 @@ private struct MemberRow: View {
                      ?? (job.purpose == "quantize"
                          ? String(localized: "Quantizing…")
                          : job.purpose == "compress"
-                         ? String(localized: "Compressing…") : ""))
+                         ? String(localized: "Compressing…")
+                         : job.purpose == "relocate"
+                         ? moveCaption(job) : ""))
                     .font(.caption.monospacedDigit())
                     // Its own width: the row squeezed it to nothing.
                     .fixedSize()
@@ -821,6 +897,17 @@ private struct MemberRow: View {
             if m.state == "installed", let c = m.compress, fetching == nil {
                 compressMenu(c)
             }
+            if let job = fetching, job.purpose == "relocate",
+               job.phase?.phase != "deleting" {
+                Button {
+                    model.stopModelMove(m.model)
+                } label: {
+                    Image(systemName: "xmark.circle")
+                }
+                .buttonStyle(.borderless)
+                .help("Stop the move: what was copied goes, the model where it was")
+            }
+            if fetching == nil { storageButton }
             Menu {
                 ForEach(LinkPlace.found) { place in
                     Button(place.title) { link(from: place.url) }
@@ -865,6 +952,39 @@ private struct MemberRow: View {
             }
         }
         .controlSize(.small)
+    }
+
+    /// Moved between the models folder and the slow one: a drive button
+    /// while a slow folder is set and the model is in one of Valtz's own.
+    @ViewBuilder
+    private var storageButton: some View {
+        let m = member
+        if let slow = model.capabilityTree?.slowStorage,
+           m.state == "installed",
+           let at = m.storage, at == "fast" || at == "slow" {
+            let toSlow = at == "fast"
+            Button {
+                model.moveModel(m, to: toSlow ? "slow" : "fast")
+            } label: {
+                Image(systemName: toSlow ? "externaldrive" : "internaldrive")
+            }
+            .buttonStyle(.borderless)
+            .disabled(!slow.there || model.locations?.moving != nil)
+            .help(!slow.there
+                  ? String(localized: "The slow models folder is not there: is its drive connected?")
+                  : toSlow
+                  ? String(localized: "Move to Slow Storage: its files into the slow models folder, out of the models folder -- it loads more slowly from there")
+                  : String(localized: "Move to the Models Folder: its files back from slow storage, to load at the models folder's speed"))
+        }
+    }
+
+    /// A model's move, as it goes.
+    private func moveCaption(_ job: JobInfo) -> String {
+        switch job.phase?.phase {
+        case "waiting": String(localized: "Waiting…")
+        case "deleting": String(localized: "Deleting…")
+        default: job.phase?.percent ?? String(localized: "Moving…")
+        }
     }
 
     /// READ SPEED (DESIGN §8b): a model past 10 GB is tested for how fast

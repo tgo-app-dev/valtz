@@ -160,6 +160,18 @@ struct CatalogModel: Decodable, Sendable, Identifiable {
     /// It keeps its clip's latents when asked (catalog `keeps_latents`:
     /// MiniMax H3) -- the generation card's Latents row.
     var keepsLatents: Bool?
+    /// How many references the prompt's row may hold for it (catalog
+    /// `edit.max_references`: an edit's pictures, the base among them;
+    /// `references`: a clip's, by kind and in all) -- a folder dropped on
+    /// the row fills it up to them. Nil: it says nothing.
+    var maxReferences: Int?
+    var referenceLimits: ReferenceLimits?
+    struct ReferenceLimits: Decodable, Sendable, Hashable {
+        var pictures: Int
+        var clips: Int
+        var sounds: Int
+        var total: Int
+    }
     /// The longest side it makes (catalog `max_edge`: FLUX.3 Image
     /// Klein's 4096) -- its 4K size offered; nil when it says nothing.
     var maxEdge: Int?
@@ -1435,13 +1447,33 @@ struct LocationsInfo: Decodable, Sendable {
 
     struct Moving: Decodable, Sendable {
         var job: String
+        /// "projects", "models", "cache" -- or "model": one model moved
+        /// between the models folder and the slow one (`model`).
         var what: String
         var to: String
+        var model: String?
+    }
+
+    /// The SLOW models folder (Controller::set_slow_models): where it is,
+    /// its drive, what it holds.
+    struct Slow: Decodable, Sendable {
+        var path: String
+        var there: Bool
+        var `internal`: Bool
+        var volume: String?
+        var link: String?
+        var bytes: Int64?
+
+        enum CodingKeys: String, CodingKey {
+            case path, there, `internal`, volume, bytes
+            case link = "protocol"
+        }
     }
 
     var projects: Place
     var models: Place
     var cache: Place
+    var modelsSlow: Slow?
     var moving: Moving?
 }
 
@@ -2038,6 +2070,9 @@ struct AgentMessage: Decodable, Sendable, Equatable {
     /// were, and Valtz's notes), and the assets they attached.
     var said: String?
     var attached: [String]?
+    /// The skills the person loaded with it, by name (their text is the
+    /// model's alone).
+    var skills: [String]?
     /// Pictures shown to the model with it.
     var shown: Int?
     /// An assistant's: what its turn cost and how fast it went.

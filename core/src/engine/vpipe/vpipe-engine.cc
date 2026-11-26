@@ -368,6 +368,58 @@ public:
       _split_families.emplace_back("h3-taomate-lora");
     }
 #endif
+    // ...and MAGI-2-preview (§15 0zzzzn: its preview DiT by heads and
+    // experts, its refiner at the same fractions), a family of its own.
+#ifdef VPIPE_FEATURE_TENSOR_PARALLEL_MAGI2
+    if (_splits_dit &&
+        vpipe::host_has_feature(VPIPE_FEATURE_TENSOR_PARALLEL_MAGI2)) {
+      _split_families.emplace_back("magi2");
+    }
+#endif
+    // ...and an H3 rank that binds pi-H3's adapter, its overwrites cut to
+    // the share, over the pruned DiT (bf16, or int8 ConvRot on the Per
+    // Token tier).
+#ifdef VPIPE_FEATURE_TENSOR_PARALLEL_PI_H3
+    if (_splits_dit &&
+        vpipe::host_has_feature(VPIPE_FEATURE_TENSOR_PARALLEL_PI_H3)) {
+      _split_families.emplace_back("h3-pi");
+    }
+#endif
+    // ...and an H3 rank of HyperFlow H3 Flash's DiT: its low-rank pairs
+    // cut to the share as an adapter's factors are, its int8 ConvRot read
+    // on the Per Token tier.
+#ifdef VPIPE_FEATURE_TENSOR_PARALLEL_FLASH
+    if (_splits_dit &&
+        vpipe::host_has_feature(VPIPE_FEATURE_TENSOR_PARALLEL_FLASH)) {
+      _split_families.emplace_back("h3-flash");
+    }
+#endif
+    // ...and a MiniMax H3 LoRA TRAINED split (train-lora's
+    // `tensor_parallel`): rank 0 encodes and hands its dataset over, each
+    // rank trains its share, the adapter saved whole by rank 0.
+#ifdef VPIPE_FEATURE_TENSOR_PARALLEL_TRAIN
+    if (_splits_dit &&
+        vpipe::host_has_feature(VPIPE_FEATURE_TENSOR_PARALLEL_TRAIN)) {
+      _split_families.emplace_back("h3-train");
+    }
+#endif
+    // ...and a LoRA of any family trained DATA-PARALLEL (train-lora's
+    // `data_parallel`): each Mac the whole model and its samples of every
+    // step, the gradients summed between them.
+    // ...and a picture model's LoRA trained split (Qwen-Image 2.1,
+    // MiniMax-H3-Image).
+#ifdef VPIPE_FEATURE_TENSOR_PARALLEL_TRAIN_IMAGES
+    if (_splits_dit &&
+        vpipe::host_has_feature(VPIPE_FEATURE_TENSOR_PARALLEL_TRAIN_IMAGES)) {
+      _split_families.emplace_back("image-train");
+    }
+#endif
+#ifdef VPIPE_FEATURE_DATA_PARALLEL_TRAIN
+    if (_splits_dit &&
+        vpipe::host_has_feature(VPIPE_FEATURE_DATA_PARALLEL_TRAIN)) {
+      _split_families.emplace_back("train-dp");
+    }
+#endif
     // Each backend vpipe was given: loaded when every stage it says it
     // registers is there.
     for (std::size_t i = 0; i < _backends.size(); ++i) {
@@ -2900,16 +2952,20 @@ private:
         q.sink(out);
       }
     } else if (spec.op == kOpTrainLora) {
-      if (!fs::is_regular_file(g.output, ec)) {
-        fail_(q, Code::Engine, no_file_(lane, "its adapter"));
-        return;
+      // Rank 1 of a run trained split: its adapter is rank 0's, written
+      // there whole -- nothing of its own to hand back.
+      if (!jget(spec.params, "train_follower", false)) {
+        if (!fs::is_regular_file(g.output, ec)) {
+          fail_(q, Code::Engine, no_file_(lane, "its adapter"));
+          return;
+        }
+        JobEvent out;
+        out.job = spec.id;
+        out.kind = JobEventKind::Output;
+        out.output = g.output;
+        out.data = {{"adapter", g.output.string()}};
+        q.sink(out);
       }
-      JobEvent out;
-      out.job = spec.id;
-      out.kind = JobEventKind::Output;
-      out.output = g.output;
-      out.data = {{"adapter", g.output.string()}};
-      q.sink(out);
     } else if (spec.op == kOpTrackBeats) {
       // Told as text, kept as data: what the timeline places them by.
       fs::remove(heard, ec);

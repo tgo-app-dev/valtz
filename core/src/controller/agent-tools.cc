@@ -2554,6 +2554,16 @@ constexpr OptionWords kOptionWords[] = {
      "pi-h3 with the vae|pi-h3 vae|pi-h3 without dwd|no dwd",
      "pi-H3's VAE-decoded adapter in place of its DWD one (whose pixel "
      "head makes the frames, no VAE decoder: the default)"},
+    {"hyperflow_flash", "HyperFlow H3 Flash",
+     "hyperflow flash|hyperflow h3 flash|hyper flow flash|h3 flash|"
+     "flash dit|hyperflow-flash",
+     "Video Rebirth's compressed MiniMax H3 (a 14B DiT of its own, a "
+     "download) on its own grid of 4, 6 or 8 steps (hyperflow_flash_steps, "
+     "6 by default) -- the Turbo LoRA, HyperFlow's adapter, Pika, pi-H3, "
+     "TaoMate and VDN off; less than half the memory"},
+    {"hyperflow_flash_steps", "HyperFlow H3 Flash steps",
+     "flash 4 step|flash four steps|flash 8 step|flash eight steps",
+     "HyperFlow H3 Flash's grid: \"6\", \"4\" or \"8\""},
     {"hyperflow", "HyperFlow",
      "hyperflow|hyper flow|hyperflow lora|hyperflow adapter|video rebirth|"
      "flow map|flowmap",

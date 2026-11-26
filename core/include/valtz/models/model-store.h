@@ -89,12 +89,15 @@ public:
                       std::size_t owned = 1);
 
   // `primary` (the app's models dir, where downloads go), the folders
-  // `kept` after it moved, then ~/vpipe/models and
-  // ~/dump/vpipe-test/models when present -- a developer box that
-  // already holds vpipe's checkpoints.
+  // `kept` after it moved, the `slow` models folder (base/paths.h) when
+  // one is set, then ~/vpipe/models and ~/dump/vpipe-test/models when
+  // present -- a developer box that already holds vpipe's checkpoints.
+  // `owned`, when given, is told how many of them are Valtz's own.
   static std::vector<std::filesystem::path>
   default_roots(const std::filesystem::path& primary,
-                const std::vector<std::filesystem::path>& kept = {});
+                const std::vector<std::filesystem::path>& kept = {},
+                const std::filesystem::path& slow = {},
+                std::size_t* owned = nullptr);
 
   std::vector<std::filesystem::path> roots() const;
   std::filesystem::path download_root() const;
@@ -135,6 +138,15 @@ public:
   std::filesystem::path compressed_dir(const std::string& id,
                                        int bits) const;
   static constexpr const char* kCompressedMarker = "valtz-compressed.json";
+  // A download of `e` UNDER WAY in `root` -- begun, not finished (paused,
+  // stopped, cut short by a quit or a crash): a mark Valtz leaves in its
+  // repo's folder from the download's start to its end. While it is
+  // there the model is Partial, its row's Resume offered, whatever files
+  // came down -- a sharded model paused between two shards leaves no
+  // `.part` to tell it by.
+  static std::filesystem::path download_mark(const std::filesystem::path&
+                                                 root,
+                                             const ModelEntry& e);
 
 private:
   InstallInfo scan_(const ModelEntry&) const;

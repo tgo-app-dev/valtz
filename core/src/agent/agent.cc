@@ -228,6 +228,9 @@ to_json(const Message& m)
   if (!m.attached.empty()) {
     j["attached"] = m.attached;
   }
+  if (!m.skills.empty()) {
+    j["skills"] = m.skills;
+  }
   return j;
 }
 
@@ -257,7 +260,211 @@ message_from_json(const Json& j)
       m.attached.push_back(a.get<std::string>());
     }
   }
+  for (const auto& a : jget(j, "skills", Json::array())) {
+    if (a.is_string()) {
+      m.skills.push_back(a.get<std::string>());
+    }
+  }
   return m;
+}
+
+// ---- skills ---------------------------------------------------------------
+
+namespace {
+
+// `name:` and `description:` of YAML front matter ("---" lines round
+// it): plain scalars, quoted or not, a description folded over indented
+// lines (`>` / `|` or continued). Not a YAML parser: what skills write.
+void
+front_matter(std::string_view text, std::string* name, std::string* desc)
+{
+  auto line_at = [&](std::size_t at) {
+    const std::size_t end = text.find('\n', at);
+    return std::pair{text.substr(at, (end == std::string_view::npos
+                                          ? text.size() : end) - at),
+                     end == std::string_view::npos ? text.size() : end + 1};
+  };
+  auto trim = [](std::string_view s) {
+    while (!s.empty() && (s.front() == ' ' || s.front() == '\t')) {
+      s.remove_prefix(1);
+    }
+    while (!s.empty() && (s.back() == ' ' || s.back() == '\t' ||
+                          s.back() == '\r')) {
+      s.remove_suffix(1);
+    }
+    return s;
+  };
+  auto unquote = [](std::string_view s) {
+    if (s.size() >= 2 && (s.front() == '"' || s.front() == '\'') &&
+        s.back() == s.front()) {
+      s = s.substr(1, s.size() - 2);
+    }
+    return std::string(s);
+  };
+  auto [first, at] = line_at(0);
+  if (trim(first) != "---") {
+    return;
+  }
+  std::string* into = nullptr;
+  while (at < text.size()) {
+    auto [line, next] = line_at(at);
+    at = next;
+    if (trim(line) == "---") {
+      break;
+    }
+    const bool indented = !line.empty() && (line[0] == ' ' || line[0] == '\t');
+    if (indented && into) {
+      const std::string_view more = trim(line);
+      if (!more.empty()) {
+        *into += (into->empty() ? "" : " ") + std::string(more);
+      }
+      continue;
+    }
+    into = nullptr;
+    const std::size_t colon = line.find(':');
+    if (colon == std::string_view::npos) {
+      continue;
+    }
+    const std::string_view key = trim(line.substr(0, colon));
+    std::string_view value = trim(line.substr(colon + 1));
+    std::string* out = key == "name" ? name
+                       : key == "description" ? desc : nullptr;
+    if (out == nullptr) {
+      continue;
+    }
+    if (value == ">" || value == "|" || value == ">-" || value == "|-") {
+      value = {};
+    }
+    *out = unquote(value);
+    into = out;
+  }
+}
+
+std::string
+lower_ascii(std::string s)
+{
+  for (auto& c : s) {
+    if (c >= 'A' && c <= 'Z') {
+      c = static_cast<char>(c - 'A' + 'a');
+    }
+  }
+  return s;
+}
+
+}  // namespace
+
+Result<Skill>
+read_skill(const std::filesystem::path& path)
+{
+  namespace fs = std::filesystem;
+  std::error_code ec;
+  fs::path file;
+  fs::path folder;
+  if (fs::is_directory(path, ec)) {
+    for (const auto& e : fs::directory_iterator(path, ec)) {
+      if (e.is_regular_file(ec) &&
+          lower_ascii(e.path().filename().string()) == "skill.md") {
+        file = e.path();
+        break;
+      }
+    }
+    if (file.empty()) {
+      return make_error(Code::InvalidArgument,
+                        "no SKILL.md at the top of the folder");
+    }
+    folder = path;
+  } else if (fs::is_regular_file(path, ec)) {
+    const std::string ext = lower_ascii(path.extension().string());
+    if (ext != ".md" && ext != ".markdown") {
+      return make_error(Code::InvalidArgument,
+                        "not a skill: a folder with a SKILL.md, or one");
+    }
+    file = path;
+    if (lower_ascii(path.filename().string()) == "skill.md") {
+      folder = path.parent_path();
+    }
+  } else {
+    return make_error(Code::NotFound, "not there");
+  }
+  const auto size = fs::file_size(file, ec);
+  if (ec) {
+    return make_error(Code::Io, "unreadable: " + ec.message());
+  }
+  if (size > kSkillBytes) {
+    return make_error(Code::InvalidArgument,
+                      std::format("its SKILL.md is {} KB, past {} KB",
+                                  size / 1024, kSkillBytes / 1024));
+  }
+  std::ifstream in(file, std::ios::binary);
+  std::string text((std::istreambuf_iterator<char>(in)),
+                   std::istreambuf_iterator<char>());
+  if (!in && !in.eof()) {
+    return make_error(Code::Io, "unreadable");
+  }
+  Skill s;
+  s.path = file;
+  front_matter(text, &s.name, &s.description);
+  // A Markdown file that is not a SKILL.md is a skill only if its front
+  // matter says what it is.
+  if (folder.empty() && s.name.empty()) {
+    return make_error(Code::InvalidArgument,
+                      "not a skill: its front matter names none");
+  }
+  if (s.name.empty()) {
+    s.name = folder.filename().string();
+  }
+  if (s.name.empty()) {
+    s.name = file.stem().string();
+  }
+  s.text = std::move(text);
+  if (!folder.empty()) {
+    auto it = fs::recursive_directory_iterator(
+        folder, fs::directory_options::skip_permission_denied, ec);
+    for (; !ec && it != fs::recursive_directory_iterator();
+         it.increment(ec)) {
+      if (s.files.size() >= 64) {
+        s.files.push_back("...");
+        break;
+      }
+      const std::string base = it->path().filename().string();
+      if (!base.empty() && base[0] == '.') {
+        if (it->is_directory(ec)) {
+          it.disable_recursion_pending();
+        }
+        continue;
+      }
+      if (it->is_regular_file(ec) && it->path() != file) {
+        s.files.push_back(
+            fs::relative(it->path(), folder, ec).generic_string());
+      }
+    }
+    std::ranges::sort(s.files);
+  }
+  return s;
+}
+
+std::string
+skill_text(const Skill& s)
+{
+  std::string t = "[Valtz] The person loaded the skill \"" + s.name + "\"";
+  if (!s.description.empty()) {
+    t += " (" + s.description + ")";
+  }
+  t += ". Follow it where it applies to what they ask, with the tools you "
+       "have: it adds no tool and changes none.";
+  if (!s.files.empty()) {
+    t += " Files beside it, which you cannot read: ";
+    for (std::size_t i = 0; i < s.files.size(); ++i) {
+      t += (i ? ", " : "") + s.files[i];
+    }
+    t += ".";
+  }
+  t += "\n<skill name=\"" + s.name + "\">\n" + s.text;
+  if (!s.text.empty() && s.text.back() != '\n') {
+    t += "\n";
+  }
+  t += "</skill>";
+  return t;
 }
 
 Json

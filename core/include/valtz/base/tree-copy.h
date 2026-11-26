@@ -38,6 +38,15 @@ Status copy_tree(const std::filesystem::path& from,
                  const std::function<bool(std::uint64_t)>& progress,
                  std::vector<std::filesystem::path>* made);
 
+// The files `rels` (relative to `from`) copied to their places under
+// `to`, as copy_tree copies: `progress` told the bytes so far, a file
+// there already whole taken as it, `made` each file written.
+Status copy_files(const std::filesystem::path& from,
+                  const std::filesystem::path& to,
+                  const std::vector<std::filesystem::path>& rels,
+                  const std::function<bool(std::uint64_t)>& progress,
+                  std::vector<std::filesystem::path>* made);
+
 // Every entry of `from` renamed into `to` (one volume), folders merged;
 // `from` left empty.
 Status move_tree(const std::filesystem::path& from,

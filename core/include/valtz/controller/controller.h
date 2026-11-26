@@ -538,6 +538,11 @@ struct AgentRequest {
   // is taken only where the person's words name it ("a 10 s loop",
   // "1920 x 1080"); without, they are defaults the model may change.
   Json                   render = Json::object();
+  // SKILLS the person loaded with the request (agent::read_skill: a
+  // folder with a SKILL.md, or one): read now, their text given to the
+  // model with the words, their names alone shown in the chat and the
+  // transcript. With one, the words may be empty.
+  std::vector<std::filesystem::path> skill_files;
 };
 
 class Controller {
@@ -613,6 +618,26 @@ public:
   Result<JobId> set_location(const std::string& what,
                              const std::filesystem::path& dir,
                              const std::string& how);
+  // The SLOW models folder (base/paths.h) set to `dir` -- made when it
+  // is not there -- or, `dir` empty, none. Valtz's own, looked in after
+  // the models folder; a download goes there when asked
+  // (download_model's `storage`), a model is moved there and back by
+  // move_model. One that still holds models is not let go
+  // (kSlowModelsHoldsModels) -- unless its drive is not there. Refused
+  // while work runs (kModelsBusy) or a folder moves.
+  Status set_slow_models(const std::filesystem::path& dir);
+  // A model's files moved between the models folder ("fast") and the slow
+  // one ("slow"): a JOB as a folder's move is (purpose "relocate", "what"
+  // "model", events with "phase" copying / waiting / deleting, "done" /
+  // "total" bytes, stopped by cancel()) -- its download's files (in a
+  // repo of several, its own and the small files beside them, those
+  // another model there needs copied, not moved), its compressed copies;
+  // across drives a copy, the old files deleted once no work could read
+  // them. Refused for a model not installed, linked or in vpipe's folders
+  // (kModelNotMovable), already there, downloading, without a slow
+  // folder, or while a folder moves.
+  Result<JobId> move_model(const std::string& model_id,
+                           const std::string& to);
 
   // ---- machine and models -------------------------------------------
 
@@ -766,7 +791,13 @@ public:
   //    "projects": {"root", "bytes", "items": [{"name", "path", "bytes",
   //      "created", "open", "ephemeral", "assets": [{"id", "name",
   //      "kind", "bytes", "linked", "created"}], "other"}]},
-  //    "cache": {"root", "bytes", "budget"}}
+  //    "cache": {"root", "bytes", "budget"},
+  //    "volumes": [{"path", "name", "internal", "protocol", "device",
+  //      "capacity", "free", "models", "projects", "cache"}]}
+  // "volumes": each local drive a Valtz folder (the models folders --
+  // slow storage, those kept -- projects, cache) or an item of them is
+  // on, the internal one first, with what of Valtz's is there; a network
+  // share left out.
   // "created": ms since 1970 -- a folder's birth time (the Finder's
   // Created), an asset's record's.
   // Walks the folders: call it off the main thread.
@@ -1802,9 +1833,14 @@ public:
   // a cable (else its network address), into the folder a download goes
   // to: a download in all else (paused, resumed, cancelled alike).
   // Refused when the member is not connected or does not share it.
+  //
+  // `storage`: where it goes -- "slow" the slow models folder
+  // (set_slow_models; kSlowModelsNone without one), else the models
+  // folder. A download paused goes on where it began.
   Result<JobId> download_model(const std::string& model_id,
                                const std::string& hf_token = "",
-                               const std::string& source = "");
+                               const std::string& source = "",
+                               const std::string& storage = "");
   // WHERE downloads come from (DESIGN §8, §15 0zzb): {"sources": [{"name"
   // -- "huggingface", "modelscope" -- "label"}] (the engine's: vpipe's
   // model sources), "chosen": the one a download takes when it names
@@ -1815,6 +1851,21 @@ public:
   // The source downloads take from now on: one of download_sources'
   // names (kUnknownDownloadSource otherwise). Posts "models.changed".
   Status set_download_source(const std::string& name);
+  // A model's VERSIONS (catalog `versions`: lightx2v's Turbo LoRAs,
+  // v1.0 ... v1.3 of one adapter): which one RUNS where a preset or a
+  // family names the line -- the one chosen (Settings › Capabilities'
+  // version pop-up, `<support>/downloads.json` "versions"), else the
+  // newest here or downloading, else the newest. A model with no
+  // versions is itself; a version id, its line's choice.
+  const models::ModelEntry* version_in_use(const models::ModelEntry&) const;
+  // {"line", "chosen" ("" Auto), "in_use", "versions": [{"model",
+  // "version", "state", "disk_gb"}] newest first}; null for a model with
+  // none.
+  Json model_versions(const std::string& id) const;
+  // The version a line runs from now on ("" Auto): one of its versions
+  // (kUnknownModel otherwise). Posts "models.changed".
+  Status set_model_version(const std::string& line,
+                           const std::string& version);
   // A model's download STOPPED (Settings › Capabilities' Pause and
   // Cancel, DESIGN §8): its job, queued or running, cancelled -- what
   // waits for it fails, the download stopped. PAUSED (`discard` false),
@@ -2039,10 +2090,14 @@ public:
   // sees. `render`: a procedural session's card as it is now
   // (AgentRequest::render), null where none goes with them -- changed,
   // the model is told and its programs drawn at it.
+  // `skill_files`: skills loaded with them (AgentRequest::skill_files);
+  // with one, `text` may be empty.
   Status agent_say(const std::string& agent, const std::string& text,
                    const Json& stage = Json::object(),
                    const std::vector<AssetId>& attached = {},
-                   const Json& render = Json());
+                   const Json& render = Json(),
+                   const std::vector<std::filesystem::path>& skill_files =
+                       {});
   // The person's word on a step waiting for it: "approve" (with `args`
   // in place of the model's, when not null), "skip" (`note` told to the
   // model), "approve_all" (this one and every one after: Auto).
@@ -2578,6 +2633,10 @@ private:
     // decodes its share of the clip's chunks and the member hands its
     // part over the link; this Mac makes the clip.
     bool        split_decode = false;
+    // Custom's values laid over the job's on BOTH ranks (pi-H3 over the
+    // int8 ConvRot pruned DiT: the int8 Per Token tier, the one tier a
+    // rank cuts its codes for).
+    Json        tuning = Json::object();
   };
   // How `r` would split now. An error says why not: Unsupported -- worth
   // telling (a pair is set and the model splits); NotFound -- nothing to
@@ -2585,6 +2644,26 @@ private:
   Result<SplitPlan> split_plan_(const project::Recipe& r,
                                 const engine::ModelRef& ref,
                                 const Json& carried, JobId job);
+  // The two ranks' shares and the cables between them: rank 0 here,
+  // heads [0, h0) and feed-forward rows [0, f0), connecting; the member
+  // the rest, listening. Each rank's transport waits `wait_ms` for the
+  // other. Unsupported (kSplitNoLink) where no cable joins them.
+  Status split_ranks_(const fleet::Config& c, const std::string& name,
+                      int heads, int ffn, int h0, int f0, int wait_ms,
+                      SplitPlan* plan);
+  // How a LoRA training of `m` (its catalog `train` shape) would run on
+  // two Macs with the paired member now (DESIGN §11c): rank 0 here encodes
+  // the dataset and hands it over; each Mac trains its share of the DiT
+  // (`mode` "tensor"), or the whole model on its share of every step's
+  // samples ("data": the plan's `mode` and `samples`); "auto" data where
+  // both can, else split; "none" neither. Errors as split_plan_'s.
+  Result<SplitPlan> train_split_plan_(const models::ModelEntry& m,
+                                      const std::string& shape, JobId job,
+                                      const std::string& mode = "auto");
+  // ...and the member's rank of one: a train-lora stage alone, listening
+  // on its end of each cable, the dataset rank 0's.
+  Status serve_train_rank_(const fleet::Offer& o, const std::string& from,
+                           engine::JobSink sink);
   // A split clip's two ranks while they run.
   struct Split {
     JobId                          id;
@@ -3008,6 +3087,9 @@ private:
     // have): what it says after its reasoning, where it wrote no object.
     // (value-initialized: ReplyForm{} -- false)
     bool                                             plain_caption;
+    // MAGI-2-preview's templates' JSON (assist/magi2.h), rendered to
+    // Markdown: 1 its t2v schema, 2 its i2v one; 0 not one.
+    int                                              magi2;
     std::string apply(std::string prompt) const;
   };
   // A plain answer read as a caption (ReplyForm::plain_caption).
@@ -3348,7 +3430,29 @@ private:
   // Where `e`'s download goes: the download root -- or the folder of
   // Valtz's own holding what came down of it, paused there before the
   // models folder moved (Keep): it goes on from there.
-  std::filesystem::path download_base_(const models::ModelEntry& e) const;
+  std::filesystem::path download_base_(const models::ModelEntry& e,
+                                       const std::string& storage = "")
+      const;
+  // Where a model of Valtz's own is: "slow" in the slow models folder,
+  // "fast" in another of Valtz's own, "" elsewhere (linked, vpipe's).
+  std::string storage_of_(const std::filesystem::path& dir) const;
+  // The model being moved (move_model), under `_paths_mu`.
+  std::string                        _moving_model;
+  // A file of a model's to put in its other folder: from, to, its size,
+  // and whether it stays where it was too (a small file another model of
+  // its repo reads: copied, not moved).
+  struct ModelMoveItem {
+    std::filesystem::path src;
+    std::filesystem::path dst;
+    std::uint64_t         bytes = 0;
+    bool                  keep = false;
+  };
+  void move_model_(JobId, const models::ModelEntry& e, std::string to,
+                   std::filesystem::path from_root,
+                   std::filesystem::path to_root,
+                   std::vector<ModelMoveItem> items);
+  // The models folder, those kept and the slow one as the store's roots.
+  void set_model_roots_();
   bool                               _keep_working_copies = false;
   // Downloads queued or running, by catalog id; the jobs waiting for
   // them.

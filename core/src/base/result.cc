@@ -44,7 +44,7 @@ all_messages()
     kUnknownDownloadSource, kNotOnDownloadSource, kWiredLimitRange,
     kMediaMissing, kProjectMissingMedia, kRefModNeedsMedia, kRefModSource,
     kProjectLocked, kProjectLockEdited, kProjectSameOpen,
-    kAgentEmptyRequest, kAgentNoSession, kAgentStopped, kAgentAtWork,
+    kAgentEmptyRequest, kAgentSkillRefused, kAgentNoSession, kAgentStopped, kAgentAtWork,
     kAgentOneEditor, kAgentStepNotWaiting, kAgentTooManyTurns, kAgentNoKey,
     kGenerateOneText, kGeneratePictureRow, kGenerateSoundRow,
     kGenerateLinked, kGenerateHasRun, kGenerateKeyframes,
@@ -81,6 +81,10 @@ all_messages()
     kSplitCannotThere, kSplitNoModelThere, kSplitBusyHere,
     kSplitNeuralEngine, kSplitNeuralEngineModel, kSplitVdnTaomate,
     kSplitPiH3,
+    kSplitFlash,
+    kSplitTrain,
+    kSplitTrainModel,
+    kTrainDataParallel,
     kSplitTaomateLora, kFleetNoMemory,
     kSplitOwnFiles, kSplitOwnLoras,
     kSplitNoAdapters, kSplitModelHere, kSplitModelThere,
@@ -138,7 +142,9 @@ all_messages()
     kExportNotSaved,
     kLocationNotWritable, kLocationNested, kModelsBusy, kCacheBusy,
     kLocationMoving, kModelsMoving, kLocationNoRoom, kModelsMoveFailed,
-    kCacheMoveFailed,
+    kCacheMoveFailed, kSlowModelsNone, kSlowModelsNotThere,
+    kSlowModelsHoldsModels, kModelNotMovable, kModelInFastAlready,
+    kModelInSlowAlready, kModelDownloading, kModelMoveFailed,
   };
   return kAll;
 }

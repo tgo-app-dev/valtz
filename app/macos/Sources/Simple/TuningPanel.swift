@@ -278,6 +278,7 @@ struct TuningPanel: View {
         let blocked = turbo && (info.tuning.flags["hyperflow"] == true ||
                                 info.tuning.flags["pika_flex"] == true ||
                                 info.tuning.flags["pi_h3"] == true ||
+                                info.tuning.flags["hyperflow_flash"] == true ||
                                 info.tuning.flags["taomate"] == true)
         return weightRow(
             number: number, name: info.name(l), path: l.path,
@@ -290,6 +291,8 @@ struct TuningPanel: View {
                                    ? String(localized: "Pika H3 Flex runs in its place")
                                    : info.tuning.flags["pi_h3"] == true
                                    ? String(localized: "pi-H3 runs in its place")
+                                   : info.tuning.flags["hyperflow_flash"] == true
+                                   ? String(localized: "HyperFlow H3 Flash runs in its place")
                                    : String(localized: "HyperFlow runs in its place"))
                             : String(localized: "Eight LoRAs run at a time"),
             fast: turbo,
@@ -555,6 +558,8 @@ struct TuningPanel: View {
         case "pi_h3": String(localized: "pi-H3")
         case "pi_h3_steps": String(localized: "pi-H3 steps")
         case "pi_h3_vae": String(localized: "Decode with the VAE")
+        case "hyperflow_flash": String(localized: "HyperFlow H3 Flash")
+        case "hyperflow_flash_steps": String(localized: "Flash steps")
         case "taomate": String(localized: "TaoMate")
         case "taomate_lora": String(localized: "As a LoRA only")
         case "vdn": String(localized: "VDN branch")
@@ -574,6 +579,7 @@ struct TuningPanel: View {
         case "ane_int8": String(localized: "ANE int8")
         case "ane_int8_tier": String(localized: "ANE int8 tier")
         case "motion_cache": String(localized: "MotionCache")
+        case "preview": String(localized: "Live preview")
         case "video_shift": String(localized: "Video shift")
         case "audio_shift": String(localized: "Audio shift")
         case "shift": String(localized: "Shift")
@@ -635,6 +641,8 @@ struct TuningPanel: View {
         case "pi_h3": String(localized: "pi-Flow's 2- or 4-step adapter, over the pruned DiT")
         case "pi_h3_steps": String(localized: "Four, or two for a draft")
         case "pi_h3_vae": String(localized: "Off: DWD, its pixel head makes the frames (recommended)")
+        case "hyperflow_flash": String(localized: "Video Rebirth's compressed few-step DiT")
+        case "hyperflow_flash_steps": String(localized: "Six, four for speed, eight for quality")
         case "taomate": String(localized: "3-step streaming method; its cache on disk")
         case "taomate_lora": String(localized: "Its adapter for 3 steps; no streaming, no cache")
         case "vdn": String(localized: "Linear attention for long, large clips")
@@ -650,6 +658,7 @@ struct TuningPanel: View {
         case "ane_qkv": String(localized: "q|k|v projection on the Neural Engine too")
         case "ane_int8": String(localized: "The Neural Engine's modules in int8: faster, lossy")
         case "motion_cache": String(localized: "Reuses steps it can predict (16+ steps)")
+        case "preview": String(localized: "The result as it forms, each step")
         case "video_shift": String(localized: "Sigma shift of the video schedule")
         case "audio_shift": String(localized: "Sigma shift of the audio schedule")
         case "shift": String(localized: "Time shift of the noise schedule")
@@ -670,9 +679,11 @@ struct TuningPanel: View {
     static func help(_ key: String) -> String {
         switch own(key) {
         case "hyperflow": String(localized: "Video Rebirth's flow-map adapter brings its own 8-step grid. It takes a LoRA slot, in place of the Turbo LoRA; keep the shifts at 12 and 3, which it was trained at.")
-        case "pi_h3": String(localized: "Lakonik's pi-H3: pi-Flow v2 distillations of MiniMax H3 FL2VA into four or two steps, for a clip from words, a first frame, a last frame or both, with its soundtrack. Each is an adapter trained on Comfy-Org's PRUNED FL2VA DiT, which runs in place of FL2VA's own (21 GB at int8; its text encoder and VAEs are FL2VA's). Its steps, its grid and its shifts are its own; it takes a LoRA slot in place of the Turbo LoRA, and HyperFlow, Pika H3 Flex, TaoMate, VDN and MotionCache are off with it. Not on a clip split with a paired Mac. No Favor preset turns it on.")
+        case "pi_h3": String(localized: "Lakonik's pi-H3: pi-Flow v2 distillations of MiniMax H3 FL2VA into four or two steps, for a clip from words, a first frame, a last frame or both, with its soundtrack. Each is an adapter trained on Comfy-Org's PRUNED FL2VA DiT, which runs in place of FL2VA's own (21 GB at int8; its text encoder and VAEs are FL2VA's). Its steps, its grid and its shifts are its own; it takes a LoRA slot in place of the Turbo LoRA, and HyperFlow, Pika H3 Flex, TaoMate, VDN and MotionCache are off with it. Split with a paired Mac where both Macs' vpipe does it. No Favor preset turns it on.")
         case "pi_h3_steps": String(localized: "Four steps, or two -- each its own adapter, a download of its own. The release finds four the better clip; two is a quick draft.")
         case "pi_h3_vae": String(localized: "Off -- the release's recommendation -- pi-H3's DWD adapter runs (Decoding Without a Decoder): at the last step the DiT's features become the frames through the adapter's own pixel head, and the video VAE is never loaded, a lighter decode (3.1 GB against 5.8 at 832 × 480 × 73); a clip past 768P is then made at its size in one pass (there is no latent to regenerate) and keeps no latents. On, its VAE-decoded adapter runs and the clip is decoded as usual.")
+        case "hyperflow_flash": String(localized: "Video Rebirth's HyperFlow H3 Flash: MiniMax H3 compressed to a 14B DiT -- three blocks left out, low-rank projections, int8 -- and distilled to 4, 6 or 8 steps, each step conditioned on where it lands. Its own DiT (a 16 GB download), the Turbo LoRA off; less than half the memory of the released model. Split with a paired Mac where both Macs' vpipe does it; past 768P made in one pass.")
+        case "hyperflow_flash_steps": String(localized: "Its three grids: six (the release's default), four for speed, eight for quality.")
         case "pika_flex": String(localized: "Pika Labs' six-step post-training of MiniMax H3, an adapter for each partition (FL2VA's and Ref2VA's). Its manifest states how it must be sampled: its own grid of six steps at shifts 12 and 3, the clip's estimate put back at the next step's noise with fresh noise each step, which a plain six-step run is not. The steps and shifts are its own; it takes a LoRA slot in place of the Turbo LoRA, and HyperFlow, TaoMate and MotionCache are off with it. A clip that opens or ends on a picture shows that picture to the prompt encoder too, as Pika's release does. Made for 480p and 768p, 5 to 15 seconds; no Favor preset turns it on.")
         case "taomate": String(localized: "TaoMate-H3's streaming method, not a LoRA: the base model writes the soundtrack, then its adapter writes the video in chunks, 3 steps each, against a cache of the chunks before. It takes a LoRA slot in place of the Turbo LoRA. Words to a clip only, made in whole 5-second requests. That cache is kept on disk (in 8 bits with int8 GEMM) and read back a block at a time. An alternative to the Turbo LoRA: no Favor preset turns it on.")
         case "taomate_lora": String(localized: "TaoMate-H3's adapter run as an ordinary LoRA: 3 steps over the whole clip, at the shifts TaoMate's own schedule uses (video 12, audio 3). No soundtrack pass by the base model, no chunks and no cache, so no disk traffic, and a clip may open on a picture. Not the method the adapter was trained for: judge its results by eye.")
@@ -693,6 +704,7 @@ struct TuningPanel: View {
         case "ane_int8": String(localized: "Runs the Neural Engine's modules (the feed-forward, and q|k|v with ANE QKV) in int8, weights and activations, instead of fp16: the arithmetic of the GPU's per-token int8 tiers on the Neural Engine's rows. On an M4 Pro, MiniMax H3's blocks ran 1.36× the GPU alone with the feed-forward in int8 against 1.26× in fp16, and 1.65× against 1.41× with q|k|v too; each lands as far from the exact result as the GPU tier of its name. While int8 GEMM runs Per Token or Per Token, Unrotated, this is on at that tier. Needs ANE FFN and macOS 26; a module that cannot run int8 is built in fp16. Off in every Favor preset.")
         case "ane_int8_tier": String(localized: "Which int8 the Neural Engine runs with ANE int8 on. Per Token turns each weight row and each projection's input by a Hadamard rotation in blocks of 256, then gives each row and each token one scale, so that one large channel does not set it. Per Token, Unrotated skips the rotation: about the same speed, and in a MiniMax H3 clip about 1.7× the error. While int8 GEMM runs one of these tiers, this is the same one.")
         case "motion_cache": String(localized: "Before each step, predicts how far the model's answer moved since the last one that ran; when little, reuses it. Little to gain on short schedules.")
+        case "preview": String(localized: "Shows the picture or clip on the stage as it forms: its TAE, a small decoder, draws each step's result, and past 768P a clip's draft is decoded for the stage before its refine. Off, none of that runs -- a little less time and memory -- and the stage shows the progress alone until the result lands.")
         case "flow_scale": String(localized: "The resolution RIFE reads the motion at, against the frame's: the release's --scale. Auto follows its advice: the frame's own, or half past 2560 pixels (4K). Lower is faster and follows large, fast motion better; higher keeps fine motion. Its makers suggest half for 4K footage.")
         case "scene_threshold": String(localized: "Two frames whose likeness -- their structural similarity at 32 × 32 -- is under this are a scene cut: the frames between them repeat the first instead of morphing one shot into the next. 0.2 is the release's; 0 never cuts.")
         case "tiles": String(localized: "VOSR 2.0 was distilled at 512 pixels. Past that, the picture is restored in tiles of 512, each on the grid its weights know, blended where they overlap — as its release does. One Pass restores the whole picture at once: faster, but on a grid the model never saw, which can weave a periodic pattern, a checkerboard on faces.")
@@ -732,6 +744,9 @@ struct TuningPanel: View {
             String(localized: "Per Token, Unrotated")
         case ("pi_h3_steps", "4"): String(localized: "4 Steps")
         case ("pi_h3_steps", "2"): String(localized: "2 Steps")
+        case ("hyperflow_flash_steps", "4"): String(localized: "4 Steps")
+        case ("hyperflow_flash_steps", "6"): String(localized: "6 Steps")
+        case ("hyperflow_flash_steps", "8"): String(localized: "8 Steps")
         case ("sol_threshold", "diag"): String(localized: "Diagonal")
         case ("sol_threshold", "exact"): String(localized: "Exact")
         case ("refine_start", "draft"): String(localized: "Keep the Draft")
@@ -836,6 +851,8 @@ private enum TuningGroup: CaseIterable, Identifiable {
     // A clip past 768P regenerated (DESIGN §4q): the refine's own
     // options, the model's refiner's.
     case regenerate
+    // The clip's live preview, last.
+    case preview
     var id: Self { self }
 
     var title: String {
@@ -846,6 +863,7 @@ private enum TuningGroup: CaseIterable, Identifiable {
         case .compute: String(localized: "Compute")
         case .schedule: String(localized: "Schedule")
         case .regenerate: String(localized: "High resolution pass")
+        case .preview: String(localized: "Preview")
         }
     }
 
@@ -862,9 +880,11 @@ private enum TuningGroup: CaseIterable, Identifiable {
 
     static func of(_ key: String) -> TuningGroup {
         if key.hasPrefix("regenerate_") { return .regenerate }
+        if key == "preview" { return .preview }
         return switch key {
         case "steps", "hyperflow", "pika_flex", "pi_h3", "pi_h3_steps",
-             "pi_h3_vae", "taomate", "taomate_lora":
+             "pi_h3_vae", "hyperflow_flash", "hyperflow_flash_steps",
+             "taomate", "taomate_lora":
             .steps
         case "loras", "dits", "vaes", "dials": .weights
         case "vdn", "vdn_range", "sol_attn", "sol_threshold", "sol_tau",

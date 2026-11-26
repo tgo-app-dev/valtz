@@ -46,6 +46,15 @@ struct CapabilityTree: Decodable, Sendable {
     /// sources -- Hugging Face, ModelScope -- and the one chosen.
     var downloadSources: [DownloadSource]?
     var downloadSource: String?
+    /// The SLOW models folder, where one is set (Settings › General ›
+    /// Storage): a download can go there, a model be moved there and
+    /// back.
+    var slowStorage: SlowStorage?
+
+    struct SlowStorage: Decodable, Sendable {
+        var path: String
+        var there: Bool
+    }
 
     /// A place models are downloaded from (vpipe's model-source table).
     struct DownloadSource: Decodable, Sendable, Identifiable, Hashable {
@@ -121,6 +130,10 @@ struct CapabilityTree: Decodable, Sendable {
         var minRamGb: Int
         var path: String
         var source: String      // valtz | vpipe | link | ""
+        /// Which of Valtz's models folders holds it: "fast" the models
+        /// folder (or one kept), "slow" the slow one; nil / "" a link's or
+        /// vpipe's, or not here.
+        var storage: String?
         var license: String
         var notes: String
         /// Gated on Hugging Face (catalog `gated`): its license accepted
@@ -156,7 +169,40 @@ struct CapabilityTree: Decodable, Sendable {
         var takesDrawThings: Bool { !(drawthings ?? []).isEmpty }
         /// Its last READ-SPEED TEST, while it is where it was made.
         var readSpeed: ReadSpeed?
-        var id: String { model }
+        /// A line of VERSIONS (core catalog `versions`: lightx2v's Turbo
+        /// LoRAs, v1.0 ... v1.3): the row is the version that runs
+        /// (`model`, `version`), under its line's id; the others to
+        /// choose from.
+        var line: String?
+        var version: String?
+        var versions: Versions?
+        var id: String { line ?? model }
+    }
+
+    /// A line's versions: the one chosen ("" Automatic: the newest here,
+    /// else the newest), the one that runs, each newest first.
+    struct Versions: Decodable, Sendable {
+        var line: String
+        var chosen: String
+        var inUse: String
+        var versions: [Version]
+
+        struct Version: Decodable, Sendable, Identifiable {
+            var model: String
+            var version: String
+            var name: String
+            var state: String
+            var diskGb: Double
+            var id: String { model }
+        }
+
+        /// The newest is not the one that runs (nor downloaded): a newer
+        /// one to offer.
+        var newer: Version? {
+            guard let n = versions.first, n.model != inUse,
+                  n.state != "installed" else { return nil }
+            return n
+        }
     }
 
     /// How fast a model's files came off where it is (core
@@ -523,11 +569,32 @@ struct StorageReport: Decodable, Sendable {
     var models: Models
     var projects: Projects
     var cache: Cache
+    /// Each local drive Valtz keeps something on, the internal one first
+    /// (none from an older core: `volume` alone).
+    var volumes: [Drive]?
 
     struct Volume: Decodable, Sendable {
         var path: String
         var capacity: Int64
         var free: Int64
+    }
+    struct Drive: Decodable, Sendable, Identifiable {
+        var path: String
+        var name: String
+        var isInternal: Bool
+        var connection: String
+        var device: String
+        var capacity: Int64
+        var free: Int64
+        var models: Int64
+        var projects: Int64
+        var cache: Int64
+        var id: String { path }
+        enum CodingKeys: String, CodingKey {
+            case path, name, isInternal = "internal",
+                 connection = "protocol", device, capacity, free, models,
+                 projects, cache
+        }
     }
     struct Models: Decodable, Sendable {
         var root: String

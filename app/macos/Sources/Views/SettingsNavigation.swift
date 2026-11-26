@@ -180,7 +180,8 @@ enum SettingsPlace: Hashable, Sendable {
              String(localized: "Over RDMA"),
              String(localized: "Share by GPU"), String(localized: "Unpair")]
         case .page(.storage):
-            [String(localized: "Internal SSD"), String(localized: "Models"),
+            [String(localized: "Internal SSD"),
+             String(localized: "External Drive"), String(localized: "Models"),
              String(localized: "Projects"), String(localized: "Cache"),
              String(localized: "Size")]
         case .page(.permissions):

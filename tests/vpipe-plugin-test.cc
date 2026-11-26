@@ -1687,9 +1687,23 @@ TEST(vpipe_plugin, the_engine_says_which_picture_families_band)
 #ifdef VPIPE_FEATURE_TENSOR_PARALLEL_FLUX3_2
   CHECK(has("flux3-bands") && has("qwen-image-21-bands"));
 #endif
+  // MAGI-2-preview's rank (tensor-parallel-magi2/1): no floor of its own.
+#ifdef VPIPE_FEATURE_TENSOR_PARALLEL_MAGI2
+  CHECK(has("magi2") && !has("magi2-bands"));
+#endif
   // An H3 rank that bands a prompt longer than its band (`prompt_bands`).
 #ifdef VPIPE_FEATURE_TENSOR_PARALLEL_PROMPT_BANDS
   CHECK(has("h3-long-prompts"));
+#endif
+  // ...and one that binds pi-H3's adapter on its share of the pruned DiT
+  // (tensor-parallel-pi-h3/1): a split under pi-H3 asks both Macs for it.
+#ifdef VPIPE_FEATURE_TENSOR_PARALLEL_PI_H3
+  CHECK(has("h3-pi"));
+#endif
+  // ...and a rank of HyperFlow H3 Flash, its low-rank pairs cut to the
+  // share (tensor-parallel-flash/1).
+#ifdef VPIPE_FEATURE_TENSOR_PARALLEL_FLASH
+  CHECK(has("h3-flash"));
 #endif
 }
 

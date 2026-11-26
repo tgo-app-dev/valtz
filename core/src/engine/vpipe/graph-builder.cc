@@ -1710,11 +1710,39 @@ build_video(const JobSpec& job, const std::optional<RefImage>& first,
     return make_error(Code::InvalidArgument,
                       "a clip guided through a tail opens on nothing else");
   }
-  // The size the model makes: the draft's, or the clip's.
+  // A family that REFINES in its own denoise (catalog `refine`: MAGI-2's
+  // 1080p refiner, set on its config stage): past `above` on the short
+  // side its preview is made at `preview` there -- the shape asked, on the
+  // grid -- and refined to the size asked (floored to the refine's cells)
+  // at the refine's own rate.
+  const Json rf = jget(vp, "refine", Json());
+  const bool refined =
+      rf.is_object() && !regen &&
+      std::min(width, height) > jget(rf, "above", 512);
+  int refine_w = 0, refine_h = 0;
+  if (refined) {
+    const int cell = std::max(1, jget(rf, "align", 16));
+    const int want_w = jget(job.params, "width", width);
+    const int want_h = jget(job.params, "height", height);
+    refine_w = std::max(cell, want_w / cell * cell);
+    refine_h = std::max(cell, want_h / cell * cell);
+  }
+  const auto preview_of = [&](int w, int h, bool along_w) {
+    const double short_side = jget(rf, "preview", 512);
+    const double s = short_side / std::min(width, height);
+    return ceil_to(static_cast<int>(std::lround((along_w ? w : h) * s)),
+                   align);
+  };
+  // The size the model makes: the draft's, the preview refined, or the
+  // clip's.
   const int gen_w = regen ? ceil_to(jget(draft, "width", width), align)
-                          : width;
+                    : refined ? preview_of(width, height, true)
+                              : width;
   const int gen_h = regen ? ceil_to(jget(draft, "height", height), align)
-                          : height;
+                    : refined ? preview_of(width, height, false)
+                              : height;
+  // The clip as written: a refined one at the refine's size and rate.
+  const double out_fps = refined ? jget(rf, "fps", fps) : fps;
 
   BuiltGraph g;
   const std::string jid = job.id.str();
@@ -1724,8 +1752,8 @@ build_video(const JobSpec& job, const std::optional<RefImage>& first,
                                               kept.ext);
   g.audio_part = job.output_dir / std::format("{}-sound.wav", jid);
   g.sound = kept.sound;
-  g.width = width;
-  g.height = height;
+  g.width = refined ? refine_w : width;
+  g.height = refined ? refine_h : height;
 
   const Json rv = jget(vp, "references", Json());
   if (!refs.empty() && !rv.is_object()) {
@@ -1819,7 +1847,19 @@ build_video(const JobSpec& job, const std::optional<RefImage>& first,
        jget(jget(job.params, "tuning", Json::object()), "pika_flex",
             false) ||
        // pi-H3's graphs show them too (vpipe's pi-h3-first-*-to-video).
-       jget(jget(job.params, "tuning", Json::object()), "pi_h3", false));
+       jget(jget(job.params, "tuning", Json::object()), "pi_h3", false) ||
+       // ...and a family whose encoder always reads its picture (catalog
+       // `keyframes_to_encoder`: MAGI-2's, "<Figure 1>").
+       jget(vp, "keyframes_to_encoder", false));
+  // Its CFG against the conditioner's second output, the negative prompt
+  // (catalog `negative`: MAGI-2's fixed one) -- read where it is made,
+  // so nothing of this clip's encodings is kept: a kept conditioning
+  // carries the first output alone.
+  const bool negative =
+      jget<std::string>(vp, "negative", "") == "conditioner";
+  if (negative) {
+    cache = nullptr;
+  }
   if (refs.empty() && !prompt_only) {
     // The prompt encoder (Qwen3-VL-32B for H3) streams, and is dropped
     // before the denoise: the two never share the machine. KEPT
@@ -2177,6 +2217,23 @@ build_video(const JobSpec& job, const std::optional<RefImage>& first,
   if (!job.model.branch.empty()) {
     cfg["linear_branch"] = job.model.branch.string();
   }
+  // A config stage that takes the steps over generate-video's (catalog
+  // `config_steps`: MAGI-2's, its default 100 otherwise) and the flow
+  // shift (`config_shift`, Custom's Shift); the refine's size.
+  if (jget(vp, "config_steps", false)) {
+    cfg["steps"] = steps;
+  }
+  if (vp.contains("config_shift")) {
+    const Json t = jget(job.params, "tuning", Json::object());
+    cfg["shift"] = t.is_object() && t.contains("shift") &&
+                           t["shift"].is_number()
+                       ? t["shift"].get<double>()
+                       : jget(vp, "config_shift", 5.0);
+  }
+  if (refined) {
+    cfg["refine_width"] = refine_w;
+    cfg["refine_height"] = refine_h;
+  }
   if (!job.model.preview.empty() && jget(job.params, "preview", true)) {
     cfg["preview_vae"] = job.model.preview.string();
     cfg["preview_every"] = jget(job.params, "preview_every", 1);
@@ -2307,7 +2364,10 @@ build_video(const JobSpec& job, const std::optional<RefImage>& first,
   // 2 model, 3 sampler, 4 scheduler (H3 brings its own), 5 / 6 first /
   // last keyframe, 7 / 8 Ref2VA rows, 9 model_config -- and 12 / 13 a
   // guide's latent and soundtrack.
-  Json gen_in = Json::array({cond, unwired(), port("model-select"),
+  const Json neg = negative && prompt_read
+                       ? port("diffusion-conditioner", 1)
+                       : unwired();
+  Json gen_in = Json::array({cond, neg, port("model-select"),
                              unwired(), unwired(), anchor, anchor_last,
                              ref_video, ref_audio, port(cfg_stage)});
   if (guide) {
@@ -2323,6 +2383,11 @@ build_video(const JobSpec& job, const std::optional<RefImage>& first,
   // .safetensors (FP8 kept FP8) or a transformer folder.
   if (!job.model.dit.empty()) {
     gen_cfg["dit_dir"] = job.model.dit.string();
+  }
+  // pi-H3 on HyperFlow H3 Flash: the stock pruned DiT's curve and AdaLN
+  // under Flash's blocks (vpipe's curve_dit).
+  if (!job.model.curve_dit.empty()) {
+    gen_cfg["curve_dit"] = job.model.curve_dit.string();
   }
   gen_cfg = merged(gen_cfg, declared_of(job, "generate"));
   gen_cfg = merged(gen_cfg, jget(job.params, "vpipe_generate",
@@ -2492,7 +2557,7 @@ build_video(const JobSpec& job, const std::optional<RefImage>& first,
   Json save = {{"path", g.video_part.string()},
                {"codec", kept.codec},
                {"alpha", "drop"},
-               {"fps", fps},
+               {"fps", out_fps},
                {"color_primaries", 1},
                {"color_transfer", 1},
                {"color_matrix", 1}};
@@ -4552,12 +4617,73 @@ build_track_beats(const JobSpec& job, const fs::path& wav)
 //             model's: `encoder_dir`); edit pairs through video-ref-
 //             encoder as Ref2VA's, no soundtrack (train's 5 unwired)
 //
+namespace {
+
+// A training's two ranks as train-lora takes them: the plan's
+// `tensor_parallel` (DESIGN §11c) -- a share of the DiT each -- or, its
+// `mode` "data", vpipe's `data_parallel` (each Mac the whole model, its
+// `samples` of every step's): the key, and its value with the transport.
+std::pair<std::string, Json>
+train_parallel(const Json& tp)
+{
+  if (jget<std::string>(tp, "mode", "") == "data") {
+    Json dp = {{"rank", jget(tp, "rank", 0)},
+               {"ranks", jget(tp, "ranks", 2)},
+               {"samples", jget(tp, "samples", Json::array({1, 1}))},
+               {"transport", ex::kTpTransport},
+               {"params", jget(tp, "params", Json::object())}};
+    return {"data_parallel", std::move(dp)};
+  }
+  Json t = merged(tp, {{"transport", ex::kTpTransport}});
+  t.erase("needs");
+  return {"tensor_parallel", std::move(t)};
+}
+
+}  // namespace
+
 // Previews: a still's through vae-decode into PNGs, a clip's (a clip in
 // the dataset) through vae-decode, rgb-to-video and -- train's 3 -- its
 // soundtrack's audio-vae-decode into an MP4.
 Result<BuiltGraph>
 build_train_lora(const JobSpec& job)
 {
+  // RANK 1 OF A RUN TRAINED SPLIT (DESIGN §11c): a train-lora stage
+  // alone -- the dataset, encoded, and the run's settings are rank 0's,
+  // handed over the cables -- writing only its resume state; the
+  // adapter is rank 0's, whole.
+  if (jget(job.params, "train_follower", false)) {
+    const Json tr = jget(job.params, "train", Json::object());
+    const Json tp = jget(job.params, "tensor_parallel", Json());
+    const std::string out = jget<std::string>(tr, "output_dir", "");
+    const std::string name = jget<std::string>(tr, "name", "");
+    if (job.model.dir.empty() || out.empty() || name.empty() ||
+        !tp.is_object()) {
+      return make_error(Code::InvalidArgument,
+                        "a training's other rank needs its model, where it "
+                        "keeps its state, the run's name and its share");
+    }
+    BuiltGraph g;
+    g.metrics_sink = "metrics-sink";
+    g.checkpoint_sink = "checkpoint-sink";
+    g.command_stage = "train";
+    Json stages = Json::array();
+    const auto [pkey, pval] = train_parallel(tp);
+    stages.push_back(stage(g.command_stage, "train-lora", Json::array(),
+                           {{"hf_dir", job.model.dir.string()},
+                            {"output_dir", out},
+                            {"name", name},
+                            {"register", false},
+                            {"resume", jget<std::string>(tr, "resume",
+                                                         "auto")},
+                            {pkey, pval}}));
+    stages.push_back(sink(g.checkpoint_sink, port(g.command_stage, 1),
+                          false));
+    stages.push_back(sink(g.metrics_sink, port(g.command_stage, 2), false));
+    g.spec = {{"id", "valtz-" + job.id.str()},
+              {"stages", stages},
+              {"subpipelines", Json::array()}};
+    return g;
+  }
   Json ds = jget(job.params, "dataset", Json::object());
   Json opt = jget(job.params, "optimizer", Json::object());
   Json tr = jget(job.params, "train", Json::object());
@@ -4602,6 +4728,13 @@ build_train_lora(const JobSpec& job)
     }
   }
   tr["register"] = false;
+  // RANK 0 OF A RUN TRAINED ON TWO MACS: its share of the DiT, or of each
+  // step's samples; the cables to rank 1.
+  if (const Json tp = jget(job.params, "tensor_parallel", Json());
+      tp.is_object()) {
+    const auto [pkey, pval] = train_parallel(tp);
+    tr[pkey] = pval;
+  }
   BuiltGraph g;
   g.metrics_sink = "metrics-sink";
   g.checkpoint_sink = "checkpoint-sink";

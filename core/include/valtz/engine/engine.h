@@ -267,6 +267,10 @@ struct ModelRef {
   // A generator decoded by a checkpoint of its own (YuE2: catalog
   // `decoder`, param "decoder") is given it here.
   std::filesystem::path dit;
+  // pi-H3 on HyperFlow H3 Flash (param "curve_model"): the stock pruned
+  // DiT whose time curve and AdaLN Flash's blocks run under (vpipe's
+  // generate-video `curve_dit`); empty otherwise.
+  std::filesystem::path curve_dit;
   std::filesystem::path vae;
   // A part's WEIGHTS alone, its config and tokenizer the model's own
   // (params "encoder_weights", "vae_weights": Draw Things checkpoints of

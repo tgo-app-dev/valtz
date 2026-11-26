@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 import UniformTypeIdentifiers
 
@@ -20,6 +21,11 @@ struct RootView: View {
                 if model.showsInspectorColumn {
                     InspectorColumn(model: model)
                 }
+            }
+            // The room the inspector's width is held to (the editor keeps
+            // its least).
+            .onGeometryChange(for: CGFloat.self) { $0.size.width } action: {
+                model.rootWidth = $0
             }
             // The editor keeps its width beside it: the window widened
             // for it, and narrowed back after (AppModel.fitWindowToInspector).
@@ -180,17 +186,74 @@ struct RootView: View {
 struct InspectorColumn: View {
     @Bindable var model: AppModel
 
-    /// Its width, the edge included: what the window widens by for it
-    /// (AppModel.windowMinWidth).
+    /// Its LEAST width, the edge included: what the window widens by for
+    /// it at the least (AppModel.windowMinWidth). Its left edge is dragged
+    /// wider (AppModel.inspectorWidth), the editor beside it -- the stage,
+    /// the timeline, the prompt box -- taking what is left.
     static let width: CGFloat = 301
 
     var body: some View {
         HStack(spacing: 0) {
             Divider()
             InspectorView(model: model)
-                .frame(width: Self.width - 1)
+                .frame(width: model.inspectorShownWidth - 1)
+        }
+        // The edge's grip: a few points either side of the divider, over
+        // it -- AppKit's, so its cursor and drag are the window's own.
+        .overlay(alignment: .leading) {
+            InspectorEdgeGrip(model: model)
+                .frame(width: 8)
+                .offset(x: -4)
         }
         .transition(.move(edge: .trailing).combined(with: .opacity))
+    }
+}
+
+/// The inspector's left edge, dragged: the column wider or narrower (its
+/// first width the least), the resize cursor over it. An AppKit view: a
+/// SwiftUI drag gesture takes no event the snapshot hooks post.
+struct InspectorEdgeGrip: NSViewRepresentable {
+    let model: AppModel
+
+    func makeNSView(context: Context) -> GripView {
+        let v = GripView()
+        v.model = model
+        return v
+    }
+
+    func updateNSView(_ v: GripView, context: Context) { v.model = model }
+
+    final class GripView: NSView {
+        weak var model: AppModel?
+        private var startX: CGFloat = 0
+        private var startWidth: CGFloat = 0
+
+        override func resetCursorRects() {
+            addCursorRect(bounds, cursor: .columnResize)
+        }
+
+        // Dragged at once, the window in front or not.
+        override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
+        override func mouseDown(with event: NSEvent) {
+            guard let model else { return }
+            startX = event.locationInWindow.x
+            startWidth = model.inspectorShownWidth
+        }
+
+        override func mouseDragged(with event: NSEvent) {
+            guard let model else { return }
+            // Leftward is wider: the column grows into the editor.
+            let dx = event.locationInWindow.x - startX
+            model.dragInspector(to: startWidth - dx)
+        }
+
+        // A double-click puts it back at its least.
+        override func mouseUp(with event: NSEvent) {
+            if event.clickCount == 2 {
+                model?.dragInspector(to: InspectorColumn.width)
+            }
+        }
     }
 }
 

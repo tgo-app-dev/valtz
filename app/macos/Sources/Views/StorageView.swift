@@ -3,9 +3,11 @@ import SwiftUI
 
 /// Settings › Storage, as macOS shows a disk: one bar for the internal
 /// SSD -- what Valtz keeps on it, by category, then everything else, then
-/// what is free -- and under it each category in detail: every model in
-/// the folder Valtz manages, every project (an open one's assets each),
-/// the managed cache (Controller::storage_report).
+/// what is free -- and one for each external drive a Valtz folder is on
+/// (slow model storage, a models, projects or cache folder put there; a
+/// network share none), then each category in detail: every model in the
+/// folders Valtz manages, every project (an open one's assets each), the
+/// managed cache (Controller::storage_report).
 struct StorageView: View {
     @Bindable var model: AppModel
     @State private var report: StorageReport?
@@ -20,11 +22,21 @@ struct StorageView: View {
             Section { SettingsHeader(page: .storage) }
             if let r = report {
                 Section {
-                    VolumeBar(report: r) {
-                        Task { await load() }
+                    let drives = Self.drives(r)
+                    ForEach(drives.indices, id: \.self) { i in
+                        let d = drives[i]
+                        // The first is the Mac's own (support's); another
+                        // internal volume -- a disk image too -- by its
+                        // name.
+                        VolumeBar(drive: d, main: i == 0,
+                                  refresh: i == 0 ? {
+                                      Task { await load() }
+                                  } : nil)
+                        .disabled(loading)
+                        .settingsMark(i == 0
+                                      ? String(localized: "Internal SSD")
+                                      : String(localized: "External Drive"))
                     }
-                    .disabled(loading)
-                    .settingsMark(String(localized: "Internal SSD"))
                 }
                 Section {
                     ForEach(modelSort.order(r.models.items,
@@ -81,6 +93,17 @@ struct StorageView: View {
             DTO.decode(StorageReport.self, core.storageReportJSON())
         }.value
         loading = false
+    }
+
+    /// The drives to draw: the report's, else -- an older core -- the
+    /// internal one with everything on it.
+    static func drives(_ r: StorageReport) -> [StorageReport.Drive] {
+        if let v = r.volumes, !v.isEmpty { return v }
+        return [StorageReport.Drive(
+            path: r.volume.path, name: "", isInternal: true, connection: "",
+            device: "", capacity: r.volume.capacity, free: r.volume.free,
+            models: r.models.bytes, projects: r.projects.bytes,
+            cache: r.cache.bytes)]
     }
 
     /// A model by its catalog names, else its repository.
@@ -154,40 +177,65 @@ struct UsageBar: View {
     }
 }
 
-/// The disk in one bar: Valtz's models, projects and cache, everything
-/// else used, and what is free -- with each one's share named below.
+/// A drive in one bar: Valtz's models, projects and cache on it,
+/// everything else used, and what is free -- with each one's share named
+/// below. An external one by its name and how it is connected.
 private struct VolumeBar: View {
-    let report: StorageReport
-    let refresh: () -> Void
+    let drive: StorageReport.Drive
+    let main: Bool
+    let refresh: (() -> Void)?
 
     var body: some View {
-        let r = report
-        let used = max(0, r.volume.capacity - r.volume.free)
-        let valtz = r.models.bytes + r.projects.bytes + r.cache.bytes
+        let d = drive
+        let used = max(0, d.capacity - d.free)
+        let valtz = d.models + d.projects + d.cache
         let parts: [(String, Int64, Color)] = [
-            (String(localized: "Models"), r.models.bytes, .purple),
-            (String(localized: "Projects"), r.projects.bytes, .blue),
-            (String(localized: "Cache"), r.cache.bytes, .orange),
+            (String(localized: "Models"), d.models, .purple),
+            (String(localized: "Projects"), d.projects, .blue),
+            (String(localized: "Cache"), d.cache, .orange),
             (String(localized: "Other"), max(0, used - valtz), .gray),
         ]
         let style = ByteCountFormatStyle(style: .file)
         VStack(alignment: .leading, spacing: 10) {
             HStack {
-                Text("Internal SSD").font(.headline)
-                Spacer()
-                Text("\(r.volume.free.formatted(style)) available of \(r.volume.capacity.formatted(style))")
-                    .foregroundStyle(.secondary)
-                Button(action: refresh) {
-                    Image(systemName: "arrow.clockwise")
+                if main {
+                    Text("Internal SSD").font(.headline)
+                } else {
+                    Image(systemName: d.isInternal ? "internaldrive"
+                                                   : "externaldrive")
+                    if d.name.isEmpty {
+                        Text("External Drive").font(.headline)
+                    } else {
+                        Text(verbatim: d.name).font(.headline)
+                    }
+                    if !d.isInternal && !d.connection.isEmpty {
+                        Text("External · \(d.connection)")
+                            .foregroundStyle(.secondary)
+                    }
                 }
-                .buttonStyle(.borderless)
-                .help("Measure again")
+                Spacer()
+                Text("\(d.free.formatted(style)) available of \(d.capacity.formatted(style))")
+                    .foregroundStyle(.secondary)
+                if let refresh {
+                    Button(action: refresh) {
+                        Image(systemName: "arrow.clockwise")
+                    }
+                    .buttonStyle(.borderless)
+                    .help("Measure again")
+                } else {
+                    Button {
+                        NSWorkspace.shared.selectFile(
+                            nil, inFileViewerRootedAtPath: d.path)
+                    } label: { Image(systemName: "folder") }
+                        .buttonStyle(.borderless)
+                        .help("Show in Finder")
+                }
             }
             UsageBar(parts: parts.indices.map {
                          UsagePart(id: "\($0)", bytes: Double(parts[$0].1),
                                    color: parts[$0].2)
                      },
-                     capacity: Double(r.volume.capacity))
+                     capacity: Double(d.capacity))
             HStack(spacing: 16) {
                 ForEach(parts.indices, id: \.self) { i in
                     HStack(spacing: 5) {

@@ -181,11 +181,18 @@ final class CoreService: @unchecked Sendable {
     func agentSay(_ agent: String, _ text: String,
                   stage: [String: Any] = [:],
                   row: [String] = [],
-                  render: [String: Any]? = nil) -> CoreReply {
+                  render: [String: Any]? = nil,
+                  skillFiles: [String] = []) -> CoreReply {
         var req: [String: Any] = ["agent": agent, "text": text,
                                   "stage": stage, "row": row]
         if let render { req["render"] = render }
+        if !skillFiles.isEmpty { req["skill_files"] = skillFiles }
         return send(core.agent_say, req)
+    }
+    /// A file or folder as a skill: {"name", "description", "files"}, or
+    /// why it is none.
+    func agentSkillInfo(_ path: String) -> CoreReply {
+        send(core.agent_skill_info, ["path": path])
     }
     func agentReview(_ agent: String, step: Int, decision: String,
                      note: String = "") -> CoreReply {
@@ -990,16 +997,31 @@ final class CoreService: @unchecked Sendable {
     /// `token`: a gated model's Hugging Face access token, "" none --
     /// handed through for this download, kept nowhere. `source`: where
     /// from, a download source's name ("" the one chosen).
+    /// `storage`: "slow" into the slow models folder, "" the models
+    /// folder.
     func downloadModel(_ id: String, token: String = "",
-                       source: String = "") -> CoreReply {
+                       source: String = "", storage: String = "")
+        -> CoreReply {
         reply(core.download_model(std.string(id), std.string(token),
-                                  std.string(source)))
+                                  std.string(source), std.string(storage)))
+    }
+
+    /// A model moved between the models folder and the slow one (bridge
+    /// move_model): `to` "fast" | "slow"; the move's job.
+    func moveModel(_ id: String, to: String) -> CoreReply {
+        reply(core.move_model(std.string(id), std.string(to)))
     }
 
     /// The source every download comes from after (bridge
     /// set_download_source): Settings › Capabilities' Download From.
     func setDownloadSource(_ name: String) -> CoreReply {
         reply(core.set_download_source(std.string(name)))
+    }
+
+    /// The version a line of versions runs (bridge set_model_version):
+    /// Settings › Capabilities' version pop-up; "" Automatic.
+    func setModelVersion(_ line: String, _ version: String) -> CoreReply {
+        reply(core.set_model_version(std.string(line), std.string(version)))
     }
 
     /// A model's download stopped (bridge stop_download): PAUSED, what

@@ -68,7 +68,35 @@ struct Message {
   // sent to a model (the content says what it needs to know).
   std::string              said;
   std::vector<std::string> attached;
+  // The SKILLS the person loaded with it (a skill dragged into the chat,
+  // read_skill): their names, for the app and the transcript -- their
+  // text is in `content`, for the model, never shown whole.
+  std::vector<std::string> skills;
 };
+
+// ---- skills the person loads --------------------------------------------
+//
+// A SKILL, as Anthropic's Agent Skills lay one out: a folder with a
+// SKILL.md -- YAML front matter (`name`, `description`) over Markdown
+// instructions -- and the files it refers to beside it. Dragged into the
+// agent's chat, its SKILL.md is read and given to the model with the
+// person's next words; the files beside it are named, not read (the
+// agent's tools read none).
+struct Skill {
+  std::string                        name;
+  std::string                        description;
+  std::string                        text;   // SKILL.md, front matter too
+  std::filesystem::path              path;   // the SKILL.md read
+  std::vector<std::string>           files;  // beside it, relative
+};
+// A skill at `path`: a folder with a SKILL.md at its top (any case), a
+// SKILL.md, or a Markdown file whose front matter names it. Its name the
+// front matter's, else the folder's (a SKILL.md's) or the file's stem.
+// Refused: nothing of that, or a SKILL.md past kSkillBytes.
+inline constexpr std::size_t kSkillBytes = 256 * 1024;
+Result<Skill> read_skill(const std::filesystem::path& path);
+// What the model is given for a skill loaded: what it is, then its text.
+std::string skill_text(const Skill&);
 
 Json to_json(const Message&);
 Message message_from_json(const Json&);
@@ -210,6 +238,10 @@ struct CompactionNotes {
   int                      steps_run = 0;
   std::int64_t             used = 0;
   std::int64_t             limit = 0;
+  // The skills the person loaded in what is compacted away (skill_text
+  // each): kept WHOLE in the notes -- they still apply, and a summary of
+  // one is not it.
+  std::vector<std::string> skills;
 };
 // The conversation compacted: its head, the notes (a user message named
 // "compaction"), its messages from `tail` on.

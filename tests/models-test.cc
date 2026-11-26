@@ -346,9 +346,11 @@ TEST(models, auto_order_is_catalog_data)
                                   "fibo2-edit-turbo", "minimax-h3-image",
                                   "p-h3-image"}));
   // A clip from words: FL2VA, the trained route; else Ref2VA from the
-  // prompt alone (vpipe's prompt-only request).
+  // prompt alone (vpipe's prompt-only request); MAGI-2-preview last, far
+  // slower.
   CHECK((c->auto_order("video", "generate") ==
-         std::vector<std::string>{"minimax-h3-fl2va", "minimax-h3-ref2va"}));
+         std::vector<std::string>{"minimax-h3-fl2va", "minimax-h3-ref2va",
+                                  "magi2-preview"}));
   CHECK((c->auto_order("video", "edit") ==
          std::vector<std::string>{"minimax-h3-ref2va"}));
   // Songs first -- YuE2, then MiniMax-Music3 (far slower) -- speech when
@@ -1310,6 +1312,42 @@ TEST(models, pika_h3_flex_runs_its_six_steps)
   // Ref2VA's, the same rules.
   f = resolve_tuning(ref, h, "balanced", false, {{"pika_flex", true}});
   CHECK(f["pika_flex"] == true && f["steps"] == 6);
+}
+
+// pi-H3 split over the int8 ConvRot pruned DiT: a rank cuts its codes
+// on the Per Token tier alone, so the catalog names that tier by the DiT
+// (`pi_h3.split_tier`) -- a DiT it names, and a tier H3 offers.
+TEST(models, pi_h3_names_the_tier_its_int8_dit_splits_on)
+{
+  auto c = Catalog::builtin();
+  REQUIRE_OK(c);
+  const ModelEntry& fl = *c->find("minimax-h3-fl2va");
+  const Json pi = jget(jget(fl.engine, "vpipe", Json::object()), "pi_h3",
+                       Json::object());
+  const Json st = jget(pi, "split_tier", Json::object());
+  REQUIRE(st.is_object() && !st.empty());
+  for (const auto& [dit, tier] : st.items()) {
+    CHECK(c->find(dit) != nullptr);
+    CHECK(tier == "token");
+  }
+  CHECK(st.contains("minimax-h3-fl2va-pruned-int8"));
+  CHECK(!st.contains("minimax-h3-fl2va-pruned-bf16"));
+}
+
+// HyperFlow H3 Flash split: its single files are int8 ConvRot too, read
+// on a rank on a token tier alone -- each partition's `hyperflow_flash`
+// names it beside the DiT it is.
+TEST(models, hyperflow_flash_names_the_tier_it_splits_on)
+{
+  auto c = Catalog::builtin();
+  REQUIRE_OK(c);
+  for (const char* id : {"minimax-h3-fl2va", "minimax-h3-ref2va"}) {
+    const ModelEntry& m = *c->find(id);
+    const Json fl = jget(jget(m.engine, "vpipe", Json::object()),
+                         "hyperflow_flash", Json::object());
+    CHECK(c->find(jget<std::string>(fl, "dit", "")) != nullptr);
+    CHECK(jget<std::string>(fl, "split_tier", "") == "token");
+  }
 }
 
 TEST(models, a_refiners_options_sit_in_its_models_custom)
@@ -2388,9 +2426,14 @@ TEST(models, families_and_links)
   }
   // Every model has its row -- but one that runs on another's files
   // (`files_of`: the RefMod maker, Ref2VA's), which has nothing of its
-  // own to download or link.
+  // own to download or link -- and a VERSION of a line (lightx2v's Turbo
+  // LoRAs), shown on its line's row, chosen there.
   for (const auto& m : c->models()) {
-    CHECK(placed.count(m.id) == (m.files_of.empty() ? 1u : 0u));
+    CHECK(placed.count(m.id) ==
+          (m.files_of.empty() && m.version_of.empty() ? 1u : 0u));
+    if (!m.version_of.empty()) {
+      CHECK(placed.count(m.version_of) == 1u);
+    }
   }
   const ModelEntry* lora = c->find("minimax-h3-turbo-8step");
   const ModelEntry* folder = c->find("minimax-h3-vdn");

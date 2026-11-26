@@ -1208,7 +1208,23 @@ private:
       return;
     }
     auto ops = jget(me, "ops", Json::array());
-    const bool runs_op = std::ranges::any_of(ops, [&](const Json& x) {
+    // One rank of a LoRA trained on two Macs (DESIGN §11c): not a task
+    // offered the fleet, a pairing's -- where this Mac's engine trains so
+    // (split, or data-parallel: the plan's `mode`).
+    const auto families = jget(me, "split_families", Json::array());
+    const Json tpo = jget(offer.params, "tensor_parallel", Json::object());
+    const std::string need = jget<std::string>(
+        tpo, "needs",
+        jget<std::string>(tpo, "mode", "") == "data" ? "train-dp"
+                                                     : "h3-train");
+    const bool train_rank =
+        offer.op == "train-lora" &&
+        jget(offer.params, "train_follower", false) &&
+        std::ranges::any_of(families, [&](const Json& x) {
+          return x.is_string() && x.get<std::string>() == need;
+        });
+    const bool runs_op = train_rank ||
+                         std::ranges::any_of(ops, [&](const Json& x) {
       return x.is_string() && x.get<std::string>() == offer.op;
     });
     auto have = jget(me, "installed", Json::array());

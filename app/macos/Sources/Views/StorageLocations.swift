@@ -184,12 +184,66 @@ extension AppModel {
         _ = core?.cancel(job: job)
     }
 
+    /// A model's move between the models folder and the slow one,
+    /// stopped: what was copied goes.
+    func stopModelMove(_ model: String) {
+        guard let m = locations?.moving, m.what == "model", m.model == model
+        else { return }
+        _ = core?.cancel(job: m.job)
+    }
+
+    /// Settings › General › Storage's Slow Models: a folder chosen -- on
+    /// an external drive, say -- for the models used now and then.
+    func chooseSlowModels() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.canCreateDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.prompt = String(localized: "Use This Folder")
+        panel.message = String(localized: "Choose a folder for slow model storage — on an external drive, say — for the models used now and then.")
+        if let now = locations?.modelsSlow?.path {
+            panel.directoryURL = URL(fileURLWithPath: now)
+                .deletingLastPathComponent()
+        } else {
+            panel.directoryURL = URL(fileURLWithPath: "/Volumes")
+        }
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        setSlowModels(url.path)
+    }
+
+    /// The slow folder set, or ("") none.
+    func setSlowModels(_ path: String) {
+        guard let core else { return }
+        let r = core.setLocation("models_slow", path: path, how: "set")
+        if !r.ok {
+            locationError = r.message
+            return
+        }
+        refreshLocations()
+    }
+
     /// A move ended: where things are now; done, said; failed, said in
     /// Settings.
     func relocationEnded(_ ev: CoreEvent) {
         refreshLocations()
         if let core { paths = DTO.decode(PathsInfo.self, core.pathsJSON()) }
         let what = ev.payload["what"] as? String ?? ""
+        if what == "model" {
+            let id = ev.payload["model"] as? String ?? ""
+            let name = modelName(id)
+            switch ev.kind {
+            case "job.finished":
+                flash((ev.payload["to"] as? String) == "slow"
+                      ? String(localized: "\(name) is in slow storage now.")
+                      : String(localized: "\(name) is in the models folder now."))
+            case "job.failed":
+                flash(L10n.coreMessage(ev.payload), level: .error)
+            default:
+                break
+            }
+            return
+        }
         switch ev.kind {
         case "job.finished":
             let name = Self.folderName(ev.payload["path"] as? String ?? "")
@@ -218,6 +272,9 @@ struct StorageLocationRows: View {
                 .settingsMark(String(localized: "Projects"))
             row("models", "Models")
                 .settingsMark(String(localized: "Models"))
+            slowRow
+                .settingsMark(String(localized: "Slow Model Storage"),
+                              String(localized: "External drive"))
             row("cache", "Cache")
                 .settingsMark(String(localized: "Cache"))
         }
@@ -278,6 +335,77 @@ struct StorageLocationRows: View {
         } label: {
             Text(title)
         }
+    }
+
+    /// The SLOW models folder: set (Choose…), shown, let go (Remove,
+    /// refused by the core while it holds models).
+    private var slowRow: some View {
+        let slow = model.locations?.modelsSlow
+        return LabeledContent {
+            HStack(alignment: .center, spacing: 6) {
+                VStack(alignment: .trailing, spacing: 2) {
+                    if let slow {
+                        Text(verbatim: slow.path)
+                            .lineLimit(1).truncationMode(.middle)
+                            .help(Text(verbatim: slow.path))
+                        ForEach(slowNotes(slow), id: \.self) { n in
+                            Text(verbatim: n)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(2)
+                                .multilineTextAlignment(.trailing)
+                        }
+                    } else {
+                        Text("None")
+                            .foregroundStyle(.secondary)
+                        Text("A second models folder, on an external drive say, for models used now and then: downloaded there, or moved there and back in Capabilities")
+                            .font(.caption).foregroundStyle(.secondary)
+                            .lineLimit(3).multilineTextAlignment(.trailing)
+                    }
+                }
+                if let slow {
+                    Button {
+                        NSWorkspace.shared.selectFile(
+                            nil, inFileViewerRootedAtPath: slow.path)
+                    } label: { Image(systemName: "arrow.right.circle") }
+                        .buttonStyle(.borderless)
+                        .help("Show in Finder")
+                        .disabled(!slow.there)
+                }
+                Menu {
+                    Button(slow == nil ? "Choose…" : "Change…") {
+                        model.chooseSlowModels()
+                    }
+                    if slow != nil {
+                        Button("Remove") { model.setSlowModels("") }
+                            .disabled((slow?.bytes ?? 0) > 0
+                                      && slow?.there == true)
+                    }
+                } label: {
+                    Text(slow == nil ? "Set Up" : "Change")
+                }
+                .menuStyle(.borderlessButton)
+                .fixedSize()
+                .disabled(model.locations?.moving != nil)
+                .help("Where the models used now and then are kept: an external drive, say. Remove it once it holds none (move them back in Capabilities)")
+            }
+        } label: {
+            Text("Slow Model Storage")
+        }
+    }
+
+    private func slowNotes(_ s: LocationsInfo.Slow) -> [String] {
+        var out: [String] = []
+        if !s.there {
+            out.append(String(localized: "Not there: is its drive connected?"))
+        } else if let v = s.volume, !v.isEmpty {
+            let link = s.link ?? ""
+            out.append(link.isEmpty ? v : "\(v) · \(link)")
+        }
+        if let b = s.bytes, b > 0 {
+            out.append(b.formatted(.byteCount(style: .file)))
+        }
+        return out
     }
 
     /// What is said of a folder under its path.

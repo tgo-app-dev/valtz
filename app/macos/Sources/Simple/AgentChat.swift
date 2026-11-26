@@ -254,10 +254,10 @@ private struct AgentConversation: View {
         }
         // The person's words: a bubble -- a long one folded to its start.
         func person(_ id: String, _ text: String, attached: [String],
-                    place: String?) {
+                    place: String?, skills: [String] = []) {
             add(id, .person(PersonWords(
                 id: id, parts: cuts.parts(id, text), attached: attached,
-                place: place)))
+                place: place, skills: skills)))
         }
         // The agent's words: a row a part, as written or being written
         // -- a block of code fenced in them a code block of its own.
@@ -328,7 +328,8 @@ private struct AgentConversation: View {
                 } else {
                     person(id, m.said ?? Self.personWords(m.content),
                            attached: m.attached ?? [],
-                           place: Self.whereSaid(m.content))
+                           place: Self.whereSaid(m.content),
+                           skills: m.skills ?? [])
                 }
             case "compaction":
                 add(id, .compaction(m.compacted ?? 0))
@@ -606,6 +607,8 @@ private struct PersonWords {
     let parts: [TextParts.Part]
     let attached: [String]
     let place: String?
+    /// The skills loaded with it: named, never their text.
+    var skills: [String] = []
 }
 
 /// The person's words: a bubble on the right, the pictures they attached
@@ -629,6 +632,14 @@ private struct PersonBubble: View {
                 HStack(spacing: 6) {
                     ForEach(words.attached, id: \.self) { id in
                         AttachedThumb(model: model, asset: id)
+                    }
+                }
+            }
+            if !words.skills.isEmpty {
+                HStack(spacing: 6) {
+                    ForEach(words.skills, id: \.self) { name in
+                        SkillChip(name: name,
+                                  help: String(localized: "Loaded with these words"))
                     }
                 }
             }

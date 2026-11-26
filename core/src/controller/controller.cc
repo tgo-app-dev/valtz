@@ -3,6 +3,7 @@
 #include "controller/agent-host.h"
 
 #include "valtz/assist/drama3.h"
+#include "valtz/assist/magi2.h"
 #include "valtz/assist/micro.h"
 #include "valtz/assist/moss-image.h"
 #include "valtz/assist/video-summary.h"
@@ -458,20 +459,13 @@ Controller::create(ControllerConfig cfg)
   c->_locations_missing = std::move(missing);
   c->_hw = models::probe_hardware();
   VALTZ_ASSIGN(c->_catalog, models::Catalog::builtin());
-  // The models folder and those kept after it moved are Valtz's own.
-  const auto roots = cfg.model_roots.empty()
-      ? models::ModelStore::default_roots(paths.models, paths.models_kept)
-      : cfg.model_roots;
+  // The models folder, those kept after it moved and the slow one are
+  // Valtz's own.
   std::size_t owned = 1;
-  if (cfg.model_roots.empty()) {
-    for (std::size_t i = 1; i < roots.size(); ++i) {
-      if (std::ranges::any_of(paths.models_kept, [&](const fs::path& k) {
-            return k.lexically_normal() == roots[i].lexically_normal();
-          })) {
-        owned = i + 1;
-      }
-    }
-  }
+  const auto roots = cfg.model_roots.empty()
+      ? models::ModelStore::default_roots(paths.models, paths.models_kept,
+                                          paths.models_slow, &owned)
+      : cfg.model_roots;
   c->_store = std::make_unique<models::ModelStore>(
       roots, paths.support / "model-links.json", owned);
   // A compress a crash stopped (DESIGN §8b): its passes, never marked,
@@ -1786,6 +1780,14 @@ Controller::capability_tree() const
       if (!e) {
         continue;
       }
+      // A line of VERSIONS is shown as the version that runs -- its row's
+      // download, link, check and delete that version's -- with the
+      // others to choose from.
+      Json versions;
+      if (!e->versions.empty()) {
+        versions = model_versions(e->id);
+        e = version_in_use(*e);
+      }
       const auto info = _store->info(*e);
       const bool installed =
           info.state == models::InstallState::Installed;
@@ -1821,6 +1823,11 @@ Controller::capability_tree() const
       for (const auto& [part, l] : info.parts) {
         members.back()["parts"][part] = {{"path", l.file.string()},
                                          {"present", l.present}};
+      }
+      if (versions.is_object()) {
+        members.back()["line"] = mem.model;
+        members.back()["version"] = e->version;
+        members.back()["versions"] = versions;
       }
       // Fetched from its makers' own URL (DESIGN §4u): their page, and
       // where it comes from -- no hub's mirrors.
@@ -1867,6 +1874,11 @@ Controller::capability_tree() const
       // width, and what the download took -- or kept beside it, which
       // of the two is in use.
       Json& row = members.back();
+      // Which of Valtz's models folders holds it -- "fast", "slow" -- and
+      // what came down of it so far; "" a link's or vpipe's.
+      if (info.state != models::InstallState::Missing && !info.linked) {
+        row["storage"] = storage_of_(info.dir);
+      }
       if (const int bits = std::max(info.compressed_bits, info.other_bits);
           bits > 0) {
         const bool in_use = info.compressed_bits > 0;
@@ -1954,7 +1966,15 @@ Controller::capability_tree() const
                         {"features", std::move(features)},
                         {"members", std::move(members)}});
   }
+  // The slow models folder, where one is set: a download can go there,
+  // a model be moved there and back.
+  Json slow;
+  if (const fs::path sp = paths().models_slow; !sp.empty()) {
+    std::error_code ec;
+    slow = {{"path", sp.string()}, {"there", fs::is_directory(sp, ec)}};
+  }
   return {{"families", std::move(families)},
+          {"slow_storage", slow},
           {"download_root", valtz_root.string()},
           {"download_sources", sources},
           {"download_source", download_source_()}};
@@ -2009,6 +2029,39 @@ Controller::storage_report() const
                    {"capacity", ec ? 0 : space.capacity},
                    {"free", ec ? 0 : space.available}};
 
+  // Each drive a Valtz folder or one of its items is on -- the internal
+  // one first (support's) -- and what Valtz keeps there; a network share
+  // left out (its capacity is the server's, and it is no disk of this
+  // Mac's). Told apart by device; a folder not there yet by the nearest
+  // folder above it that is.
+  struct Drive {
+    fs::path      path;
+    std::uint64_t models = 0, projects = 0, cache = 0;
+    bool          network = false;
+  };
+  std::vector<std::pair<dev_t, Drive>> drives;
+  auto drive_of = [&](const fs::path& at) -> Drive* {
+    fs::path q = at;
+    struct stat st{};
+    while (::stat(q.c_str(), &st) != 0) {
+      if (!q.has_parent_path() || q.parent_path() == q) {
+        return nullptr;
+      }
+      q = q.parent_path();
+    }
+    for (auto& [d, v] : drives) {
+      if (d == st.st_dev) {
+        return v.network ? nullptr : &v;
+      }
+    }
+    Drive v;
+    v.path = q;
+    v.network = volume_info(q).network;
+    drives.emplace_back(st.st_dev, std::move(v));
+    return drives.back().second.network ? nullptr : &drives.back().second;
+  };
+  drive_of(_paths.support);
+
   // Models: each repo folder in the managed roots -- the models folder,
   // those kept after it moved -- named by the catalog entries it holds.
   const fs::path mroot = _store->download_root();
@@ -2048,6 +2101,7 @@ Controller::storage_report() const
       }
       const std::uint64_t n = folder_bytes(repo.path());
       mtotal += n;
+      if (Drive* d = drive_of(repo.path())) { d->models += n; }
       models.push_back({{"repo", hf}, {"names", std::move(names)},
                         {"bytes", n}, {"created", created_ms(repo.path())}});
     }
@@ -2080,6 +2134,7 @@ Controller::storage_report() const
   for (const auto& [pkg, op] : pkgs) {
     const std::uint64_t n = folder_bytes(pkg);
     ptotal += n;
+    if (Drive* d = drive_of(pkg)) { d->projects += n; }
     Json item = {{"name", op ? op->ws->project().name()
                              : pkg.stem().string()},
                  {"path", pkg.string()}, {"bytes", n},
@@ -2122,6 +2177,29 @@ Controller::storage_report() const
   out["cache"] = {{"root", _cache->root().string()},
                   {"bytes", _cache->size_bytes()},
                   {"budget", _cache->budget_bytes()}};
+  if (Drive* d = drive_of(_cache->root())) {
+    d->cache += _cache->size_bytes();
+  }
+
+  // The folders themselves, empty or not (a slow models folder on an
+  // external SSD holding nothing yet has its drive shown too).
+  for (const auto& r : _store->owned_roots()) { drive_of(r); }
+  drive_of(proot);
+  Json vols = Json::array();
+  for (const auto& [dev, d] : drives) {
+    if (d.network) {
+      continue;
+    }
+    const auto sp = fs::space(d.path, ec);
+    const VolumeInfo vi = volume_info(d.path);
+    vols.push_back({{"path", d.path.string()}, {"name", vi.name},
+                    {"internal", vi.internal}, {"protocol", vi.protocol},
+                    {"device", vi.device},
+                    {"capacity", ec ? 0 : sp.capacity},
+                    {"free", ec ? 0 : sp.available}, {"models", d.models},
+                    {"projects", d.projects}, {"cache", d.cache}});
+  }
+  out["volumes"] = std::move(vols);
   return out;
 }
 
@@ -2665,6 +2743,7 @@ Controller::turbo_adapter(const models::ModelEntry& m) const
   const Json turbo = jget(jget(m.engine, "vpipe", Json::object()), "turbo",
                           Json::object());
   const auto* a = _catalog.find(jget<std::string>(turbo, "lora", ""));
+  a = a ? version_in_use(*a) : nullptr;
   return a && _store->info(*a).state == models::InstallState::Installed
              ? a
              : nullptr;
@@ -2685,9 +2764,11 @@ Controller::tuning_context(const models::ModelEntry& m) const
   const Json vp = jget(m.engine, "vpipe", Json::object());
   // Installed -- or downloading: a job asked now waits for it (DESIGN
   // §3a), so a preset is settled as it will run.
-  auto adapter = [&](const char* block, const char* key) {
-    return _catalog.find(jget<std::string>(
+  auto adapter = [&](const char* block, const char* key)
+      -> const models::ModelEntry* {
+    const auto* e = _catalog.find(jget<std::string>(
         jget(vp, block, Json::object()), key, ""));
+    return e ? version_in_use(*e) : nullptr;
   };
   auto installed = [&](const char* block, const char* key) {
     const auto* e = adapter(block, key);
@@ -2698,6 +2779,8 @@ Controller::tuning_context(const models::ModelEntry& m) const
   if (const auto* t = adapter("turbo", "lora"); t && coming_(*t)) {
     c.turbo_name = t->name;
     c.turbo_path = model_path_(*t).string();
+    c.turbo_config = jget(jget(t->engine, "vpipe", Json::object()),
+                          "config", Json::object());
   }
   c.hyperflow_installed = installed("hyperflow", "lora");
   c.pika_installed = installed("pika_flex", "lora");
@@ -2718,6 +2801,7 @@ Controller::tuning_context(const models::ModelEntry& m) const
     }
   }
   c.taomate_installed = installed("taomate", "lora");
+  c.flash_installed = installed("hyperflow_flash", "dit");
   c.vdn_installed = installed("vdn", "branch");
   // the models a declared option may name (`requires_model`)
   for (const auto& d : jget(vp, "options", Json::array())) {
@@ -2733,21 +2817,31 @@ Controller::tuning_context(const models::ModelEntry& m) const
   c.ram_gb = _hw.ram_gb();
   // The family's LoRAs: what a preset's table picks its adapter from --
   // each labelled as Settings > Capabilities lists it.
-  for (const auto& e : _catalog.models()) {
-    if (e.role != "lora" || e.family != m.family) {
+  // A line of VERSIONS (lightx2v's Turbo LoRAs) is the version that
+  // runs, under the line's id, which the presets name; the other
+  // versions are not listed.
+  for (const auto& line : _catalog.models()) {
+    if (line.role != "lora" || line.family != m.family ||
+        !line.version_of.empty()) {
       continue;
     }
+    const models::ModelEntry& e = *version_in_use(line);
     std::string label;
     for (const auto& f : _catalog.families()) {
       for (const auto& mem : f.members) {
-        if (mem.model == e.id) {
+        if (mem.model == line.id) {
           label = mem.label;
         }
       }
     }
-    c.loras[e.id] = {e.name,
-                     coming_(e) ? model_path_(e).string() : std::string(),
-                     label};
+    if (!label.empty() && !e.version.empty()) {
+      label += " " + e.version;
+    }
+    c.loras[line.id] = {e.name,
+                        coming_(e) ? model_path_(e).string() : std::string(),
+                        label,
+                        jget(jget(e.engine, "vpipe", Json::object()),
+                             "config", Json::object())};
   }
   // Its REFINER past its trained size, where it runs here (DESIGN §4q):
   // the refine's options in its Custom, preset at the refiner's own
@@ -2844,12 +2938,36 @@ Controller::apply_tuning_(project::Recipe& r, const models::ModelEntry& m,
     const std::string key = models::pi_h3_key(t);
     slots.push_back({jget<std::string>(jget(pi, "adapters", Json::object()),
                                        key.c_str(), ""), "", 1.0});
+    // With HyperFlow H3 Flash too (BennyDaBall930's pi-H3 Adapter for
+    // HyperFlow, its pi-H3 time path): Flash's blocks are the DiT, the
+    // pruned DiT their time curve and AdaLN (`curve_model`).
+    const auto flash_dit = jget(t, "hyperflow_flash", false)
+        ? jget<std::string>(jget(vp, "hyperflow_flash", Json::object()),
+                            "dit", "")
+        : std::string();
+    const auto* fe = flash_dit.empty() ? nullptr : _catalog.find(flash_dit);
     if (!r.params.contains("dit_file")) {
       for (const auto& d : jget(pi, "dits", std::vector<std::string>{})) {
         if (const auto* e = _catalog.find(d); e && coming_(*e)) {
-          r.params["dit_model"] = d;
+          if (fe != nullptr && coming_(*fe)) {
+            r.params["dit_model"] = flash_dit;
+            r.params["curve_model"] = d;
+          } else {
+            r.params["dit_model"] = d;
+          }
           break;
         }
+      }
+    }
+  } else if (jget(t, "hyperflow_flash", false)) {
+    // HyperFlow H3 Flash: no adapter -- a DiT of its own, recorded by its
+    // id (resolved where the job runs, ModelRef::dit), its grid chosen by
+    // the job's steps.
+    if (!r.params.contains("dit_file")) {
+      const auto d = jget<std::string>(
+          jget(vp, "hyperflow_flash", Json::object()), "dit", "");
+      if (const auto* e = _catalog.find(d); e && coming_(*e)) {
+        r.params["dit_model"] = d;
       }
     }
   } else if (jget(t, "taomate", false)) {
@@ -2865,10 +2983,13 @@ Controller::apply_tuning_(project::Recipe& r, const models::ModelEntry& m,
   }
   // A LoRA of the catalog (the family's, installed) is recorded by its
   // id, so a rebuild finds it wherever it is kept.
+  // A line of versions by the version it ran: that file, made again.
   std::map<std::string, std::string> catalog_ids;
   for (const auto& [id, l] : tuning_context(m).loras) {
     if (!l.path.empty()) {
-      catalog_ids[models::lora_file(l.path)] = id;
+      const auto* e = _catalog.find(id);
+      catalog_ids[models::lora_file(l.path)] =
+          e ? version_in_use(*e)->id : id;
     }
   }
   for (const auto& l : jget(t, "loras", Json::array())) {
@@ -3894,6 +4015,89 @@ Controller::set_download_source(const std::string& name)
   return ok_status();
 }
 
+const models::ModelEntry*
+Controller::version_in_use(const models::ModelEntry& e) const
+{
+  const models::ModelEntry* line =
+      e.version_of.empty() ? &e : _catalog.find(e.version_of);
+  if (!line || line->versions.empty()) {
+    return &e;
+  }
+  const Json chosen = jget(read_settings(_paths.support / "downloads.json"),
+                           "versions", Json::object());
+  if (const auto* c = _catalog.find(
+          jget<std::string>(chosen, line->id.c_str(), ""));
+      c && (c == line || c->version_of == line->id)) {
+    return c;
+  }
+  // Auto: the newest here (or on its way), else the newest.
+  for (const auto& v : line->versions) {
+    if (const auto* ve = _catalog.find(v); ve && coming_(*ve)) {
+      return ve;
+    }
+  }
+  const auto* newest = _catalog.find(line->versions.front());
+  return newest ? newest : line;
+}
+
+Json
+Controller::model_versions(const std::string& id) const
+{
+  const auto* e = _catalog.find(id);
+  const models::ModelEntry* line =
+      !e ? nullptr : e->version_of.empty() ? e : _catalog.find(e->version_of);
+  if (!line || line->versions.empty()) {
+    return Json();
+  }
+  const Json chosen = jget(read_settings(_paths.support / "downloads.json"),
+                           "versions", Json::object());
+  std::string pick = jget<std::string>(chosen, line->id.c_str(), "");
+  if (std::ranges::find(line->versions, pick) == line->versions.end()) {
+    pick.clear();
+  }
+  Json vs = Json::array();
+  for (const auto& v : line->versions) {
+    if (const auto* ve = _catalog.find(v)) {
+      vs.push_back({{"model", ve->id}, {"version", ve->version},
+                    {"name", ve->name},
+                    {"state", models::to_str(_store->info(*ve).state)},
+                    {"disk_gb", ve->disk_gb}});
+    }
+  }
+  return {{"line", line->id}, {"chosen", pick},
+          {"in_use", version_in_use(*line)->id},
+          {"versions", std::move(vs)}};
+}
+
+Status
+Controller::set_model_version(const std::string& line_id,
+                              const std::string& version)
+{
+  const auto* line = _catalog.find(line_id);
+  if (line && !line->version_of.empty()) {
+    line = _catalog.find(line->version_of);
+  }
+  if (!line || line->versions.empty() ||
+      (!version.empty() &&
+       std::ranges::find(line->versions, version) == line->versions.end())) {
+    return make_error(Code::NotFound, msg::kUnknownModel,
+                      {{"model", version.empty() ? line_id : version}});
+  }
+  const fs::path file = _paths.support / "downloads.json";
+  Json all = read_settings(file);
+  if (!all.contains("versions") || !all["versions"].is_object()) {
+    all["versions"] = Json::object();
+  }
+  if (version.empty()) {
+    all["versions"].erase(line->id);
+  } else {
+    all["versions"][line->id] = version;
+  }
+  VALTZ_TRY(write_settings(file, all));
+  post_("models.changed", JobId{});
+  return ok_status();
+}
+
 namespace {
 Json compress_parts(const models::ModelEntry& e, int bits);
 }
@@ -3901,12 +4105,18 @@ Json compress_parts(const models::ModelEntry& e, int bits);
 Result<JobId>
 Controller::download_model(const std::string& model_id,
                            const std::string& hf_token,
-                           const std::string& source_in)
+                           const std::string& source_in,
+                           const std::string& storage)
 {
   const auto* e = _catalog.find(model_id);
   if (!e) {
     return make_error(Code::NotFound, msg::kUnknownModel,
                       {{"model", model_id}});
+  }
+  // A line of versions asked for by its own id (a preset's LoRA, asked
+  // for at Start): the version that runs.
+  if (!e->versions.empty()) {
+    e = version_in_use(*e);
   }
   if (!_engine->supports(engine::kOpFetchModel)) {
     return make_error(Code::Unsupported, msg::kNoEngineForDownload);
@@ -3947,6 +4157,28 @@ Controller::download_model(const std::string& model_id,
   if (models_moving_()) {
     return make_error(Code::Busy, msg::kModelsMoving);
   }
+  if (storage != "" && storage != "fast" && storage != "slow") {
+    return make_error(Code::InvalidArgument,
+                      std::format("download to fast or slow, not {}",
+                                  storage));
+  }
+  if (storage == "slow") {
+    const fs::path slow = paths().models_slow;
+    std::error_code ec;
+    if (slow.empty()) {
+      return make_error(Code::InvalidArgument, msg::kSlowModelsNone);
+    }
+    if (!fs::is_directory(slow, ec)) {
+      return make_error(Code::NotFound, msg::kSlowModelsNotThere,
+                        {{"path", slow.string()}});
+    }
+  }
+  {
+    std::lock_guard lk(_paths_mu);
+    if (_moving_model == e->id) {
+      return make_error(Code::Busy, msg::kLocationMoving);
+    }
+  }
   // Asked again while it downloads: that download.
   {
     std::lock_guard lk(_downloads_mu);
@@ -3963,10 +4195,10 @@ Controller::download_model(const std::string& model_id,
   spec.op = std::string(engine::kOpFetchModel);
   spec.model.id = e->id;
   spec.params = {{"hf_path", e->hf_path},
-                 {"base_path", download_base_(*e).string()}};
+                 {"base_path", download_base_(*e, storage).string()}};
   if (by_url) {
     // The URL, its hash and the files kept, into the model's folder.
-    fs::path dir = download_base_(*e) / e->hf_path;
+    fs::path dir = download_base_(*e, storage) / e->hf_path;
     if (!e->subdir.empty()) {
       dir /= e->subdir;
     }
@@ -3987,7 +4219,7 @@ Controller::download_model(const std::string& model_id,
   }
   Json copy_shared;
   if (by_fleet) {
-    fs::path dir = download_base_(*e) / e->hf_path;
+    fs::path dir = download_base_(*e, storage) / e->hf_path;
     if (!e->subdir.empty()) {
       dir /= e->subdir;
     }
@@ -4103,9 +4335,24 @@ Controller::download_model(const std::string& model_id,
       }
     }
   };
+  // Under way from now until it finishes (ModelStore::download_mark):
+  // paused, stopped or cut short, the model reads as Partial -- a sharded
+  // one paused between shards has no `.part` to say so.
+  fs::path mark;
+  if (copy_bits == 0 && !e->hf_path.empty()) {
+    mark = models::ModelStore::download_mark(download_base_(*e, storage),
+                                             *e);
+    std::error_code ec;
+    fs::create_directories(mark.parent_path(), ec);
+    std::ofstream(mark) << to_text({{"model", e->id},
+                                    {"job", spec.id.str()},
+                                    {"begun", project::now_ms()}})
+                        << "\n";
+    _store->rescan();
+  }
   Status submitted = _engine->submit(
       std::move(spec),
-      [this, gated, name, id, discarded, copy_bits,
+      [this, gated, name, id, discarded, copy_bits, mark,
        mark_copy](const engine::JobEvent& ev) {
     switch (ev.kind) {
     case engine::JobEventKind::Started:
@@ -4148,6 +4395,11 @@ Controller::download_model(const std::string& model_id,
       }
       finish_job_(ev.job, JobState::Finished, "");
       discarded(true);
+      // Whole: no longer under way.
+      if (!mark.empty()) {
+        std::error_code ec;
+        fs::remove(mark, ec);
+      }
       // Fetched again over a compressed copy (DESIGN §8b): the original
       // is back, the copy goes.
       for (const auto& root : _store->owned_roots()) {
@@ -4200,6 +4452,11 @@ Controller::download_model(const std::string& model_id,
     }
   });
   if (!submitted.ok()) {
+    if (!mark.empty()) {
+      std::error_code ec;
+      fs::remove(mark, ec);
+      _store->rescan();
+    }
     finish_job_(rec.id, JobState::Failed, submitted.error().message);
     download_ended_(id, false, false);
     return submitted.error();
@@ -4213,7 +4470,7 @@ Controller::download_model(const std::string& model_id,
         d && _store->info(*d).state != models::InstallState::Installed) {
       // From where the model came, where that carries it.
       const bool there = !_engine->source_path(source, d->hf_path).empty();
-      (void)download_model(d->id, "", there ? source : "");
+      (void)download_model(d->id, "", there ? source : "", storage);
     }
   }
   return rec.id;
@@ -4233,6 +4490,9 @@ Controller::stop_download(const std::string& model_id, bool discard)
   if (!e) {
     return make_error(Code::NotFound, msg::kUnknownModel,
                       {{"model", model_id}});
+  }
+  if (!e->versions.empty()) {
+    e = version_in_use(*e);
   }
   std::optional<JobId> job;
   {
@@ -4978,6 +5238,14 @@ Controller::keep_compressed(const std::string& model_id, bool compressed)
 std::uint64_t
 Controller::discard_download_(const models::ModelEntry& e)
 {
+  // Its download's mark, wherever it began: nothing of it under way now.
+  if (!e.hf_path.empty()) {
+    for (const auto& root : _store->owned_roots()) {
+      std::error_code ec;
+      fs::remove(models::ModelStore::download_mark(root, e), ec);
+    }
+    _store->rescan();
+  }
   // A member's compressed copy part way (DESIGN §8b): its folder, never
   // marked -- a marked one is a copy whole, kept.
   for (const int bits : {8, 4}) {
@@ -7317,7 +7585,9 @@ Controller::submit_chat_(JobId id, std::string purpose, std::string text,
         // only what it says after is the suggestion -- the caption itself
         // where it writes no object.
         const std::string after = assist::outside_thinking(written->text);
-        std::string part = assist::partial_enhance_reply(after);
+        // (A MAGI-2 template's JSON is rendered whole, at its end.)
+        std::string part =
+            form.magi2 ? std::string() : assist::partial_enhance_reply(after);
         if (part.empty() && form.plain_caption &&
             after.find('{') == std::string::npos) {
           part = plain_caption_(after);
@@ -7380,6 +7650,19 @@ Controller::on_chat_event_(const engine::JobEvent& ev,
         assist::EnhanceResult e;
         e.prompt = plain_caption_(after);
         r = std::move(e);
+      }
+      if (form.magi2) {
+        // MAGI-2's JSON rendered as its makers' pe_markdown renders it;
+        // a reply in another shape refused (its words would be no
+        // caption of theirs).
+        auto md = assist::magi2_prompt(after, form.magi2 == 2);
+        if (md.ok()) {
+          assist::EnhanceResult e;
+          e.prompt = std::move(*md);
+          r = std::move(e);
+        } else {
+          r = md.error();
+        }
       }
       if (form.canvas.first > 0) {
         // A MOSS-Image draft -- a caption, or a layout -- compiled for
@@ -7526,6 +7809,43 @@ Controller::enhance_prompt(EnhancePromptRequest req)
       return submit_chat_(JobId::make(), "enhance", std::move(ex->text), {},
                           ex->max_tokens, "", std::move(form),
                           std::move(ex->chat));
+    }
+  }
+  // A clip written to its makers' own templates (MAGI-2-preview's: words
+  // alone, or opening on a picture), sent as their enhancer sends them --
+  // the template, the request in its place, one message, the picture
+  // beside it -- and the JSON it asks for rendered as their pe_markdown
+  // renders it (assist/magi2.h). Their reply budget too.
+  if (m && req.target == "video") {
+    const Json en = jget(m->prompting, "enhance", Json::object());
+    bool opens = false;
+    std::vector<engine::JobInput> shown;
+    if (p && req.base && !jget<std::string>(en, "first", "").empty()) {
+      auto a = p->asset(*req.base);
+      if (a.ok() && a->kind == project::AssetKind::Image) {
+        if (auto t = thumbnail(*req.project, *req.base, 1024); t.ok()) {
+          shown.push_back({"image", *t, {}, {}});
+          opens = true;
+        }
+      }
+    }
+    const auto skill =
+        jget<std::string>(en, opens ? "first" : "generate", "");
+    if (skill == "magi2-t2v" || skill == "magi2-i2v") {
+      // The words alone: no inline picture's placeholder.
+      std::string words = req.prompt;
+      for (std::size_t at = words.find("\xEF\xBF\xBC");
+           at != std::string::npos; at = words.find("\xEF\xBF\xBC", at)) {
+        words.erase(at, 3);
+      }
+      ReplyForm form{};
+      form.segments = std::move(segs.segments);
+      form.magi2 = skill == "magi2-i2v" ? 2 : 1;
+      return submit_chat_(JobId::make(), "enhance",
+                          assist::magi2_request(form.magi2 == 2, words),
+                          form.magi2 == 2 ? std::move(shown)
+                                          : std::vector<engine::JobInput>{},
+                          16384, "", std::move(form));
     }
   }
 
@@ -8474,6 +8794,14 @@ Controller::generate_image(GenerateImageRequest req)
                                               req.preference, edit,
                                               req.tuning),
                 req.steps);
+  // Custom's Live Preview switched off (models/tuning.h): as the
+  // request's -- the engine's key, not a stage's.
+  if (Json& t = r.params["tuning"]; t.is_object() && t.contains("preview")) {
+    if (!jget(t, "preview", true)) {
+      r.params["preview"] = false;
+    }
+    t.erase("preview");
+  }
   // The base first: the engine reads input order.
   if (base) {
     r.inputs.push_back({"base", *req.base, 0});
@@ -8750,12 +9078,19 @@ Controller::generate_video(GenerateVideoRequest req)
   // clip is made at its size in one pass.
   const bool pi_dwd = jget(req.tuning, "pi_h3", false) &&
                       !jget(req.tuning, "pi_h3_vae", false);
+  // HyperFlow H3 Flash samples only its own grids (4, 6, 8) and is the
+  // refine's DiT as well as the draft's: no 3-step refine. One pass.
+  const bool flash = jget(req.tuning, "hyperflow_flash", false);
   const models::ModelEntry* refiner =
-      past && !pi_dwd && req.regenerate.value_or(true) ? refiner_of_(*m)
-                                                       : nullptr;
+      past && !pi_dwd && !flash && req.regenerate.value_or(true)
+          ? refiner_of_(*m) : nullptr;
   if (past && pi_dwd) {
     VALTZ_LOG_INFO("generate", "pi-H3 DWD past {}P: made at its size in "
                    "one pass (no latent to refine)", above);
+  }
+  if (past && flash) {
+    VALTZ_LOG_INFO("generate", "HyperFlow H3 Flash past {}P: made at its "
+                   "size in one pass (its own grids only)", above);
   }
   if (req.regenerate.value_or(false) && !refiner) {
     if (!past) {
@@ -8830,7 +9165,14 @@ Controller::generate_video(GenerateVideoRequest req)
       }
     }
   }
-  if (!req.preview) {
+  // Custom's Live Preview switched off (models/tuning.h): as the
+  // request's -- the engine's key, not a stage's.
+  bool preview = req.preview;
+  if (Json& t = r.params["tuning"]; t.is_object() && t.contains("preview")) {
+    preview = preview && jget(t, "preview", true);
+    t.erase("preview");
+  }
+  if (!preview) {
     r.params["preview"] = false;
   }
   // Its latents kept with it, asked for where the family keeps them
@@ -12386,6 +12728,23 @@ Controller::resolve_build_(const std::string& model, const Json& params,
     const fs::path part = di.part("dit");
     ref.dit = part.empty() ? di.path() : part;
   }
+  // pi-H3 on HyperFlow H3 Flash (param "curve_model"): the stock pruned
+  // DiT whose curve and AdaLN Flash's blocks take.
+  if (const auto cm = jget<std::string>(rp, "curve_model", "");
+      !cm.empty()) {
+    const auto* ce = _catalog.find(cm);
+    if (!ce) {
+      return make_error(Code::NotFound, msg::kRecipeModelUnknown,
+                        {{"model", cm}});
+    }
+    const auto ci = _store->info(*ce);
+    if (ci.state != models::InstallState::Installed) {
+      return make_error(Code::NotFound, msg::kModelNotInstalled,
+                        {{"model", ce->name}});
+    }
+    const fs::path part = ci.part("dit");
+    ref.curve_dit = part.empty() ? ci.path() : part;
+  }
   // A second checkpoint beside the model (H3's VDN branch), by its
   // folder.
   if (const auto branch = jget<std::string>(rp, "branch", "");
@@ -13729,6 +14088,11 @@ Controller::fleet_serve_(const fleet::Offer& o, const std::string& from,
     done.kind = engine::JobEventKind::Finished;
     sink(done);
     return ok_status();
+  }
+  // One RANK of a LoRA trained split with the member that sent it
+  // (DESIGN §11c): not a task this Mac offers the fleet, a pairing's.
+  if (o.op == engine::kOpTrainLora) {
+    return serve_train_rank_(o, from, std::move(sink));
   }
   const Json me = fleet_self_();
   if (!_engine || !_engine->available() || !_engine->supports(o.op) ||

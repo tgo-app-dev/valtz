@@ -125,7 +125,8 @@ to_json(const ModelRef& m)
       {"regenerate_branch", &m.regenerate_branch},
       {"regenerate_base", &m.regenerate_base},
       {"regenerate_base_dit", &m.regenerate_base_dit},
-      {"regenerate_base_encoder", &m.regenerate_base_encoder}};
+      {"regenerate_base_encoder", &m.regenerate_base_encoder},
+      {"curve_dit", &m.curve_dit}};
   for (const auto& [k, f] : files) {
     if (!f->empty()) {
       j[k] = f->string();
@@ -172,7 +173,8 @@ model_ref_from_json(const Json& j)
       {"regenerate_branch", &m.regenerate_branch},
       {"regenerate_base", &m.regenerate_base},
       {"regenerate_base_dit", &m.regenerate_base_dit},
-      {"regenerate_base_encoder", &m.regenerate_base_encoder}};
+      {"regenerate_base_encoder", &m.regenerate_base_encoder},
+      {"curve_dit", &m.curve_dit}};
   for (const auto& [k, f] : files) {
     *f = jget<std::string>(j, k, "");
   }

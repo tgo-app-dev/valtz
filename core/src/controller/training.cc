@@ -557,8 +557,34 @@ Controller::train_lora(const Json& req)
           << to_text(run, 2);
     }
   };
-  auto st = _engine->submit(std::move(spec),
-                            [this, ended](const engine::JobEvent& ev) {
+  // ON TWO MACS with the paired one over Thunderbolt (DESIGN §11c): this
+  // Mac rank 0 -- the dataset encoded here and handed over -- the member
+  // rank 1, each training its share of every step's samples (`parallel`
+  // "data", the whole model each) or of the DiT ("tensor"); "auto" the
+  // first both Macs can. Else trained here alone, why said where a pair
+  // is set.
+  std::optional<SplitPlan> split;
+  const std::string parallel =
+      jget(req, "split", true) ? jget<std::string>(req, "parallel", "auto")
+                               : std::string("none");
+  if (parallel != "auto" && parallel != "data" && parallel != "tensor" &&
+      parallel != "none") {
+    return make_error(Code::InvalidArgument,
+                      "parallel: auto, data, tensor or none");
+  }
+  {
+    auto p = train_split_plan_(*m, shape, spec.id, parallel);
+    if (p.ok()) {
+      split = std::move(*p);
+    } else if (p.code() != Code::NotFound) {
+      VALTZ_LOG_INFO("train", "{}: trained whole: {}", name,
+                     p.error().message);
+      post_("job.runner", spec.id,
+            {{"runner", "local"},
+             {"unsplit", message_fields(p.error())}});
+    }
+  }
+  engine::JobSink on_event = [this, ended](const engine::JobEvent& ev) {
     switch (ev.kind) {
     case engine::JobEventKind::Started:
       _jobs.update(ev.job, [](JobRecord& r) { r.state = JobState::Running; });
@@ -607,7 +633,34 @@ Controller::train_lora(const Json& req)
     default:
       break;
     }
-  });
+  };
+  Status st = ok_status();
+  if (split) {
+    // The member's rank: a train-lora stage alone, its run's name to
+    // keep its resume state under; its share, where it listens.
+    project::Recipe r;
+    r.op = std::string(engine::kOpTrainLora);
+    r.model = m->id;
+    r.params = {{"train_follower", true},
+                {"shape", shape},
+                {"train", {{"name", name},
+                           {"resume", jget<std::string>(tr, "resume",
+                                                        "auto")}}}};
+    if (jget<std::string>(split->local, "mode", "") == "data") {
+      const Json k = jget(split->local, "samples", Json::array({1, 1}));
+      VALTZ_LOG_INFO("train", "{}: data parallel with {} -- {} batch(es) "
+                     "of each step here, {} there", name, split->name,
+                     k[0].get<int>(), k[1].get<int>());
+    } else {
+      VALTZ_LOG_INFO("train", "{}: split with {} -- heads [0, {}) here",
+                     name, split->name,
+                     split->local["heads"][1].get<int>());
+    }
+    st = run_split_(std::move(*split), std::move(spec), r, rec.title,
+                    std::move(on_event));
+  } else {
+    st = _engine->submit(std::move(spec), std::move(on_event));
+  }
   if (!st.ok()) {
     ended(false);
     finish_job_(rec.id, JobState::Failed, st.error().message);

@@ -1339,9 +1339,125 @@ struct TimelineHeightHandle: NSViewRepresentable {
         var set: (Int) -> Void = { _ in }
         private var start: (y: CGFloat, rows: Int)?
 
-        override func resetCursorRects() {
-            addCursorRect(bounds, cursor: .resizeUpDown)
+        // The up-and-down cursor ONLY while the pointer is over it (or a
+        // drag from it is under way), the arrow again once it is not --
+        // whichever way, however slowly. The events alone do not hold
+        // it: crossing slowly upward, a cursorUpdate for this area came
+        // after its mouseExited (the timeline under it hears the same
+        // moves), the up-and-down cursor set again with the pointer
+        // already over the stage, which sets none of its own -- kept there
+        // until the pointer crossed a view that did (2026-11-26, Valtz
+        // 274). So each setting asks where the pointer IS, an exit looks
+        // again on the next turn of the run loop, and while the cursor is
+        // this handle's a window monitor watches the pointer's moves --
+        // the window told to report them meanwhile (over a clip's player
+        // nothing else asks it to) -- and gives the arrow back at the
+        // first one off it.
+        //
+        // Its BOUNDS, never .inVisibleRect: hosted by SwiftUI (an
+        // AppKitPlatformViewHost) this view's visibleRect is the whole
+        // window, not its 8-point strip -- the cursor area was the
+        // window's, and with the pointer off the timeline (whose own
+        // moves set its cursor) AppKit gave the cursor to it: up and down
+        // over the stage, its exit never coming (Valtz 274, seen in the
+        // hooks: bounds 944 x 8, visibleRect 1024 x 768).
+        override func updateTrackingAreas() {
+            super.updateTrackingAreas()
+            trackingAreas.forEach(removeTrackingArea)
+            addTrackingArea(NSTrackingArea(
+                rect: bounds,
+                options: [.mouseEnteredAndExited, .cursorUpdate,
+                          .activeInKeyWindow],
+                owner: self))
         }
+
+        // Its area follows its size (updateTrackingAreas is called as the
+        // window's areas are next looked at; a strip resized meanwhile
+        // kept the old one).
+        override func setFrameSize(_ s: NSSize) {
+            super.setFrameSize(s)
+            updateTrackingAreas()
+        }
+
+        override func cursorUpdate(with e: NSEvent) { settle() }
+
+        override func mouseEntered(with e: NSEvent) { settle() }
+
+        override func mouseExited(with e: NSEvent) {
+            // Held through a drag past the edge; let go there, the arrow.
+            settle()
+            DispatchQueue.main.async { [weak self] in self?.settle() }
+        }
+
+        override func viewWillMove(toWindow w: NSWindow?) {
+            if w == nil { disarm() }
+            super.viewWillMove(toWindow: w)
+        }
+
+        /// The handle on screen (the hooks: timeline-edge).
+        nonisolated(unsafe) static weak var shown: HandleView?
+
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            if window != nil { Self.shown = self }
+        }
+
+        /// The pointer over the handle NOW -- its bounds (not its
+        /// visibleRect: the window's here) -- where it is on screen, not
+        /// where the last event said it was.
+        var pointerOver: Bool {
+            guard let window, !isHiddenOrHasHiddenAncestor else {
+                return false
+            }
+            let p = convert(window.convertPoint(fromScreen:
+                                NSEvent.mouseLocation), from: nil)
+            return bounds.contains(p)
+        }
+
+        /// The cursor as the pointer has it: up-and-down over the handle
+        /// or dragging from it (watched), else the arrow -- where the
+        /// up-and-down one still shows: a view below that set its own
+        /// keeps it -- and the watch ended.
+        func settle() {
+            if start != nil || pointerOver {
+                NSCursor.resizeUpDown.set()
+                arm()
+            } else {
+                if NSCursor.current == NSCursor.resizeUpDown {
+                    NSCursor.arrow.set()
+                }
+                disarm()
+            }
+        }
+
+        private var monitor: Any?
+        private var reportedMoves: Bool?
+
+        private func arm() {
+            guard monitor == nil, let window else { return }
+            reportedMoves = window.acceptsMouseMovedEvents
+            window.acceptsMouseMovedEvents = true
+            monitor = NSEvent.addLocalMonitorForEvents(
+                matching: [.mouseMoved, .mouseExited]) { [weak self] e in
+                if let self, e.window === self.window {
+                    // After the event's own handling: what it sets first.
+                    DispatchQueue.main.async { self.settle() }
+                }
+                return e
+            }
+        }
+
+        private func disarm() {
+            if let monitor { NSEvent.removeMonitor(monitor) }
+            monitor = nil
+            if let reportedMoves, let window {
+                window.acceptsMouseMovedEvents = reportedMoves
+            }
+            reportedMoves = nil
+        }
+
+        /// The watch armed (the hooks: timeline-edge).
+        var watching: Bool { monitor != nil }
 
         // Dragged at once, the window not yet key.
         override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
@@ -1363,7 +1479,10 @@ struct TimelineHeightHandle: NSViewRepresentable {
             if n != rows { set(n) }
         }
 
-        override func mouseUp(with e: NSEvent) { start = nil }
+        override func mouseUp(with e: NSEvent) {
+            start = nil
+            settle()
+        }
     }
 }
 

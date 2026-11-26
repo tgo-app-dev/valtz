@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <array>
 
+#include "valtz/assist/magi2.h"
 #include "valtz/assist/transcript.h"
 #include "valtz/assist/video-summary.h"
 #include "valtz/base/tree-copy.h"
@@ -3373,6 +3374,95 @@ TEST(controller, a_job_waits_only_for_what_it_needs_downloading)
   CHECK(!jget<std::string>(after, "turbo", "").empty());
 }
 
+// A sharded download PAUSED BETWEEN SHARDS (reported with MAGI-2-preview):
+// whole shards down, no `.part` left -- the folder held weights and no
+// partial file, so it read as installed once another download finished
+// and the models were scanned again, its row offering no Resume. Now its
+// download's mark keeps it partial until it finishes; and a folder whose
+// catalog files, or a safetensors index's shards, are not all there is
+// partial whoever fetched it.
+TEST(controller, a_download_paused_between_shards_stays_partial)
+{
+  auto root = test::temp_dir("ctl-download-shards");
+  const fs::path models = root / "models";
+  auto write = [&](const fs::path& rel, const std::string& text = "w") {
+    fs::create_directories((models / rel).parent_path());
+    std::ofstream(models / rel) << text;
+  };
+  ControllerConfig cfg;
+  cfg.support_root = root / "support";
+  cfg.model_roots = {models};
+  cfg.with_engine = false;
+  cfg.extensions = false;
+  HeldEngine* engine = nullptr;
+  cfg.engine_factory = [&engine] {
+    auto e = std::make_unique<HeldEngine>();
+    engine = e.get();
+    return std::unique_ptr<engine::Engine>(std::move(e));
+  };
+  auto made = Controller::create(cfg);
+  REQUIRE_OK(made);
+  Controller& ctl = **made;
+  const auto& cat = ctl.catalog();
+  auto state = [&](const char* id) {
+    ctl.rescan_models();
+    return ctl.model_store().info(*cat.find(id)).state;
+  };
+  const fs::path m = "sand-ai/MAGI-2-preview";
+
+  // Paused after two whole shards.
+  auto dl = ctl.download_model("magi2-preview");
+  REQUIRE_OK(dl);
+  engine->start(*dl);
+  write(m / "README.md");
+  write(m / "preview/model-00001-of-00056.safetensors");
+  write(m / "preview/model-00002-of-00056.safetensors");
+  REQUIRE_OK(ctl.stop_download("magi2-preview", false));
+  engine->stopped(*dl);
+  CHECK(state("magi2-preview") == models::InstallState::Partial);
+  // Another download finishing, the models scanned again: still partial.
+  auto other = ctl.download_model("krea2-turbo");
+  REQUIRE_OK(other);
+  engine->start(*other);
+  write("krea/Krea-2-Turbo/model.safetensors");
+  engine->end(*other);
+  CHECK(state("krea2-turbo") == models::InstallState::Installed);
+  CHECK(state("magi2-preview") == models::InstallState::Partial);
+  // Resumed and finished: whole, its mark gone.
+  auto resumed = ctl.download_model("magi2-preview");
+  REQUIRE_OK(resumed);
+  engine->start(*resumed);
+  for (const char* f : {"preview/model.safetensors.index.json",
+                        "refiner/model.safetensors.index.json",
+                        "text_encoder/config.json",
+                        "text_encoder/model.safetensors.index.json",
+                        "turbo_vae/checkpoint.ckpt",
+                        "stable-audio-open-1.0/model.safetensors",
+                        "vae/Wan2.2_VAE.pth"}) {
+    write(m / f, "{}");
+  }
+  engine->end(*resumed);
+  CHECK(state("magi2-preview") == models::InstallState::Installed);
+  CHECK(!fs::exists(models::ModelStore::download_mark(
+      models, *cat.find("magi2-preview"))));
+
+  // Paused that way before its download was marked (an older Valtz): its
+  // catalog's files (`check.scan`) not all there -- partial.
+  fs::remove(models / m / "vae/Wan2.2_VAE.pth");
+  CHECK(state("magi2-preview") == models::InstallState::Partial);
+  // Fetched by someone else, cut between shards: its index's shards not
+  // all there -- partial, no mark needed.
+  const fs::path z = "Tongyi-MAI/Z-Image-Turbo";
+  write(z / "transformer/diffusion_pytorch_model-00001-of-00002.safetensors");
+  write(z / "transformer/diffusion_pytorch_model.safetensors.index.json",
+        R"({"weight_map": {"a": "diffusion_pytorch_model-00001-of-00002.safetensors",
+                           "b": "diffusion_pytorch_model-00002-of-00002.safetensors"}})");
+  CHECK(state("z-image-turbo") == models::InstallState::Partial);
+  write(z / "transformer/diffusion_pytorch_model-00002-of-00002.safetensors");
+  CHECK(state("z-image-turbo") != models::InstallState::Partial ||
+        !jget(cat.find("z-image-turbo")->check, "files", Json()).empty());
+}
+
 // Settings › Capabilities' Pause and Cancel (DESIGN §8): a download
 // PAUSED keeps what came down -- the model partial, a download of it
 // again going on from there -- and one CANCELLED deletes it once its job
@@ -3475,15 +3565,16 @@ TEST(controller, a_download_is_paused_or_cancelled)
   const fs::path lx = "lightx2v/Minimax-h3-Turbo";
   write(lx / "minimax_h3_fl2v_turbo_8step_v1.0_768p_bf16.safetensors");
   write(lx / "README.md");
+  // (A line of versions asked for by its id: the newest, none here.)
   auto four = ctl.download_model("minimax-h3-turbo-4step");
   REQUIRE_OK(four);
   engine->start(*four);
-  write(lx / "minimax_h3_fl2v_turbo_4step_v1.2_768p_bf16.safetensors.part");
+  write(lx / "minimax_h3_fl2v_turbo_4step_v1.3_768p_bf16.safetensors.part");
   REQUIRE_OK(ctl.stop_download("minimax-h3-turbo-4step", true));
   engine->stopped(*four);
   CHECK(!fs::exists(
       models / lx /
-      "minimax_h3_fl2v_turbo_4step_v1.2_768p_bf16.safetensors.part"));
+      "minimax_h3_fl2v_turbo_4step_v1.3_768p_bf16.safetensors.part"));
   CHECK(fs::exists(
       models / lx / "minimax_h3_fl2v_turbo_8step_v1.0_768p_bf16.safetensors"));
   CHECK(fs::exists(models / lx / "README.md"));
@@ -12466,6 +12557,152 @@ TEST(controller, a_layers_clip_is_interpolated_to_its_timelines_rate)
   CHECK(drawn.error().key == "core.interpolate_kind");
 }
 
+// A TURBO LoRA'S VERSIONS (lightx2v's: v1.0 ... v1.3 of one adapter,
+// each a file of one repo): the preset's line runs the version chosen,
+// else the newest here -- recorded by that version's id, at the shift its
+// version was distilled at -- and a download of the line is the version
+// that runs.
+TEST(controller, a_turbo_loras_version_is_chosen_or_the_newest_here)
+{
+  auto root = test::temp_dir("turbo-versions");
+  const fs::path lx = root / "models/lightx2v/Minimax-h3-Turbo";
+  auto put = [&](const fs::path& file) {
+    fs::create_directories(file.parent_path());
+    std::ofstream(file) << "w";
+  };
+  for (const char* f : {"MiniMaxAI/MiniMax-H3/FL2VA/model.safetensors",
+                        "MiniMaxAI/MiniMax-H3/Ref2VA/model.safetensors"}) {
+    put(root / "models" / f);
+  }
+  put(lx / "minimax_h3_fl2v_turbo_4step_v1.2_768p_bf16.safetensors");
+  put(lx / "minimax_h3_ref2v_turbo_4step_v0.1_comfyui_bf16.safetensors");
+  ControllerConfig cfg;
+  cfg.support_root = root / "support";
+  cfg.model_roots = {root / "models"};
+  cfg.with_engine = false;
+  cfg.extensions = false;
+  HeldEngine* engine = nullptr;
+  cfg.engine_factory = [&engine] {
+    auto e = std::make_unique<HeldEngine>();
+    engine = e.get();
+    return std::unique_ptr<engine::Engine>(std::move(e));
+  };
+  auto made = Controller::create(cfg);
+  REQUIRE_OK(made);
+  Controller& ctl = **made;
+  const auto& cat = ctl.catalog();
+  const auto* line = cat.find("minimax-h3-turbo-4step");
+  REQUIRE(line != nullptr);
+  REQUIRE(line->versions.size() == 4);
+  CHECK(line->versions.front() == "minimax-h3-turbo-4step-v1.3");
+  CHECK(cat.find("minimax-h3-turbo-4step-v1.3")->version_of == line->id);
+
+  // v1.2 here, v1.3 not: Automatic runs v1.2, and offers the newer.
+  CHECK(ctl.version_in_use(*line)->id == "minimax-h3-turbo-4step");
+  Json v = ctl.model_versions("minimax-h3-turbo-4step-v1.1");
+  CHECK(jget<std::string>(v, "line", "") == line->id);
+  CHECK(jget<std::string>(v, "chosen", "x").empty());
+  CHECK(jget<std::string>(v, "in_use", "") == line->id);
+  CHECK(jget<std::string>(v["versions"][0], "state", "") == "missing");
+  CHECK(ctl.model_versions("minimax-h3-fl2va").is_null());
+  // Settings › Capabilities: one row for the line, the version running.
+  bool row = false;
+  for (const auto& f : jget(ctl.capability_tree(), "families",
+                            Json::array())) {
+    for (const auto& m : jget(f, "members", Json::array())) {
+      if (jget<std::string>(m, "line", "") == line->id) {
+        row = true;
+        CHECK(jget<std::string>(m, "model", "") == line->id);
+        CHECK(jget<std::string>(m, "version", "") == "v1.2");
+      }
+      CHECK(jget<std::string>(m, "model", "") !=
+            "minimax-h3-turbo-4step-v1.3");
+    }
+  }
+  CHECK(row);
+
+  auto pid = ctl.create_project(root / "T.valtz", "turbo");
+  REQUIRE_OK(pid);
+  REQUIRE(write_png(root / "p.png", 32, 32, {0x20, 0x40, 0x80, 0xff}));
+  auto pic = import_and_wait(ctl, *pid, root / "p.png");
+  REQUIRE(pic);
+  std::size_t asked = 0;
+  auto fast = [&](const std::string& model, bool refs) -> Json {
+    GenerateVideoRequest r;
+    r.project = *pid;
+    r.model = model;
+    r.preference = "speed";
+    r.width = 832;
+    r.height = 480;
+    r.frames = 39;
+    r.prompt = refs ? "<valtz_ref_img_0> waves." : "A fox in snow.";
+    if (refs) {
+      r.row = {*pic};
+    }
+    const auto job = ctl.generate_video(r);
+    CHECK(job.ok());
+    if (!job.ok()) {
+      return Json::object();
+    }
+    ++asked;
+    if (!eventually([&] {
+          return engine->held_of(engine::kOpGenerateVideo).size() == asked;
+        }, 10)) {
+      CHECK(false);
+      return Json::object();
+    }
+    return engine->spec(engine->held_of(engine::kOpGenerateVideo).back())
+        ->params;
+  };
+  auto shift = [](const Json& p) {
+    return jget(jget(p, "tuning", Json::object()), "video_shift", 0.0);
+  };
+  Json p = fast("minimax-h3-fl2va", false);
+  CHECK(jget<std::string>(p, "lora", "") == "minimax-h3-turbo-4step");
+  CHECK(shift(p) == 6.0);
+
+  // v1.3 downloaded: Automatic runs it, recorded by its own id.
+  put(lx / "minimax_h3_fl2v_turbo_4step_v1.3_768p_bf16.safetensors");
+  ctl.rescan_models();
+  CHECK(ctl.version_in_use(*line)->id == "minimax-h3-turbo-4step-v1.3");
+  p = fast("minimax-h3-fl2va", false);
+  CHECK(jget<std::string>(p, "lora", "") == "minimax-h3-turbo-4step-v1.3");
+
+  // v1.2 chosen: it runs, whatever is newer -- kept; Automatic again.
+  REQUIRE_OK(ctl.set_model_version(line->id, "minimax-h3-turbo-4step"));
+  CHECK(jget<std::string>(ctl.model_versions(line->id), "chosen", "") ==
+        "minimax-h3-turbo-4step");
+  p = fast("minimax-h3-fl2va", false);
+  CHECK(jget<std::string>(p, "lora", "") == "minimax-h3-turbo-4step");
+  REQUIRE_OK(ctl.set_model_version(line->id, ""));
+  CHECK(ctl.version_in_use(*line)->id == "minimax-h3-turbo-4step-v1.3");
+  CHECK(!ctl.set_model_version(line->id, "minimax-h3-turbo-8step-v1.2")
+             .ok());
+  CHECK(!ctl.set_model_version("minimax-h3-fl2va", "").ok());
+
+  // v1.1 chosen and not here: a download of the line is v1.1's.
+  REQUIRE_OK(ctl.set_model_version(line->id, "minimax-h3-turbo-4step-v1.1"));
+  auto dl = ctl.download_model(line->id);
+  REQUIRE_OK(dl);
+  const auto* ds = engine->spec(*dl);
+  REQUIRE(ds != nullptr);
+  CHECK(jget<std::string>(ds->params, "variant", "") ==
+        "lightx2v/Minimax-h3-Turbo-4step-768p-v1.1");
+  REQUIRE_OK(ctl.stop_download(line->id, true));
+
+  // Ref2VA's Fast: v0.1 at the checkpoint's own 12; v1.0, distilled at
+  // 768p, brings its 6.
+  p = fast("minimax-h3-ref2va", true);
+  CHECK(jget<std::string>(p, "lora", "") == "minimax-h3-ref2va-turbo-4step");
+  CHECK(shift(p) == 12.0);
+  put(lx / "minimax_h3_ref2v_turbo_4step_v1.0_768p_bf16.safetensors");
+  ctl.rescan_models();
+  p = fast("minimax-h3-ref2va", true);
+  CHECK(jget<std::string>(p, "lora", "") ==
+        "minimax-h3-ref2va-turbo-4step-v1.0");
+  CHECK(shift(p) == 6.0);
+}
+
 // FL2VA's two keyframes: a clip that opens on one picture and ENDS on
 // another -- given to the job as inputs "first" and "last", in that
 // order whatever the row's, and named in the prompt as the guide's FL2VA
@@ -12869,6 +13106,10 @@ struct RegenBench {
       install("Lakonik/pi-H3/pi_h3_2step_adapter/"
               "diffusion_pytorch_model.safetensors");
       install("Lakonik/pi-H3/pi_h3_2step_adapter/config.json");
+      // HyperFlow H3 Flash's FL2VA DiT, beside them.
+      install("VideoRebirthAI/hyperflow-h3-flash/fl2va_int8_convrot_comfyui/"
+              "minimax_h3_fl2va_hyperflow_flash_14b-int8_convrot"
+              ".safetensors");
     }
     if (pika) {
       // Pika H3 Flex's FL2VA adapter, its manifest beside it.
@@ -12992,6 +13233,65 @@ TEST(controller, minimax_h3_trains_on_clips_and_references)
 // Pika H3 Flex on (Favor's Custom, DESIGN §4c): its adapter the job's
 // first LoRA, recorded by its catalog id at 1.0, at its six steps and
 // shifts 12 / 3; off, the preset's Turbo LoRA as before.
+// MAGI-2-preview (vpipe's magi2): asked from words, at its own 12.5 fps
+// and on its 4k + 1 grid, its 100 steps at every Favor; from a picture
+// too. Auto's last clip model, behind MiniMax H3.
+TEST(controller, magi2_makes_a_clip_at_its_own_rate)
+{
+  RegenBench b("magi2", false);
+  REQUIRE(b.ctl && b.engine);
+  const fs::path m = b.root / "models/sand-ai/MAGI-2-preview";
+  for (const char* f : {"preview/model.safetensors.index.json",
+                        "refiner/model.safetensors.index.json",
+                        "text_encoder/config.json",
+                        "text_encoder/model.safetensors.index.json",
+                        "turbo_vae/checkpoint.ckpt",
+                        "stable-audio-open-1.0/model.safetensors",
+                        "vae/Wan2.2_VAE.pth"}) {
+    fs::create_directories((m / f).parent_path());
+    std::ofstream(m / f) << "{}";
+  }
+  b.ctl->rescan_models();
+  const auto* e = b.ctl->catalog().find("magi2-preview");
+  REQUIRE(e != nullptr);
+  CHECK(b.ctl->model_store().info(*e).state ==
+        models::InstallState::Installed);
+  GenerateVideoRequest req;
+  req.project = b.pid;
+  req.model = "magi2-preview";
+  req.prompt = "A red fox trots through fresh snow at dawn.";
+  req.width = 896;
+  req.height = 512;
+  req.frames = 120;
+  req.preference = "speed";
+  REQUIRE_OK(b.ctl->generate_video(req));
+  const engine::JobSpec* s = b.job(engine::kOpGenerateVideo, 1);
+  REQUIRE(s != nullptr);
+  CHECK(s->model.id == "magi2-preview");
+  CHECK(jget(s->params, "fps", 0.0) == 12.5);
+  CHECK(jget(s->params, "frames", 0) == 121);
+  CHECK(jget(s->params, "steps", 0) == 20);
+  CHECK(jget(s->params["tuning"], "sage_attn", false));
+  CHECK(jget(s->params["tuning"], "sage_pv8", false));
+  CHECK(jget<std::string>(s->params["tuning"], "i8_gemm_tier", "") ==
+        "token");
+  CHECK(!s->params.contains("lora"));
+  CHECK(!s->params.contains("draft"));
+  // Custom offers no weights of one's own for it, nor a live preview
+  // (no TAE); its own knobs, declared.
+  auto opts = b.ctl->tuning("magi2-preview", "balanced", false,
+                            Json::object());
+  REQUIRE_OK(opts);
+  std::set<std::string> keys;
+  for (const auto& o : (*opts)["options"]) {
+    keys.insert(o["key"].get<std::string>());
+  }
+  CHECK(!keys.contains("loras") && !keys.contains("dits") &&
+        !keys.contains("vaes") && !keys.contains("preview"));
+  CHECK(keys.contains("video_guidance") && keys.contains("refine_steps") &&
+        keys.contains("shift"));
+}
+
 TEST(controller, a_clip_runs_pika_h3_flex)
 {
   RegenBench b("pika-flex", false, true);
@@ -13105,6 +13405,80 @@ TEST(controller, a_clip_runs_pi_h3_over_the_pruned_dit)
   s = b.job(engine::kOpGenerateVideo, 4);
   REQUIRE(s != nullptr);
   CHECK(!jget<std::string>(s->params, "regenerate", "").empty());
+}
+
+// HyperFlow H3 Flash (Custom's hyperflow_flash): its own DiT named to the
+// job, no LoRA -- the Turbo LoRA off -- its grid by the steps chosen, the
+// release's shifts; past 768P in one pass; with pi-H3, pi-H3 on its
+// blocks over the pruned DiT's time curve.
+TEST(controller, a_clip_runs_on_hyperflow_h3_flash)
+{
+  RegenBench b("flash", true, false, false, false, {}, true);
+  REQUIRE(b.ctl && b.engine);
+  auto opts = b.ctl->tuning("minimax-h3-fl2va", "balanced", false,
+                            Json::object());
+  REQUIRE_OK(opts);
+  bool offered = false, steps = false;
+  for (const auto& o : (*opts)["options"]) {
+    if (o["key"] == "hyperflow_flash") {
+      offered = jget(o, "available", false);
+    }
+    if (o["key"] == "hyperflow_flash_steps") {
+      steps = o["choices"] == Json::array({"6", "4", "8"});
+    }
+  }
+  CHECK(offered);
+  CHECK(steps);
+  GenerateVideoRequest req;
+  req.project = b.pid;
+  req.model = "minimax-h3-fl2va";
+  req.prompt = "A fox trotting through snow at dawn.";
+  req.width = 832;
+  req.height = 480;
+  req.frames = 39;
+  req.tuning = {{"hyperflow_flash", true}};
+  REQUIRE_OK(b.ctl->generate_video(req));
+  const engine::JobSpec* s = b.job(engine::kOpGenerateVideo, 1);
+  REQUIRE(s != nullptr);
+  CHECK(jget<std::string>(s->params, "lora", "").empty());
+  CHECK(s->model.lora.empty());
+  CHECK(jget(s->params, "steps", 0) == 6);
+  CHECK(jget(s->params["tuning"], "video_shift", 0) == 12);
+  CHECK(jget(s->params["tuning"], "audio_shift", 0) == 3);
+  CHECK(jget<std::string>(s->params, "dit_model", "") ==
+        "minimax-h3-fl2va-hyperflow-flash");
+  CHECK(s->model.dit.filename() ==
+        "minimax_h3_fl2va_hyperflow_flash_14b-int8_convrot.safetensors");
+  // Four steps.
+  req.tuning = {{"hyperflow_flash", true}, {"hyperflow_flash_steps", "4"}};
+  REQUIRE_OK(b.ctl->generate_video(req));
+  s = b.job(engine::kOpGenerateVideo, 2);
+  REQUIRE(s != nullptr);
+  CHECK(jget(s->params, "steps", 0) == 4);
+  // With pi-H3 (BennyDaBall930's recipe): pi-H3's adapter and steps on
+  // Flash's blocks, the pruned DiT their time curve.
+  req.tuning = {{"hyperflow_flash", true}, {"pi_h3", true}};
+  REQUIRE_OK(b.ctl->generate_video(req));
+  s = b.job(engine::kOpGenerateVideo, 3);
+  REQUIRE(s != nullptr);
+  CHECK(jget<std::string>(s->params, "dit_model", "") ==
+        "minimax-h3-fl2va-hyperflow-flash");
+  CHECK(jget<std::string>(s->params, "curve_model", "") ==
+        "minimax-h3-fl2va-pruned-int8");
+  CHECK(jget<std::string>(s->params, "lora", "") ==
+        "minimax-h3-pi-4step-dwd");
+  CHECK(jget(s->params, "steps", 0) == 4);
+  CHECK(s->model.curve_dit.filename() ==
+        "minimax_h3_fl2va_pruned_int8_convrot.safetensors");
+  // Past 768P: one pass, at the size.
+  req.tuning = {{"hyperflow_flash", true}};
+  req.width = 1920;
+  req.height = 1088;
+  REQUIRE_OK(b.ctl->generate_video(req));
+  s = b.job(engine::kOpGenerateVideo, 4);
+  REQUIRE(s != nullptr);
+  CHECK(jget<std::string>(s->params, "regenerate", "").empty());
+  CHECK(jget(s->params, "width", 0) == 1920);
 }
 
 // Past 768 on its short side (catalog `regenerate`), a clip from words is
@@ -15558,6 +15932,173 @@ TEST(agent, chats_beside_the_editor_look_and_add)
 // person's own words kept apart; the session's context counted for the
 // app's ring; and at each rest its conversation written in Markdown to
 // one text asset of the project, in its Agent Sessions folder.
+// SKILLS dragged into the chat (DESIGN §9b): a folder with a SKILL.md, a
+// SKILL.md, or a Markdown file whose front matter names it -- read, its
+// text given to the model with the words (or alone), its NAME alone in
+// the app's messages and the transcript; kept whole through compaction.
+TEST(agent, a_skill_dragged_in_is_loaded_and_named)
+{
+  auto root = test::temp_dir("agent-skill");
+  // A skill as Anthropic lays one out, a file beside it, a hidden one.
+  const auto sk = root / "poster-style";
+  fs::create_directories(sk / "references");
+  fs::create_directories(sk / ".git");
+  {
+    std::ofstream(sk / "SKILL.md")
+        << "---\nname: poster-style\ndescription: >\n  Posters in the "
+           "Swiss style,\n  grids and big type.\n---\n# Poster style\n\n"
+           "Use a 12-column grid. BODYMARKER\n";
+    std::ofstream(sk / "references" / "type.md") << "Helvetica.\n";
+    std::ofstream(sk / ".git" / "HEAD") << "x\n";
+  }
+  {
+    std::ofstream(root / "tone.md")
+        << "---\nname: \"Warm tone\"\ndescription: 'Warm words.'\n---\n"
+           "Write warmly. TONEMARKER\n";
+    std::ofstream(root / "notes.md") << "# Just notes\n";
+  }
+  fs::create_directories(root / "empty");
+
+  // Read: by its folder or its SKILL.md alike; a named .md; refusals.
+  auto k = agent::read_skill(sk);
+  REQUIRE_OK(k);
+  CHECK(k->name == "poster-style");
+  CHECK(k->description == "Posters in the Swiss style, grids and big type.");
+  CHECK(k->files == std::vector<std::string>{"references/type.md"});
+  CHECK(k->text.find("BODYMARKER") != std::string::npos);
+  auto k2 = agent::read_skill(sk / "SKILL.md");
+  REQUIRE_OK(k2);
+  CHECK(k2->name == "poster-style" && k2->files == k->files);
+  auto tone = agent::read_skill(root / "tone.md");
+  REQUIRE_OK(tone);
+  CHECK(tone->name == "Warm tone" && tone->description == "Warm words.");
+  CHECK(tone->files.empty());
+  CHECK(!agent::read_skill(root / "notes.md").ok());
+  CHECK(!agent::read_skill(root / "empty").ok());
+  CHECK(!agent::read_skill(root / "nothing-here").ok());
+  const std::string told = agent::skill_text(*k);
+  CHECK(told.starts_with("[Valtz] The person loaded the skill "
+                         "\"poster-style\""));
+  CHECK(told.find("references/type.md") != std::string::npos);
+  CHECK(told.find("<skill name=\"poster-style\">") != std::string::npos);
+  CHECK(told.ends_with("</skill>"));
+
+  // Compaction keeps a skill whole in its notes.
+  {
+    agent::CompactionNotes notes;
+    notes.skills = {told};
+    std::vector<agent::Message> msgs = {
+        {.role = "system", .content = "s"},
+        {.role = "user", .content = "request"},
+        {.role = "user", .content = "later", .said = "later"},
+        {.role = "assistant", .content = "ok"}};
+    auto out = agent::compact(msgs, 3, notes);
+    REQUIRE(out.size() == 4);
+    CHECK(out[2].content.find("BODYMARKER") != std::string::npos);
+  }
+
+  auto script = std::make_shared<ScriptedBackend::Shared>();
+  script->context = 100000;
+  ControllerConfig cfg;
+  cfg.support_root = root / "support";
+  cfg.model_roots = {root / "models"};
+  cfg.with_engine = false;
+  cfg.extensions = false;
+  cfg.agent_backend = [script] {
+    return std::unique_ptr<agent::Backend>(
+        std::make_unique<ScriptedBackend>(script));
+  };
+  auto made = Controller::create(cfg);
+  REQUIRE_OK(made);
+  Controller& ctl = **made;
+  auto pid = ctl.create_project(root / "S.valtz", "skills");
+  REQUIRE_OK(pid);
+
+  // Loaded with the request: the model reads it, the person's words are
+  // theirs alone.
+  AgentRequest req;
+  req.project = *pid;
+  req.prompt = "A poster for a jazz night";
+  req.review = false;
+  req.skills = "chat";
+  req.skill_files = {sk};
+  auto id = ctl.agent_start(req);
+  REQUIRE_OK(id);
+  agent_wait(ctl, *id, "done");
+  {
+    std::lock_guard lk(script->mu);
+    REQUIRE(!script->seen.empty());
+    const auto& first = script->seen.front()[1];
+    CHECK(first.said == req.prompt);
+    CHECK(first.skills == std::vector<std::string>{"poster-style"});
+    CHECK(first.content.starts_with("A poster for a jazz night"));
+    CHECK(first.content.find("BODYMARKER") != std::string::npos);
+  }
+  // A skill ALONE said later; one that is no skill refused by name.
+  auto bad = ctl.agent_say(*id, "", Json::object(), {}, Json(),
+                           {root / "notes.md"});
+  REQUIRE(!bad.ok());
+  CHECK(bad.error().key == "core.agent_skill_refused");
+  REQUIRE_OK(ctl.agent_say(*id, "", Json::object(), {}, Json(),
+                           {root / "tone.md"}));
+  Json st;
+  for (int i = 0; i < 500; ++i) {
+    st = ctl.agent_state(*id);
+    if (jget<std::string>(st, "state", "") == "done" &&
+        jget(st, "turns", 0) >= 2 && st.contains("transcript")) {
+      break;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+  {
+    std::lock_guard lk(script->mu);
+    const agent::Message* alone = nullptr;
+    for (const auto& m : script->seen.back()) {
+      if (m.role == "user" && !m.skills.empty() &&
+          m.skills[0] == "Warm tone") {
+        alone = &m;
+      }
+    }
+    REQUIRE(alone != nullptr);
+    CHECK(alone->said.empty());
+    CHECK(alone->content.starts_with("[Valtz] The person loaded the skill "
+                                     "\"Warm tone\""));
+    CHECK(alone->content.find("TONEMARKER") != std::string::npos);
+  }
+  // The app's messages: the names, the words as said -- empty too --
+  // never the skill's text.
+  int named = 0;
+  for (const auto& m : jget(st, "messages", Json::array())) {
+    const Json sks = jget(m, "skills", Json::array());
+    if (sks.empty()) {
+      continue;
+    }
+    ++named;
+    CHECK(m.contains("said"));
+    CHECK(jget<std::string>(m, "said", "x").find("MARKER") ==
+          std::string::npos);
+  }
+  CHECK(named == 2);
+  // The transcript names them and leaves their text out.
+  auto tid = AssetId::parse(jget<std::string>(st, "transcript", ""));
+  REQUIRE(tid.has_value());
+  std::string text;
+  for (int i = 0; i < 300; ++i) {
+    auto t = ctl.project(*pid)->read_text(*tid);
+    if (t.ok() && t->find("Warm tone") != std::string::npos) {
+      text = *t;
+      break;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+  CHECK(text.find("## You\n\nA poster for a jazz night\n\n*Skill loaded: "
+                  "poster-style*") != std::string::npos);
+  CHECK(text.find("*Skill loaded: Warm tone*") != std::string::npos);
+  CHECK(text.find("BODYMARKER") == std::string::npos);
+  CHECK(text.find("TONEMARKER") == std::string::npos);
+  (void)ctl.agent_stop(*id);
+}
+
 TEST(agent, a_session_is_kept_as_a_transcript)
 {
   auto root = test::temp_dir("agent-transcript");
@@ -20403,6 +20944,172 @@ TEST(controller, moss_images_enhancer_writes_a_layout_compiled_here)
         R"("abs_centralized","bbox_format":"yxyx"})");
 }
 
+// MAGI-2-PREVIEW's own templates (3rd-party/magi2) on the helper: words
+// alone sent t2v.md, a clip opening on a picture i2v.md with the picture
+// beside it -- each the template, the request in its place, one message
+// and no system, as their enhancer sends it, at its 16,384-token budget --
+// and the JSON reply rendered to the Markdown the model reads.
+TEST(controller, magi2s_enhancer_is_its_makers_templates)
+{
+  auto root = test::temp_dir("ctl-magi2-enhance");
+  const fs::path helper =
+      root / "models" / "mlx-community" / "Qwen3.5-9B-OptiQ-4bit";
+  fs::create_directories(helper);
+  std::ofstream(helper / "config.json") << "{}";
+  std::ofstream(helper / "model.safetensors") << "w";
+  ControllerConfig cfg;
+  cfg.support_root = root / "support";
+  cfg.model_roots = {root / "models"};
+  cfg.with_engine = false;
+  cfg.extensions = false;
+  HeldEngine* engine = nullptr;
+  cfg.engine_factory = [&engine] {
+    auto e = std::make_unique<HeldEngine>();
+    engine = e.get();
+    return std::unique_ptr<engine::Engine>(std::move(e));
+  };
+  auto made = Controller::create(cfg);
+  REQUIRE_OK(made);
+  REQUIRE(engine != nullptr);
+  Controller& ctl = **made;
+  auto pid = ctl.create_project(root / "M.valtz", "magi2");
+  REQUIRE_OK(pid);
+  REQUIRE(write_png(root / "fox.png", 16, 16, {0xff, 0x80, 0, 0xff}));
+  auto fox = import_and_wait(ctl, *pid, root / "fox.png");
+  REQUIRE(fox);
+  auto wait_prompt = [&](JobId job) {
+    std::string prompt;
+    for (int i = 0; i < 50 && prompt.empty(); ++i) {
+      Event ev;
+      if (ctl.events().wait(ev, 100) && ev.job == job &&
+          ev.kind == "assist.enhanced") {
+        prompt = jget<std::string>(ev.data, "prompt", "");
+      }
+    }
+    return prompt;
+  };
+
+  EnhancePromptRequest req;
+  req.target = "video";
+  req.model = "magi2-preview";
+  req.project = *pid;
+  req.prompt = "a fox trots through snow";
+  auto job = ctl.enhance_prompt(req);
+  REQUIRE_OK(job);
+  const engine::JobSpec* spec = engine->spec(*job);
+  REQUIRE(spec);
+  const auto text = jget<std::string>(spec->params, "text", "");
+  CHECK(text == assist::magi2_request(false, "a fox trots through snow"));
+  CHECK(!spec->params.contains("system"));
+  CHECK(spec->inputs.empty());
+  CHECK(jget(spec->params, "max_new_tokens", 0) == 16384);
+  engine->turn(*job, {{"text", R"({"global_layer": {"context": "Snow.",
+                         "empty": ""}, "dynamic_layer": [{"time":
+                         "0.0-10.0", "audio": ["wind", "steps"]}]})"}});
+  CHECK(wait_prompt(*job) ==
+        "# global_layer\n\ncontext:Snow.\n\n# dynamic_layer\n\n"
+        "## dynamic_layer1\n\ntime:0.0-10.0\n\naudio:wind | steps\n");
+
+  // Opening on a picture: i2v, the picture shown.
+  req.base = *fox;
+  req.row = {*fox};
+  auto opens = ctl.enhance_prompt(req);
+  REQUIRE_OK(opens);
+  spec = engine->spec(*opens);
+  REQUIRE(spec);
+  CHECK(jget<std::string>(spec->params, "text", "") ==
+        assist::magi2_request(true, "a fox trots through snow"));
+  CHECK(spec->inputs.size() == 1);
+  // A reply in t2v's shape is not i2v's: refused, not shown as words.
+  engine->turn(*opens, {{"text", R"({"global_layer": {"context": "x"}})"}});
+  bool failed = false;
+  for (int i = 0; i < 50 && !failed; ++i) {
+    Event ev;
+    failed = ctl.events().wait(ev, 100) && ev.job == *opens &&
+             ev.kind == "job.failed";
+  }
+  CHECK(failed);
+}
+
+// SETTINGS › STORAGE's drives (Controller::storage_report "volumes"):
+// the internal one first, and every other local drive a Valtz folder or
+// one of its items is on, each with what of Valtz's is there -- a model
+// in the slow folder counted on the slow folder's drive, not the
+// internal one's. The second drive is a disk image, attached for the
+// test (VALTZ_TEST_VOLUME=1: it mounts one); without it, the internal
+// drive alone, holding all.
+TEST(controller, storage_is_told_drive_by_drive)
+{
+  auto root = test::temp_dir("ctl-storage-drives");
+  ControllerConfig cfg;
+  cfg.support_root = root / "support";
+  cfg.model_roots = {root / "models"};
+  cfg.with_engine = false;
+  cfg.extensions = false;
+  fs::create_directories(root / "models" / "acme" / "here");
+  std::ofstream(root / "models" / "acme" / "here" / "w.bin")
+      << std::string(1 << 20, 'x');
+  auto made = Controller::create(cfg);
+  REQUIRE_OK(made);
+  Controller& ctl = **made;
+  auto sum = [](const Json& v, const char* k) {
+    std::int64_t n = 0;
+    for (const auto& d : v) { n += jget<std::int64_t>(d, k, 0); }
+    return n;
+  };
+  Json r = ctl.storage_report();
+  Json v = jget(r, "volumes", Json::array());
+  REQUIRE(v.size() >= 1);
+  CHECK(jget<std::int64_t>(v[0], "capacity", 0) > 0);
+  CHECK(sum(v, "models") == jget<std::int64_t>(r["models"], "bytes", -1));
+  CHECK(jget<std::int64_t>(v[0], "models", 0) >= (1 << 20));
+
+  if (std::getenv("VALTZ_TEST_VOLUME") == nullptr) {
+    SKIP("VALTZ_TEST_VOLUME=1 attaches a disk image as a second drive");
+  }
+  const fs::path img = root / "drive.dmg", mnt = root / "drive";
+  REQUIRE(std::system(("hdiutil create -size 64m -fs APFS -volname "
+                       "ValtzDrive -quiet '" + img.string() + "'").c_str())
+          == 0);
+  REQUIRE(std::system(("hdiutil attach -nobrowse -quiet -mountpoint '" +
+                       mnt.string() + "' '" + img.string() + "'").c_str())
+          == 0);
+  struct Detach {
+    fs::path m;
+    ~Detach() {
+      std::system(("hdiutil detach -quiet -force '" + m.string() + "'")
+                      .c_str());
+    }
+  } detach{mnt};
+  REQUIRE_OK(ctl.set_slow_models(mnt / "Slow"));
+  fs::create_directories(mnt / "Slow" / "acme" / "there");
+  std::ofstream(mnt / "Slow" / "acme" / "there" / "w.bin")
+      << std::string(2 << 20, 'y');
+  r = ctl.storage_report();
+  v = jget(r, "volumes", Json::array());
+  REQUIRE(v.size() >= 2);
+  const Json* far = nullptr;
+  for (const auto& d : v) {
+    if (jget<std::string>(d, "name", "") == "ValtzDrive") { far = &d; }
+  }
+  REQUIRE(far != nullptr);
+  CHECK(jget<std::int64_t>(*far, "models", 0) >= (2 << 20));
+  CHECK(jget<std::int64_t>(*far, "models", 0) < (3 << 20));
+  CHECK(jget<std::int64_t>(*far, "capacity", 0) < (128ll << 20));
+  CHECK(sum(v, "models") == jget<std::int64_t>(r["models"], "bytes", -1));
+  CHECK(jget<std::int64_t>(v[0], "models", 0) < (2 << 20));
+  // The slow folder let go: its drive held nothing of Valtz's -- it is
+  // not drawn.
+  fs::remove_all(mnt / "Slow" / "acme");
+  REQUIRE_OK(ctl.set_slow_models({}));
+  r = ctl.storage_report();
+  bool still = false;
+  for (const auto& d : jget(r, "volumes", Json::array())) {
+    still = still || jget<std::string>(d, "name", "") == "ValtzDrive";
+  }
+  CHECK(!still);
+}
+
 // An enhance's speed comes with its suggestion, as an agent's turn's
 // does: vpipe's counts for its chat -- what it read and wrote, its
 // drafter's rounds -- on Valtz's clock (Settings › Agentic Helper › Show
@@ -21067,6 +21774,211 @@ TEST(controller, folders_are_moved_kept_or_dropped)
     CHECK(ctl.cache().find(key).has_value());
     CHECK(!fs::exists(c2 / "objects"));
   }
+}
+
+// THE SLOW MODELS FOLDER (Settings › General › Storage; base/paths.h): set
+// beside the models folder, Valtz's own; a model MOVED there and back --
+// by a copy, as across drives -- found where it went, the old files gone;
+// a download sent there; the folder let go only once it holds no model;
+// and read back by the next start.
+TEST(controller, a_model_is_moved_to_slow_storage_and_back)
+{
+  const fs::path root = test::temp_dir("ctl-slow-models");
+  ControllerConfig cfg;
+  cfg.support_root = root / "support";
+  cfg.with_engine = false;
+  cfg.extensions = false;
+  cfg.move_by_copy = true;
+  HeldEngine* engine = nullptr;
+  cfg.engine_factory = [&engine] {
+    auto e = std::make_unique<HeldEngine>();
+    engine = e.get();
+    return std::unique_ptr<engine::Engine>(std::move(e));
+  };
+  const fs::path models = root / "support/models";
+  const fs::path slow = root / "external/Slow Models";
+  {
+    const fs::path f = models / "krea/Krea-2-Turbo/model.safetensors";
+    fs::create_directories(f.parent_path());
+    std::ofstream(f) << "weights";
+    std::ofstream(f.parent_path() / "config.json") << "{}";
+  }
+  auto settled = [](Controller& ctl) {
+    for (int i = 0; i < 400; ++i) {
+      if (!jget(ctl.locations(), "moving", Json()).is_object()) {
+        return true;
+      }
+      std::this_thread::sleep_for(std::chrono::milliseconds(25));
+    }
+    return false;
+  };
+  {
+    auto made = Controller::create(cfg);
+    REQUIRE_OK(made);
+    Controller& ctl = **made;
+    const auto* krea = ctl.catalog().find("krea2-turbo");
+    REQUIRE(krea != nullptr);
+
+    // None set: nowhere to move it, nor to download to.
+    auto none = ctl.move_model("krea2-turbo", "slow");
+    CHECK(!none.ok() && none.error().key == msg::kSlowModelsNone.key);
+    auto dl0 = ctl.download_model("z-image-turbo", "", "", "slow");
+    CHECK(!dl0.ok() && dl0.error().key == msg::kSlowModelsNone.key);
+    CHECK(!jget(ctl.locations(), "models_slow", Json()).is_object());
+
+    // Set: inside the models folder refused; elsewhere made and Valtz's
+    // own, after the models folder.
+    CHECK(ctl.set_slow_models(models / "slow").error().key ==
+          msg::kLocationNested.key);
+    REQUIRE_OK(ctl.set_slow_models(slow));
+    CHECK(fs::is_directory(slow));
+    CHECK(ctl.paths().models_slow == slow);
+    CHECK(ctl.model_store().download_root() == models);
+    CHECK(!ctl.model_store().own_root_of(slow / "x").empty());
+    CHECK(jget<std::string>(jget(ctl.locations(), "models_slow", Json()),
+                            "path", "") == slow.string());
+    CHECK(jget(ctl.capability_tree(), "slow_storage", Json()).is_object());
+
+    auto here = ctl.move_model("krea2-turbo", "fast");
+    CHECK(!here.ok() && here.error().key == msg::kModelInFastAlready.key);
+    auto missing = ctl.move_model("z-image-turbo", "slow");
+    CHECK(!missing.ok() &&
+          missing.error().key == msg::kModelNotInstalled.key);
+
+    // MOVED to the slow folder: a job, its files there, none left.
+    auto mv = ctl.move_model("krea2-turbo", "slow");
+    REQUIRE_OK(mv);
+    REQUIRE(settled(ctl));
+    CHECK(fs::exists(slow / "krea/Krea-2-Turbo/model.safetensors"));
+    CHECK(fs::exists(slow / "krea/Krea-2-Turbo/config.json"));
+    CHECK(!fs::exists(models / "krea"));
+    const auto info = ctl.model_store().info(*krea);
+    CHECK(info.state == models::InstallState::Installed);
+    CHECK(path_within(info.dir, slow));
+    auto again = ctl.move_model("krea2-turbo", "slow");
+    CHECK(!again.ok() && again.error().key == msg::kModelInSlowAlready.key);
+
+    // Holding a model: not let go.
+    CHECK(ctl.set_slow_models({}).error().key ==
+          msg::kSlowModelsHoldsModels.key);
+
+    // A download sent there.
+    auto dl = ctl.download_model("z-image-turbo", "", "", "slow");
+    REQUIRE_OK(dl);
+    const engine::JobSpec* spec = engine->spec(*dl);
+    REQUIRE(spec != nullptr);
+    CHECK(jget<std::string>(spec->params, "base_path", "") ==
+          slow.string());
+    // Cancelled, what came down deleted: the next one starts afresh. (A
+    // pause would resume where it began.)
+    REQUIRE_OK(ctl.stop_download("z-image-turbo", true));
+    auto plain = ctl.download_model("z-image-turbo", "", "", "");
+    REQUIRE_OK(plain);
+    REQUIRE(engine->spec(*plain) != nullptr);
+    CHECK(jget<std::string>(engine->spec(*plain)->params, "base_path",
+                            "") == models.string());
+    REQUIRE_OK(ctl.stop_download("z-image-turbo", true));
+    for (int i = 0; i < 200 && ctl.downloading("z-image-turbo"); ++i) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+
+    // And BACK: in the models folder again, the slow one empty.
+    auto back = ctl.move_model("krea2-turbo", "fast");
+    REQUIRE_OK(back);
+    REQUIRE(settled(ctl));
+    CHECK(fs::exists(models / "krea/Krea-2-Turbo/model.safetensors"));
+    CHECK(!fs::exists(slow / "krea"));
+    CHECK(path_within(ctl.model_store().info(*krea).dir, models));
+  }
+  // Read back by the next start; let go once it is empty.
+  {
+    auto made = Controller::create(cfg);
+    REQUIRE_OK(made);
+    Controller& ctl = **made;
+    CHECK(ctl.paths().models_slow == slow);
+    REQUIRE_OK(ctl.set_slow_models({}));
+    CHECK(ctl.paths().models_slow.empty());
+    CHECK(ctl.model_store().own_root_of(slow / "x").empty());
+  }
+  // On one drive: renamed, there and back.
+  cfg.move_by_copy = false;
+  {
+    auto made = Controller::create(cfg);
+    REQUIRE_OK(made);
+    Controller& ctl = **made;
+    const auto* krea = ctl.catalog().find("krea2-turbo");
+    REQUIRE_OK(ctl.set_slow_models(slow));
+    REQUIRE_OK(ctl.move_model("krea2-turbo", "slow"));
+    REQUIRE(settled(ctl));
+    CHECK(path_within(ctl.model_store().info(*krea).dir, slow));
+    CHECK(!fs::exists(models / "krea"));
+    REQUIRE_OK(ctl.move_model("krea2-turbo", "fast"));
+    REQUIRE(settled(ctl));
+    CHECK(path_within(ctl.model_store().info(*krea).dir, models));
+    CHECK(fs::exists(models / "krea/Krea-2-Turbo/config.json"));
+  }
+}
+
+// A clip's LIVE PREVIEW is Custom's last option, on by default; switched
+// off, the clip is asked for without a preview (the engine's key, the
+// TAE's stage and the 2K draft's decode left out), never a stage's key.
+TEST(controller, a_live_preview_can_be_switched_off)
+{
+  RegenBench b("preview-off", false, false, false, /*edit=*/true);
+  REQUIRE(b.ctl && b.engine);
+  const auto* m = b.ctl->catalog().find("minimax-h3-fl2va");
+  REQUIRE(m != nullptr);
+  const Json opts = models::tuning_options(*m, b.ctl->tuning_context(*m),
+                                           "balanced", false);
+  REQUIRE(!opts["options"].empty());
+  const Json& last = opts["options"].back();
+  CHECK(last["key"] == "preview");
+  CHECK(jget(opts["values"], "preview", false));
+  // A picture model with a TAE offers it last too; one without, not.
+  const auto* krea = b.ctl->catalog().find("krea2-turbo");
+  REQUIRE(krea != nullptr);
+  const Json kopts = models::tuning_options(
+      *krea, b.ctl->tuning_context(*krea), "balanced", false);
+  CHECK(kopts["options"].back()["key"] == "preview");
+  const auto* ph3 = b.ctl->catalog().find("p-h3-image");
+  REQUIRE(ph3 != nullptr);
+  for (const auto& o : models::tuning_options(
+           *ph3, b.ctl->tuning_context(*ph3), "balanced", false)
+           ["options"]) {
+    CHECK(o["key"] != "preview");
+  }
+  GenerateVideoRequest req;
+  req.project = b.pid;
+  req.model = "minimax-h3-fl2va";
+  req.prompt = "A lighthouse at dusk.";
+  req.width = 832;
+  req.height = 480;
+  req.frames = 39;
+  REQUIRE_OK(b.ctl->generate_video(req));
+  const engine::JobSpec* on = b.job(engine::kOpGenerateVideo, 1);
+  REQUIRE(on != nullptr);
+  CHECK(jget(on->params, "preview", true));
+  CHECK(!jget(on->params, "tuning", Json::object()).contains("preview"));
+  req.preference = "custom";
+  req.tuning = {{"preview", false}};
+  REQUIRE_OK(b.ctl->generate_video(req));
+  const engine::JobSpec* off = b.job(engine::kOpGenerateVideo, 2);
+  REQUIRE(off != nullptr);
+  CHECK(!jget(off->params, "preview", true));
+  CHECK(!jget(off->params, "tuning", Json::object()).contains("preview"));
+
+  // A picture alike.
+  GenerateImageRequest ir;
+  ir.project = b.pid;
+  ir.model = "qwen-image-2.1";
+  ir.prompt = "A lighthouse at dusk.";
+  ir.preference = "custom";
+  ir.tuning = {{"preview", false}};
+  REQUIRE_OK(b.ctl->generate_image(ir));
+  const engine::JobSpec* pic = b.job(engine::kOpGenerateImage, 1);
+  REQUIRE(pic != nullptr);
+  CHECK(!jget(pic->params, "preview", true));
+  CHECK(!jget(pic->params, "tuning", Json::object()).contains("preview"));
 }
 
 // REPRODUCIBILITY (Settings › General, DESIGN §10a): kept in the support

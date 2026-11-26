@@ -255,7 +255,7 @@ struct ComposerStack: View {
 
     /// The staged media's row and its hairline, while there are any.
     private var rowHeight: CGFloat {
-        model.promptAttachments.isEmpty ? 0 : ReferenceRow.height + 0.5
+        model.promptRowEmpty ? 0 : ReferenceRow.height + 0.5
     }
 
     /// The row of staged media over the text, which stays still while the
@@ -333,7 +333,7 @@ struct ComposerStack: View {
     /// The prompt's own card: its row, a capture's card, the text.
     private var promptStack: some View {
         VStack(spacing: 0) {
-            if !model.promptAttachments.isEmpty {
+            if !model.promptRowEmpty {
                 ReferenceRow(model: model)
                     // Clear, at the card's top-right corner: the words
                     // and the row. Not in the editor: a new prompt is
@@ -354,7 +354,7 @@ struct ComposerStack: View {
                         $0.frame(in: .named(Self.cardSpace))
                     } action: { captureFrame = $0 }
                     .padding(.horizontal, 14)
-                    .padding(.top, model.promptAttachments.isEmpty ? 14 : 2)
+                    .padding(.top, model.promptRowEmpty ? 14 : 2)
                     .padding(.bottom, 12)
                     // Captured, it goes at once: its ghost flies on.
                     .transition(.asymmetric(
@@ -362,7 +362,7 @@ struct ComposerStack: View {
                         removal: model.capturedItem != nil
                             ? .identity : .opacity))
             }
-            if !model.promptAttachments.isEmpty
+            if !model.promptRowEmpty
                 || model.attachCapture != nil {
                 Rectangle()
                     .fill(Color(nsColor: .separatorColor))
@@ -426,7 +426,7 @@ struct ComposerStack: View {
     private var chatInput: some View {
         let shape = RoundedRectangle(cornerRadius: 16, style: .continuous)
         return VStack(spacing: 0) {
-            if !model.promptAttachments.isEmpty {
+            if !model.promptRowEmpty {
                 ReferenceRow(model: model)
                     .transition(.opacity.combined(with: .move(edge: .bottom)))
                 Rectangle()
@@ -571,7 +571,7 @@ struct ComposerStack: View {
             // click, a drop.
             .background { PromptMargin(model: model) }
             .overlay(alignment: .topLeading) {
-                if model.prompt.isEmpty && model.promptAttachments.isEmpty {
+                if model.prompt.isEmpty && model.promptRowEmpty {
                     // How the model Start runs reads a prompt.
                     // Clear of the corner buttons, as the text is.
                     Text(verbatim: model.promptHint)
@@ -618,7 +618,7 @@ struct ComposerStack: View {
 
     /// Something to clear: words, or media in the row.
     private var hasPromptContent: Bool {
-        !model.prompt.isEmpty || !model.promptAttachments.isEmpty
+        !model.prompt.isEmpty || !model.promptRowEmpty
     }
 
     /// Clear is in the text's corner (no row of media to hold it): at the
@@ -627,7 +627,7 @@ struct ComposerStack: View {
     /// Never in the Prompt Editor: there a new prompt is a new tab (its
     /// +), and the one written stays in its own.
     private var clearInText: Bool {
-        !immersive && hasPromptContent && model.promptAttachments.isEmpty
+        !immersive && hasPromptContent && model.promptRowEmpty
             && model.attachCapture == nil
     }
 
@@ -689,7 +689,9 @@ struct ComposerStack: View {
                 .contentTransition(.symbolEffect(.replace))
         }
         .buttonStyle(.borderless)
-        .foregroundStyle(immersive ? Color.accentColor : .secondary)
+        // Black (white in the dark), as Attach: always there -- grey
+        // reads as not available. The accent while the editor is open.
+        .foregroundStyle(immersive ? Color.accentColor : .primary)
         .help(immersive ? "Back to the stage, this prompt in the box (⇧⌘E)"
                         : "Edit the prompt the window's height, several at once (⇧⌘E)")
         .accessibilityLabel(Text("Prompt Editor"))
@@ -749,6 +751,9 @@ struct ComposerStack: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(.borderless)
+            // Black (white in the dark), as Attach: grey reads as not
+            // available -- which only `disabled` says, dimming it.
+            .foregroundStyle(.primary)
             .disabled(!model.assistantEnabled)
             .help(model.assistantHelp)
             if clearInText && promptLines <= 2 { clearButton }

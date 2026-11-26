@@ -210,6 +210,9 @@ read_entry(const Json& m, const Contributor& who, ModelEntry& e,
   e.comes_with = jget(m, "comes_with", std::vector<std::string>{});
   e.eyes = jget<std::string>(m, "eyes", "");
   e.files_of = jget<std::string>(m, "files_of", "");
+  e.version = jget<std::string>(m, "version", "");
+  e.version_of = jget<std::string>(m, "version_of", "");
+  e.versions = jget(m, "versions", std::vector<std::string>{});
   e.license = jget<std::string>(m, "license", "");
   e.gated = jget(m, "gated", false);
   e.notes = m.contains("notes") ? text_in(m["notes"], lang) : "";
@@ -333,6 +336,21 @@ missing_reference(const Catalog& cat, const ModelEntry& e,
   if (!e.eyes.empty() && !cat.find(e.eyes)) {
     *what = "eyes";
     return e.eyes;
+  }
+  if (!e.version_of.empty()) {
+    const ModelEntry* line = cat.find(e.version_of);
+    if (!line || std::ranges::find(line->versions, e.id) ==
+                     line->versions.end()) {
+      *what = "is a version of";
+      return e.version_of;
+    }
+  }
+  for (const auto& v : e.versions) {
+    const ModelEntry* ve = cat.find(v);
+    if (!ve || (v != e.id && ve->version_of != e.id)) {
+      *what = "lists the version";
+      return v;
+    }
   }
   const Json vp = jget(e.engine, "vpipe", Json::object());
   for (const auto& [block, key] :
@@ -757,6 +775,9 @@ to_json(Json& j, const ModelEntry& e)
     {"license", e.license},
     {"gated", e.gated},
     {"notes", e.notes},
+    {"version", e.version},
+    {"version_of", e.version_of},
+    {"versions", e.versions},
     // The grid the model makes pictures on (the engine rounds a size to
     // it): the app shows a typed size as it will be made.
     {"size_align",
@@ -773,6 +794,25 @@ to_json(Json& j, const ModelEntry& e)
     {"last_frame",
      jget(jget(e.engine, "vpipe", Json::object()), "last_frame", false)},
   };
+  // How many references the prompt's row may hold for it: an edit's
+  // pictures (`edit.max_references`, the base among them), a clip's
+  // references by kind and in all (`references`). The app fills the row
+  // from a folder up to them; the core still refuses past them at Start.
+  {
+    const Json vp = jget(e.engine, "vpipe", Json::object());
+    const Json ed = jget(vp, "edit", Json::object());
+    if (ed.contains("max_references")) {
+      j["max_references"] = std::max(1, jget(ed, "max_references", 1));
+    }
+    const Json rf = jget(vp, "references", Json::object());
+    if (rf.contains("max_total")) {
+      j["reference_limits"] = {
+          {"pictures", jget(rf, "max_pictures", 9)},
+          {"clips", jget(rf, "max_clips", 3)},
+          {"sounds", jget(rf, "max_sounds", 3)},
+          {"total", jget(rf, "max_total", 12)}};
+    }
+  }
   // The longest side it makes (FLUX.3: 4096): the app offers its 4K size.
   if (const int edge = max_edge(e); edge > 0) {
     j["max_edge"] = edge;

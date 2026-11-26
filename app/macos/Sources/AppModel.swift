@@ -1113,6 +1113,35 @@ final class AppModel: TuningHost {
         Self.editorMinWidth
             + (showsInspectorColumn ? InspectorColumn.width : 0)
     }
+    /// The inspector's width as its left edge was dragged to (its edge
+    /// included), its first width the least -- remembered between
+    /// launches, but by a scripted snapshot run.
+    var inspectorWidth: CGFloat = AppModel.storedInspectorWidth {
+        didSet {
+            if Self.keepsViewState {
+                UserDefaults.standard.set(Double(inspectorWidth),
+                                          forKey: Self.inspectorWidthKey)
+            }
+        }
+    }
+    /// The window's content width, as the root view lays it out.
+    var rootWidth: CGFloat = 0
+    /// The inspector's width shown: as dragged, but never so wide that the
+    /// editor -- the stage, the timeline, the prompt box -- has less than
+    /// its least; a window too narrow for it narrows the inspector first.
+    var inspectorShownWidth: CGFloat {
+        let room = rootWidth > 0 ? rootWidth - Self.editorMinWidth
+                                 : inspectorWidth
+        return max(InspectorColumn.width, min(inspectorWidth, room))
+    }
+    /// A drag of the inspector's edge to `width`: held to its least and to
+    /// what the editor leaves.
+    func dragInspector(to width: CGFloat) {
+        let most = rootWidth > 0 ? rootWidth - Self.editorMinWidth
+                                 : .greatestFiniteMagnitude
+        inspectorWidth = max(InspectorColumn.width,
+                             min(width.rounded(), most))
+    }
     /// The status bar along the window's bottom (View › Show Status Bar):
     /// the machine's load and thermal state, remembered between launches
     /// -- except by a scripted snapshot run, which neither reads nor
@@ -1267,6 +1296,7 @@ final class AppModel: TuningHost {
     /// Auto-update (Sparkle, when built in): Check for Updates…, and
     /// Settings › General › Updates.
     var updater: Updater { Updater.shared }
+    private static let inspectorWidthKey = "view.inspectorWidth"
     private static let statusBarKey = "view.statusBar"
     private static let statusItemsKey = "view.statusBarHidden"
     private static let agentEnabledKey = "experimental.agent"
@@ -1275,6 +1305,11 @@ final class AppModel: TuningHost {
     private static let agentSpeedKey = "helper.agentSpeed"
     private static var keepsViewState: Bool {
         ProcessInfo.processInfo.environment["VALTZ_SNAPSHOT"] == nil
+    }
+    private static var storedInspectorWidth: CGFloat {
+        let w = keepsViewState
+            ? UserDefaults.standard.double(forKey: inspectorWidthKey) : 0
+        return max(InspectorColumn.width, CGFloat(w))
     }
     private static var storedStatusBar: Bool {
         keepsViewState && UserDefaults.standard.bool(forKey: statusBarKey)
@@ -1458,6 +1493,9 @@ final class AppModel: TuningHost {
     /// words as they are written this turn.
     var agent: AgentSession?
     var agentWriting = ""
+    /// SKILLS dragged into the agent's chat or box, to be loaded with the
+    /// next words (DESIGN §9b): shown in the row by name, sent as files.
+    var agentSkillFiles: [StagedSkill] = []
     /// Each session's live speed as its helper tells it ("agent.speed"):
     /// the chat's meter, ahead of the session's state.
     var agentLiveSpeed: [String: AgentLiveSpeed] = [:]
@@ -3270,6 +3308,58 @@ final class AppModel: TuningHost {
         return of.indices.contains(index) ? of[index] : nil
     }
 
+    /// What the CHOSEN MODEL calls a row item a tag can name -- short as
+    /// the row's badge shows it ("P1", "2") and said out ("Picture 1",
+    /// "Image 2") -- with its tag's place (kind, index within the kind).
+    /// One source for the tags drawn in the text and the "@" list, so
+    /// both follow the model as it changes; an item the model numbers
+    /// none of goes by its place ("I3", "Image 3").
+    struct RefName: Equatable {
+        var kind: String    // "img" | "vid" | "aud"
+        var index: Int
+        var short: String
+        var long: String
+    }
+    func refNames() -> [UUID: RefName] {
+        let tags = usesReferences ? referenceTags : [:]
+        var counts: [String: Int] = [:]
+        var out: [UUID: RefName] = [:]
+        for att in promptAttachments {
+            guard let k = Self.refKind(att.namedAs) else { continue }
+            let index = counts[k, default: 0]
+            counts[k] = index + 1
+            let kindName = RefTagAttachment.kindName(k)
+            var name = RefName(
+                kind: k, index: index,
+                short: String(kindName.prefix(1)) + String(index + 1),
+                long: kindName + " " + String(index + 1))
+            if usesReferences {
+                if let id = assetId(of: att), let tag = tags[id],
+                   !tag.isEmpty {
+                    let said = tag.trimmingCharacters(
+                        in: CharacterSet(charactersIn: "<>"))
+                    name.long = said
+                    name.short = String(said.prefix(1))
+                        + said.filter(\.isNumber)
+                }
+            } else if let n = referenceNumber(att) {
+                name.short = String(n)
+                name.long = kindName + " " + String(n)
+            }
+            out[att.id] = name
+        }
+        return out
+    }
+
+    /// A row item's name for a person, for the "@" list: its asset's,
+    /// else its file's.
+    func rowItemName(_ att: PromptAttachment) -> String {
+        if let id = assetId(of: att), let a = asset(id: id), !a.name.isEmpty {
+            return a.name
+        }
+        return att.url.deletingPathExtension().lastPathComponent
+    }
+
     /// Does the row have a medium at the tag's place?
     func refTagBound(kind: String, index: Int) -> Bool {
         (rowKindCounts[kind] ?? 0) > index
@@ -3992,6 +4082,8 @@ final class AppModel: TuningHost {
     var capabilitiesFamily: String?
     /// A gated model whose download sheet is open (Capabilities).
     var gatedDownload: CapabilityTree.Member?
+    /// Where that gated download goes: "slow" the slow models folder.
+    var gatedStorage = ""
     /// Why a model's last download failed, by model id: shown under its
     /// row until it is tried again.
     var downloadFailures: [String: String] = [:]
@@ -5262,6 +5354,7 @@ final class AppModel: TuningHost {
             ("hyperflow", String(localized: "HyperFlow")),
             ("pika_flex", String(localized: "Pika H3 Flex")),
             ("pi_h3", String(localized: "pi-H3")),
+            ("hyperflow_flash", String(localized: "HyperFlow H3 Flash")),
             ("taomate", String(localized: "TaoMate")),
             ("taomate_lora", String(localized: "LoRA only")),
             ("vdn", String(localized: "VDN")),
@@ -5510,11 +5603,14 @@ final class AppModel: TuningHost {
         capability("prompt-enhance")?.availability == "ready"
     }
 
-    /// A model downloaded from `source` ("" the one chosen).
-    func download(model: String, token: String = "", source: String = "") {
+    /// A model downloaded from `source` ("" the one chosen), into the
+    /// slow models folder where `storage` is "slow".
+    func download(model: String, token: String = "", source: String = "",
+                  storage: String = "") {
         guard let core else { return }
         downloadFailures[model] = nil
-        let r = core.downloadModel(model, token: token, source: source)
+        let r = core.downloadModel(model, token: token, source: source,
+                                   storage: storage)
         if !r.ok {
             note("error", r.message)
             downloadFailures[model] = r.message
@@ -5527,6 +5623,15 @@ final class AppModel: TuningHost {
     func setDownloadSource(_ name: String) {
         guard let core else { return }
         let r = core.setDownloadSource(name)
+        if !r.ok { flash(r.message, level: .error) }
+    }
+
+    /// The version a line of versions runs (Settings › Capabilities'
+    /// version pop-up: lightx2v's Turbo LoRAs), "" Automatic -- kept by
+    /// the core; the page follows through models.changed.
+    func setModelVersion(line: String, version: String) {
+        guard let core else { return }
+        let r = core.setModelVersion(line, version)
         if !r.ok { flash(r.message, level: .error) }
     }
 
@@ -5583,12 +5688,24 @@ final class AppModel: TuningHost {
     /// A row's download: from `source` -- Hugging Face asking for a gated
     /// model's license and token first (its sheet); another source's gate,
     /// if it has one, is its own and answers in the row.
-    func startDownload(_ m: CapabilityTree.Member, from source: String) {
+    func startDownload(_ m: CapabilityTree.Member, from source: String,
+                       storage: String = "") {
         if m.isGated && source == "huggingface" {
+            gatedStorage = storage
             gatedDownload = m
         } else {
-            download(model: m.model, source: source)
+            download(model: m.model, source: source, storage: storage)
         }
+    }
+
+    /// A model moved between the models folder and the slow one
+    /// (Settings › Capabilities' drive button): `to` "fast" | "slow" --
+    /// a task of the core's, its bar on the row.
+    func moveModel(_ m: CapabilityTree.Member, to: String) {
+        guard let core else { return }
+        let r = core.moveModel(m.model, to: to)
+        if !r.ok { flash(r.message, level: .error) }
+        refreshLocations()
     }
 
     /// The gated sheet's Download: the token goes to this download only
@@ -5598,8 +5715,10 @@ final class AppModel: TuningHost {
         let t = token.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !t.isEmpty else { return }
         // The sheet is Hugging Face's gate: from there, whatever is chosen.
-        download(model: member.model, token: t, source: "huggingface")
+        download(model: member.model, token: t, source: "huggingface",
+                 storage: gatedStorage)
         gatedDownload = nil
+        gatedStorage = ""
     }
 
     /// A running download PAUSED (Capabilities' pause button): what came
@@ -6884,7 +7003,8 @@ final class AppModel: TuningHost {
         let words =
             !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         if activeModality.isAgentic {
-            return words && projectId != nil
+            // A skill staged goes alone too.
+            return (words || !agentSkillFiles.isEmpty) && projectId != nil
         }
         // A RefMod is made of the row's media; its words are optional.
         if makesRefMod {
@@ -7693,6 +7813,7 @@ final class AppModel: TuningHost {
         let had = !before.prompt.isEmpty || !before.attachments.isEmpty
         setPromptState(PromptState())
         promptCompact = false
+        withAnimation(Self.motion) { agentSkillFiles = [] }
         guard let tv = promptTextView else { return }
         if had {
             // The typing steps were of the words gone.
@@ -11302,7 +11423,11 @@ final class AppModel: TuningHost {
         let room = win.screen?.visibleFrame ?? win.frame
         var f = win.frame
         if showsInspectorColumn {
-            let need = min(windowMinWidth, room.width)
+            // Room for it as it was last dragged to, where the screen has
+            // it; the least of it otherwise.
+            let need = min(max(windowMinWidth,
+                               Self.editorMinWidth + inspectorWidth),
+                           room.width)
             guard f.width < need - 0.5 else { return }
             widenedForInspector = (need - f.width, need)
             f.size.width = need
